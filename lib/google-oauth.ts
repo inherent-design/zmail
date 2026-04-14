@@ -22,6 +22,7 @@ import { googleOAuthRecordSchema } from "#/lib/schemas";
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const USERINFO_ENDPOINT = "https://openidconnect.googleapis.com/v1/userinfo";
+const OAUTH_STATE_TOKEN_RE = /^[A-Za-z0-9_-]+$/;
 
 export function isOAuthConfigured() {
 	return Boolean(GOOGLE_OAUTH.clientId && GOOGLE_OAUTH.clientSecret);
@@ -80,6 +81,10 @@ export function buildAuthUrl(label: string) {
 }
 
 export function loadOAuthState(state: string) {
+	if (!OAUTH_STATE_TOKEN_RE.test(state)) {
+		return null;
+	}
+
 	const path = resolve(OAUTH_TMP_DIR, `${state}.json`);
 	if (!existsSync(path)) {
 		return null;

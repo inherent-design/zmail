@@ -437,6 +437,118 @@ describe("new server actions", () => {
 		});
 	});
 
+	it("beginGoogleConnectCommand runs migrations only once across repeated bootServer calls", async () => {
+		const runtime = await createTestRuntime();
+		const runMigrations = vi.fn();
+		const ensureWorkerStarted = vi.fn();
+		const buildAuthUrl = vi.fn((label: string) => ({
+			url: `https://accounts.google.com/?label=${encodeURIComponent(label)}`,
+			state: `state-${label}`,
+		}));
+
+		vi.doMock("#/lib/db", async () => {
+			const actual =
+				await vi.importActual<typeof import("#/lib/db")>("#/lib/db");
+			return {
+				...actual,
+				runMigrations,
+			};
+		});
+		vi.doMock("#/lib/worker", () => ({
+			ensureWorkerStarted,
+		}));
+		vi.doMock("#/lib/google-oauth", async () => {
+			const actual =
+				await vi.importActual<typeof import("#/lib/google-oauth")>(
+					"#/lib/google-oauth",
+				);
+			return {
+				...actual,
+				buildAuthUrl,
+			};
+		});
+
+		try {
+			const actions = await runtime.importFresh<
+				typeof import("#/app/server/actions")
+			>("#/app/server/actions");
+
+			await actions.beginGoogleConnectCommand({ label: "One" });
+			await actions.beginGoogleConnectCommand({ label: "Two" });
+
+			expect(runMigrations).toHaveBeenCalledTimes(1);
+			expect(ensureWorkerStarted).toHaveBeenCalledTimes(1);
+			expect(buildAuthUrl).toHaveBeenNthCalledWith(1, "One");
+			expect(buildAuthUrl).toHaveBeenNthCalledWith(2, "Two");
+		} finally {
+			vi.doUnmock("#/lib/db");
+			vi.doUnmock("#/lib/worker");
+			vi.doUnmock("#/lib/google-oauth");
+		}
+	});
+
+	it("beginGoogleConnectCommand retries bootServer initialization after a migration failure", async () => {
+		const runtime = await createTestRuntime();
+		const runMigrations = vi
+			.fn()
+			.mockImplementationOnce(() => {
+				throw new Error("migration failed");
+			})
+			.mockImplementation(() => undefined);
+		const ensureWorkerStarted = vi.fn();
+		const buildAuthUrl = vi.fn((label: string) => ({
+			url: `https://accounts.google.com/?label=${encodeURIComponent(label)}`,
+			state: "oauth-state",
+		}));
+
+		vi.doMock("#/lib/db", async () => {
+			const actual =
+				await vi.importActual<typeof import("#/lib/db")>("#/lib/db");
+			return {
+				...actual,
+				runMigrations,
+			};
+		});
+		vi.doMock("#/lib/worker", () => ({
+			ensureWorkerStarted,
+		}));
+		vi.doMock("#/lib/google-oauth", async () => {
+			const actual =
+				await vi.importActual<typeof import("#/lib/google-oauth")>(
+					"#/lib/google-oauth",
+				);
+			return {
+				...actual,
+				buildAuthUrl,
+			};
+		});
+
+		try {
+			const actions = await runtime.importFresh<
+				typeof import("#/app/server/actions")
+			>("#/app/server/actions");
+
+			await expect(
+				actions.beginGoogleConnectCommand({ label: "Retry" }),
+			).rejects.toThrow("migration failed");
+
+			await expect(
+				actions.beginGoogleConnectCommand({ label: "Retry" }),
+			).resolves.toEqual({
+				url: "https://accounts.google.com/?label=Retry",
+				state: "oauth-state",
+			});
+
+			expect(runMigrations).toHaveBeenCalledTimes(2);
+			expect(ensureWorkerStarted).toHaveBeenCalledTimes(1);
+			expect(buildAuthUrl).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.doUnmock("#/lib/db");
+			vi.doUnmock("#/lib/worker");
+			vi.doUnmock("#/lib/google-oauth");
+		}
+	});
+
 	it("queues account jobs idempotently with the expected kinds and metadata", async () => {
 		const runtime = await createTestRuntime();
 		const { db } = await bootDb();

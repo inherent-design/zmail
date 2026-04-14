@@ -410,7 +410,6 @@ export async function runFullSync(accountId: string, trace?: LogTrace) {
 						}
 
 						latestUidCursor = rangeEnd;
-						earliestUidCursor = syncState!.earliest_uid_cursor;
 
 						const completedAt = nowIso();
 						await db
@@ -905,6 +904,30 @@ export async function runReconcile(accountId: string, trace?: LogTrace) {
 		return { skipped: true, tombstoned: 0 };
 	}
 
+	const syncState = await loadSyncState(accountId);
+	if (
+		!syncState ||
+		syncState.uidvalidity === null ||
+		syncState.earliest_uid_cursor === null ||
+		syncState.latest_uid_cursor === null
+	) {
+		syncTrace.complete("sync.reconcile.complete", {
+			outcome: "skipped",
+			reason: "window_unavailable",
+			tombstoned: 0,
+			earliest_uid_cursor: syncState?.earliest_uid_cursor ?? null,
+			latest_uid_cursor: syncState?.latest_uid_cursor ?? null,
+		});
+		return { skipped: true, tombstoned: 0 };
+	}
+
+	const earliestUidCursor = syncState.earliest_uid_cursor;
+	const latestUidCursor = syncState.latest_uid_cursor;
+	syncTrace.add({
+		earliest_uid_cursor: earliestUidCursor,
+		latest_uid_cursor: latestUidCursor,
+	});
+
 	try {
 		const token = await ensureFreshToken(accountId);
 		if (!token) {
@@ -921,12 +944,33 @@ export async function runReconcile(accountId: string, trace?: LogTrace) {
 
 		try {
 			await client.connect();
+			const status = await getMailboxStatus(client, account.selected_mailbox);
+			const currentUidvalidity = Number(status.uidvalidity);
+			if (currentUidvalidity !== syncState.uidvalidity) {
+				await markResyncRequired(accountId);
+				await queueJobIdempotent({
+					kind: "sync_account_full",
+					scopeType: "account",
+					scopeId: accountId,
+				});
+				syncTrace.complete("sync.reconcile.complete", {
+					outcome: "skipped",
+					reason: "uidvalidity_changed",
+					tombstoned: 0,
+					uidvalidity: syncState.uidvalidity,
+					current_uidvalidity: currentUidvalidity,
+					earliest_uid_cursor: earliestUidCursor,
+					latest_uid_cursor: latestUidCursor,
+				});
+				return { skipped: true, tombstoned: 0 };
+			}
+
 			const lock = await client.getMailboxLock(account.selected_mailbox);
 
 			try {
 				const remoteIds = new Set<string>();
 				for await (const msg of client.fetch(
-					"1:*",
+					`${earliestUidCursor}:${latestUidCursor}`,
 					{
 						uid: true,
 					},
@@ -944,6 +988,9 @@ export async function runReconcile(accountId: string, trace?: LogTrace) {
 					.select(["id", "remote_message_id"])
 					.where("account_id", "=", accountId)
 					.where("state", "=", "active")
+					.where("uidvalidity", "=", syncState.uidvalidity)
+					.where("imap_uid", ">=", earliestUidCursor)
+					.where("imap_uid", "<=", latestUidCursor)
 					.execute();
 
 				const completedAt = nowIso();
@@ -984,6 +1031,8 @@ export async function runReconcile(accountId: string, trace?: LogTrace) {
 
 		syncTrace.complete("sync.reconcile.complete", {
 			tombstoned,
+			range_start: earliestUidCursor,
+			range_end: latestUidCursor,
 		});
 		return { skipped: false, tombstoned };
 	} catch (error) {

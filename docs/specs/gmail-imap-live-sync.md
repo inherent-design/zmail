@@ -271,13 +271,26 @@ Historical backfill never rewinds `latest_uid_cursor`.
 `runReconcile(accountId)`:
 
 1. require a sync-enabled account
-2. ensure a fresh token
-3. fetch remote Gmail message IDs for the selected mailbox
-4. compare them to local active `message_sources`
-5. mark missing remote messages as `tombstoned`
-6. update `last_reconcile_at`
+2. require a tracked sync window:
+   - `account_sync_state`
+   - `uidvalidity`
+   - `earliest_uid_cursor`
+   - `latest_uid_cursor`
+3. ensure a fresh token
+4. read mailbox status and compare `UIDVALIDITY`
+5. if `UIDVALIDITY` changed:
+   - mark `resync_required`
+   - queue `sync_account_full`
+   - do not tombstone current rows from reconcile
+6. fetch remote Gmail message IDs only for the mirrored UID window:
+   - `${earliest_uid_cursor}:${latest_uid_cursor}`
+7. compare them only to local active `message_sources` in that same window and epoch
+8. mark missing remote messages in that window as `tombstoned`
+9. update `last_reconcile_at` only after a successful in-window reconcile pass
 
 Reconcile is triggered both manually and by the watcher timer driven by `ZMAIL_SYNC_RECONCILE_MS`.
+
+Reconcile only covers the currently mirrored UID window. Tombstones outside that covered window are deferred until historical backfill reaches them.
 
 Reconcile does not clear `backfilling`. If historical work remains, account status stays `backfilling`.
 
