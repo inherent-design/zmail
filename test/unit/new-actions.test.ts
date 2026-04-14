@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 
 import { bootDb, seedTestAccount } from "#/test/helpers/db";
+import { setEnv } from "#/test/helpers/env";
 import { createMockLogModule } from "#/test/helpers/log";
 import { createTestRuntime } from "#/test/helpers/runtime";
 
@@ -65,6 +66,68 @@ describe("new server actions", () => {
 		expect(account?.label).toBe("Test Account");
 		expect(account?.message_count).toBe(1);
 		expect(account?.tombstone_count).toBe(1);
+	});
+
+	it("loadAccountsData defaults grouped counts to zero for accounts without rows", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		const { insertMessageRow } = await import("#/test/helpers/db");
+		await seedTestAccount(db, {
+			id: "acct-1",
+			label: "Account One",
+		});
+		await seedTestAccount(db, {
+			id: "acct-2",
+			label: "Account Two",
+		});
+
+		const messageId = await insertMessageRow(db, {
+			accountId: "acct-1",
+		});
+		await db
+			.insertInto("message_sources")
+			.values({
+				id: "source-2",
+				message_id: messageId,
+				account_id: "acct-1",
+				remote_message_id: null,
+				remote_thread_id: null,
+				mailbox: null,
+				imap_uid: null,
+				uidvalidity: null,
+				raw_rfc822_path: null,
+				raw_sha256: null,
+				state: "tombstoned",
+				first_seen_at: "2026-01-01T00:00:00.000Z",
+				last_seen_at: "2026-01-01T00:00:00.000Z",
+				tombstoned_at: "2026-01-02T00:00:00.000Z",
+				updated_at: "2026-01-02T00:00:00.000Z",
+			})
+			.execute();
+
+		vi.doMock("#/lib/worker", () => ({
+			ensureWorkerStarted: vi.fn(),
+		}));
+
+		const actions = await runtime.importFresh<
+			typeof import("#/app/server/actions")
+		>("#/app/server/actions");
+		const result = await actions.loadAccountsData();
+
+		expect(result.accounts).toEqual([
+			expect.objectContaining({
+				id: "acct-1",
+				label: "Account One",
+				message_count: 1,
+				tombstone_count: 1,
+			}),
+			expect.objectContaining({
+				id: "acct-2",
+				label: "Account Two",
+				message_count: 0,
+				tombstone_count: 0,
+			}),
+		]);
 	});
 
 	it("loadAccountNewData returns oauth readiness (false without env vars)", async () => {
@@ -658,8 +721,12 @@ describe("new server actions", () => {
 		});
 	});
 
-	it("queues overseer rebuilds without dead force metadata", async () => {
+	it("queues overseer rebuilds with the configured model and prompt version", async () => {
 		const runtime = await createTestRuntime();
+		setEnv({
+			ZMAIL_FALLBACK_MODEL: "gpt-5.4-mini",
+		});
+		vi.resetModules();
 		await bootDb();
 
 		const queueJob = vi.fn(async () => "job-overseer");
@@ -678,14 +745,16 @@ describe("new server actions", () => {
 		const actions = await runtime.importFresh<
 			typeof import("#/app/server/actions")
 		>("#/app/server/actions");
+		const config =
+			await runtime.importFresh<typeof import("#/lib/config")>("#/lib/config");
 		await actions.enqueueOverseerCommand({ accountId: "acct-1" });
 
 		expect(queueJob).toHaveBeenCalledWith({
 			kind: "rebuild_overseer",
 			scopeType: "account",
 			scopeId: "acct-1",
-			model: "gpt-5-mini",
-			promptVersion: "overseer-profile-v1",
+			model: config.APP_CONFIG.fallbackModel,
+			promptVersion: config.OVERSEER_PROMPT_VERSION,
 		});
 	});
 

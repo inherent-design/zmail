@@ -14,6 +14,7 @@ interface AccountWatcher {
 	idleTimer: ReturnType<typeof setTimeout> | null;
 	reconcileTimer: ReturnType<typeof setInterval> | null;
 	reconnectTimer: ReturnType<typeof setTimeout> | null;
+	reconnecting: boolean;
 	running: boolean;
 }
 
@@ -59,6 +60,7 @@ export async function startWatcher(accountId: string, trace?: LogTrace) {
 		idleTimer: null,
 		reconcileTimer: null,
 		reconnectTimer: null,
+		reconnecting: false,
 		running: true,
 	};
 	watchers.set(accountId, watcher);
@@ -233,54 +235,62 @@ async function connectAndWatch(watcher: AccountWatcher, trace?: LogTrace) {
 
 async function reconnectWatcher(watcher: AccountWatcher) {
 	/* c8 ignore next 3 */
-	if (!watcher.running) {
+	if (!watcher.running || watcher.reconnecting) {
 		return;
 	}
-
-	if (watcher.pollTimer) {
-		clearInterval(watcher.pollTimer);
-		watcher.pollTimer = null;
-	}
-	if (watcher.idleTimer) {
-		clearInterval(watcher.idleTimer);
-		watcher.idleTimer = null;
-	}
-	if (watcher.reconcileTimer) {
-		clearInterval(watcher.reconcileTimer);
-		watcher.reconcileTimer = null;
-	}
-	if (watcher.lock) {
-		try {
-			watcher.lock.release();
-			/* c8 ignore next 3 */
-		} catch {
-			// ignore
-		}
-		watcher.lock = null;
-	}
-	if (watcher.client) {
-		try {
-			await watcher.client.logout();
-			/* c8 ignore next 3 */
-		} catch {
-			// ignore
-		}
-		watcher.client = null;
-	}
-
-	await updateWatcherStatus(watcher.accountId, "connecting");
+	watcher.reconnecting = true;
 
 	try {
-		await connectAndWatch(
-			watcher,
-			startTrace({
-				kind: "watcher",
-				operation: "reconnect_watcher",
-				account_id: watcher.accountId,
-			}),
-		);
-	} catch (error) {
-		await handleWatcherError(watcher, error);
+		if (watcher.pollTimer) {
+			clearInterval(watcher.pollTimer);
+			watcher.pollTimer = null;
+		}
+		if (watcher.idleTimer) {
+			clearInterval(watcher.idleTimer);
+			watcher.idleTimer = null;
+		}
+		if (watcher.reconcileTimer) {
+			clearInterval(watcher.reconcileTimer);
+			watcher.reconcileTimer = null;
+		}
+		if (watcher.lock) {
+			try {
+				watcher.lock.release();
+				/* c8 ignore next 3 */
+			} catch {
+				// ignore
+			}
+			watcher.lock = null;
+		}
+		if (watcher.client) {
+			try {
+				await watcher.client.logout();
+				/* c8 ignore next 3 */
+			} catch {
+				// ignore
+			}
+			watcher.client = null;
+		}
+		if (!watcher.running) {
+			return;
+		}
+
+		await updateWatcherStatus(watcher.accountId, "connecting");
+
+		try {
+			await connectAndWatch(
+				watcher,
+				startTrace({
+					kind: "watcher",
+					operation: "reconnect_watcher",
+					account_id: watcher.accountId,
+				}),
+			);
+		} catch (error) {
+			await handleWatcherError(watcher, error);
+		}
+	} finally {
+		watcher.reconnecting = false;
 	}
 }
 
