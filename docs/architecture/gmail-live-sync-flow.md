@@ -191,25 +191,31 @@ For a new synced message:
 
 For an already-known synced message:
 
-- update source cursor fields
-- reactivate if tombstoned
+- when `raw_sha256` is unchanged:
+  - update observation/source cursor fields only
+  - reactivate if tombstoned
 - when `raw_sha256` changed:
   - rewrite the raw `.eml`
   - re-parse MIME
-  - refresh sender fields, recipients, subject, thread key, received timestamp, normalized body, snippet, parse status, token estimate, attachment count, and attachment rows
+  - refresh `messages`, `attachments`, and `message_sources` together
+  - refresh sender fields, recipients, subject, thread key, received
+    timestamp, normalized body, snippet, parse status, token estimate,
+    attachment count, and attachment rows
   - update `messages.content_sha256`
 
 Duplicate stored data is prevented by the existing `message_sources` identity checks and the unique `(account_id, remote_message_id)` index.
 
-Current model notes:
+Runtime-critical message semantics:
 
-- `messages.received_at` is the user-facing message time
-- `messages.created_at` is still the current row creation timestamp
-- `messages.thread_key` is only a heuristic thread surrogate
-- `message_sources.remote_thread_id` already carries the Gmail-native thread identity
-- forwarded and parse-error body extraction remain best-effort in v1
+- parse errors are non-fatal and preserve sync/source continuity
+- `message_sources.remote_message_id` is the current dedupe identity
+- `message_sources.remote_thread_id` is the Gmail-native thread identity
+- `messages.content_sha256` is the downstream freshness key for
+  moderation/classification
 
-The planned message-model refactor is specified in [message-model-v2.md](../specs/message-model-v2.md).
+For the canonical current runtime contract, see
+[gmail-imap-live-sync.md](../specs/gmail-imap-live-sync.md). For planned future
+message semantics, see [message-model-v2.md](../specs/message-model-v2.md).
 
 ## Classification Backlog Flow
 

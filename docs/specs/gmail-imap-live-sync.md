@@ -154,6 +154,19 @@ Current message-model caveats:
 
 The planned refactor for timestamps, conversations, and body extraction is tracked in [message-model-v2.md](./message-model-v2.md).
 
+Current data semantics:
+
+- this is a Gmail-only corpus mirror
+- each stored `messages` row currently corresponds to one Gmail `message_sources`
+  row
+- the active runtime does not implement cross-source canonical email
+  deduplication
+- `messages.message_id` is the RFC822 `Message-ID`, not the current dedupe key
+- `message_sources.remote_message_id` is the current Gmail dedupe key per
+  account
+- `message_sources.remote_thread_id` is the Gmail-native thread identity
+- `messages.content_sha256` drives moderation and classification freshness
+
 ## Cursor Model
 
 `account_sync_state` persists a two-sided live-sync window per account:
@@ -310,12 +323,19 @@ Reconcile does not clear `backfilling`. If historical work remains, account stat
 
 For existing synced messages:
 
-- update `last_seen_at`, `imap_uid`, `uidvalidity`, and `state`
+- when the raw content hash is unchanged:
+  - only observation and source state is updated
+  - `last_seen_at`, `imap_uid`, `uidvalidity`, `state`, and tombstone state are
+    refreshed
 - when raw content hash changed:
   - rewrite the raw `.eml`
   - re-parse the message
-  - refresh normalized sender fields, recipients, subject, thread key, received timestamp, normalized body, snippet, parse status, token estimate, attachment count, and attachment rows
+  - refresh `messages`, `attachments`, and `message_sources` together
+  - refresh normalized sender fields, recipients, subject, thread key, received
+    timestamp, normalized body, snippet, parse status, token estimate,
+    attachment count, and attachment rows
   - update `messages.content_sha256`
+  - later classifier freshness is driven by `messages.content_sha256`
 
 For new messages:
 
@@ -324,6 +344,13 @@ For new messages:
 - insert `messages`
 - insert `attachments`
 - insert `message_sources`
+
+Parse errors are non-fatal ingestion fallbacks:
+
+- sync continuity and source provenance are preserved
+- structured parsed fields and normalized body currently degrade to empty/null
+  fallback values
+- a structured parse failure reason is not stored in the active runtime
 
 Duplicate stored data remains prevented by `message_sources` identity checks and unique `(account_id, remote_message_id)` enforcement. Replay after crashes is tolerated, but bounded to at most one unfinished window.
 
