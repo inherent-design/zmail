@@ -1,5 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 
+import { APP_CONFIG, OVERSEER_PROMPT_VERSION } from "#/lib/config";
 import { type LogFields, type LogTrace, startTrace } from "#/lib/log";
 import {
 	accountIdInputSchema,
@@ -381,8 +382,8 @@ export async function enqueueOverseerCommand(input: { accountId: string }) {
 				kind: "rebuild_overseer",
 				scopeType: "account",
 				scopeId: input.accountId,
-				model: process.env.ZMAIL_FALLBACK_MODEL ?? "gpt-5-mini",
-				promptVersion: "overseer-profile-v1",
+				model: APP_CONFIG.fallbackModel,
+				promptVersion: OVERSEER_PROMPT_VERSION,
 			});
 		},
 		summarize: (result) => ({
@@ -585,32 +586,35 @@ export async function loadAccountsData() {
 		run: async () => {
 			const { getDb } = await bootServer();
 			const db = getDb();
-			const accounts = await db
-				.selectFrom("accounts")
-				.selectAll()
-				.orderBy("label")
-				.execute();
-
-			const result = [];
-			for (const account of accounts) {
-				const msgCount = await db
+			const [accounts, messageCounts, tombstoneCounts] = await Promise.all([
+				db.selectFrom("accounts").selectAll().orderBy("label").execute(),
+				db
 					.selectFrom("messages")
-					.select((eb) => eb.fn.countAll<number>().as("count"))
-					.where("account_id", "=", account.id)
-					.executeTakeFirstOrThrow();
-				const tombCount = await db
+					.select(["account_id", (eb) => eb.fn.countAll<number>().as("count")])
+					.groupBy("account_id")
+					.execute(),
+				db
 					.selectFrom("message_sources")
-					.select((eb) => eb.fn.countAll<number>().as("count"))
-					.where("account_id", "=", account.id)
+					.select(["account_id", (eb) => eb.fn.countAll<number>().as("count")])
 					.where("state", "=", "tombstoned")
-					.executeTakeFirstOrThrow();
-				result.push({
+					.groupBy("account_id")
+					.execute(),
+			]);
+
+			const messageCountsByAccount = new Map(
+				messageCounts.map((row) => [row.account_id, Number(row.count)]),
+			);
+			const tombstoneCountsByAccount = new Map(
+				tombstoneCounts.map((row) => [row.account_id, Number(row.count)]),
+			);
+
+			return {
+				accounts: accounts.map((account) => ({
 					...account,
-					message_count: Number(msgCount.count),
-					tombstone_count: Number(tombCount.count),
-				});
-			}
-			return { accounts: result };
+					message_count: messageCountsByAccount.get(account.id) ?? 0,
+					tombstone_count: tombstoneCountsByAccount.get(account.id) ?? 0,
+				})),
+			};
 		},
 		summarize: (result) => ({
 			accounts: result.accounts.length,

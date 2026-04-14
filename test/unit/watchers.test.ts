@@ -347,6 +347,113 @@ describe("watchers", () => {
 		expect(watchers.getWatcherStatus("acct-3b")).toBe("running");
 	});
 
+	it("ignores re-entrant close events while reconnect cleanup is in flight", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-3c",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-3c");
+
+		const firstClient = createMockClient();
+		firstClient.logout.mockImplementationOnce(async () => {
+			firstClient.emit("close");
+			await Promise.resolve();
+		});
+		const secondClient = createMockClient();
+		const thirdClient = createMockClient();
+		const createImapClient = vi
+			.fn()
+			.mockImplementationOnce(() => firstClient)
+			.mockImplementationOnce(() => secondClient)
+			.mockImplementationOnce(() => thirdClient);
+
+		vi.doMock("#/lib/google-oauth", () => ({
+			ensureFreshToken: vi.fn(async () => ({
+				accessToken: "access-token",
+			})),
+		}));
+		vi.doMock("#/lib/imap", () => ({
+			createImapClient,
+		}));
+		vi.doMock("#/lib/jobs", async () => {
+			const actual =
+				await vi.importActual<typeof import("#/lib/jobs")>("#/lib/jobs");
+			return actual;
+		});
+
+		const watchers =
+			await runtime.importFresh<typeof import("#/lib/watchers")>(
+				"#/lib/watchers",
+			);
+		await watchers.startWatcher("acct-3c");
+
+		firstClient.emit("close");
+		await vi.advanceTimersByTimeAsync(1);
+		await Promise.resolve();
+
+		expect(firstClient.logout).toHaveBeenCalledTimes(1);
+		expect(createImapClient).toHaveBeenCalledTimes(2);
+		expect(secondClient.connect).toHaveBeenCalledTimes(1);
+		expect(thirdClient.connect).not.toHaveBeenCalled();
+		expect(watchers.getWatcherStatus("acct-3c")).toBe("running");
+	});
+
+	it("does not reconnect after stopWatcher flips running false mid-cleanup", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-3d",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-3d");
+
+		let resolveLogout!: () => void;
+		const logoutPromise: Promise<undefined> = new Promise((resolve) => {
+			resolveLogout = () => resolve(undefined);
+		});
+		const firstClient = createMockClient();
+		firstClient.logout.mockImplementation(() => logoutPromise);
+		const secondClient = createMockClient();
+		const createImapClient = vi
+			.fn()
+			.mockImplementationOnce(() => firstClient)
+			.mockImplementationOnce(() => secondClient);
+
+		vi.doMock("#/lib/google-oauth", () => ({
+			ensureFreshToken: vi.fn(async () => ({
+				accessToken: "access-token",
+			})),
+		}));
+		vi.doMock("#/lib/imap", () => ({
+			createImapClient,
+		}));
+		vi.doMock("#/lib/jobs", async () => {
+			const actual =
+				await vi.importActual<typeof import("#/lib/jobs")>("#/lib/jobs");
+			return actual;
+		});
+
+		const watchers =
+			await runtime.importFresh<typeof import("#/lib/watchers")>(
+				"#/lib/watchers",
+			);
+		await watchers.startWatcher("acct-3d");
+
+		firstClient.emit("close");
+		await Promise.resolve();
+
+		const stopPromise = watchers.stopWatcher("acct-3d");
+		resolveLogout();
+		await stopPromise;
+		await Promise.resolve();
+
+		expect(createImapClient).toHaveBeenCalledTimes(1);
+		expect(secondClient.connect).not.toHaveBeenCalled();
+		expect(watchers.getWatcherStatus("acct-3d")).toBe("stopped");
+	});
+
 	it("backs off after connect failures and retries later", async () => {
 		const runtime = await createTestRuntime();
 		const log = createMockLogModule();
