@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -79,6 +79,35 @@ describe("google-oauth", () => {
 		expect(loaded?.codeVerifier).toBeTruthy();
 
 		expect(mod.loadOAuthState(state)).toBeNull();
+	});
+
+	it("loadOAuthState rejects traversal-like state values without touching files outside oauth temp storage", async () => {
+		const runtime = await createTestRuntime();
+		process.env.GOOGLE_OAUTH_CLIENT_ID = "cid";
+		process.env.GOOGLE_OAUTH_CLIENT_SECRET = "csecret";
+		vi.resetModules();
+		const mod =
+			await runtime.importFresh<typeof import("#/lib/google-oauth")>(
+				"#/lib/google-oauth",
+			);
+
+		const victimPath = resolve(runtime.root, "victim.json");
+		writeFileSync(
+			victimPath,
+			JSON.stringify({
+				state: "victim",
+				codeVerifier: "secret",
+				label: "Victim",
+			}),
+			"utf8",
+		);
+
+		expect(mod.loadOAuthState("../../../../victim")).toBeNull();
+		expect(existsSync(victimPath)).toBe(true);
+		expect(JSON.parse(readFileSync(victimPath, "utf8"))).toMatchObject({
+			state: "victim",
+			label: "Victim",
+		});
 	});
 
 	it("writeOAuthToken / readOAuthToken / deleteOAuthToken roundtrip", async () => {

@@ -154,14 +154,22 @@ This lets new mail continue through delta sync while historical work proceeds to
 Reconcile behavior:
 
 1. require a sync-enabled account
-2. ensure a fresh token
-3. open the mailbox
-4. fetch the current set of Gmail message IDs
-5. compare them to local active `message_sources`
-6. tombstone missing remote messages
-7. update `last_reconcile_at`
+2. require a tracked sync window in `account_sync_state`
+3. ensure a fresh token
+4. read mailbox status and compare `UIDVALIDITY`
+5. if `UIDVALIDITY` changed:
+   - mark `resync_required`
+   - queue `sync_account_full`
+   - skip tombstoning for this reconcile run
+6. open the mailbox
+7. fetch Gmail message IDs only for `${earliest_uid_cursor}:${latest_uid_cursor}`
+8. compare them only to local active `message_sources` in the same UID window and epoch
+9. tombstone missing remote messages from that mirrored window
+10. update `last_reconcile_at` only after a successful in-window reconcile pass
 
 Reconcile is triggered manually and by the watcher reconcile timer.
+
+Reconcile is intentionally window-scoped. Tombstones outside the covered window are deferred until backfill reaches them.
 
 Reconcile must not collapse `backfilling` to `idle`.
 

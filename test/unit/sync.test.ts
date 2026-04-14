@@ -1254,6 +1254,11 @@ describe("sync", () => {
 			id: "acct-reconcile-token",
 			syncEnabled: 1,
 		});
+		await insertSyncState("acct-reconcile-token", {
+			latest_uid_cursor: 1,
+			earliest_uid_cursor: 1,
+			backfill_next_uid: null,
+		});
 
 		mockFreshToken(null);
 		mockQueueJobIdempotent();
@@ -1270,6 +1275,106 @@ describe("sync", () => {
 			.where("id", "=", "acct-reconcile-token")
 			.executeTakeFirstOrThrow();
 		expect(account.sync_status).toBe("needs_reconnect");
+	});
+
+	it("skips reconcile when the tracked sync window is unavailable", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-reconcile-no-window",
+			syncEnabled: 1,
+			syncStatus: "idle",
+		});
+		await insertSyncState("acct-reconcile-no-window", {
+			latest_uid_cursor: null,
+			earliest_uid_cursor: null,
+			last_reconcile_at: null,
+		});
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await expect(
+			sync.runReconcile("acct-reconcile-no-window"),
+		).resolves.toEqual({
+			skipped: true,
+			tombstoned: 0,
+		});
+
+		const syncState = await db
+			.selectFrom("account_sync_state")
+			.select(["last_reconcile_at"])
+			.where("account_id", "=", "acct-reconcile-no-window")
+			.executeTakeFirstOrThrow();
+		expect(syncState.last_reconcile_at).toBeNull();
+	});
+
+	it("marks resync_required and queues bootstrap when reconcile sees uidvalidity drift", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-reconcile-drift",
+			syncEnabled: 1,
+			syncStatus: "idle",
+		});
+		await insertSyncState("acct-reconcile-drift", {
+			uidvalidity: 100,
+			latest_uid_cursor: 3,
+			earliest_uid_cursor: 2,
+			backfill_next_uid: null,
+			last_reconcile_at: null,
+		});
+
+		const queueJobIdempotent = vi.fn(async () => "job-full");
+		const client = createMockClient();
+
+		vi.doMock("#/lib/google-oauth", () => ({
+			ensureFreshToken: vi.fn(async () => ({
+				accessToken: "access-token",
+			})),
+		}));
+		vi.doMock("#/lib/jobs", () => ({
+			queueJobIdempotent,
+		}));
+		vi.doMock("#/lib/imap", () => ({
+			createImapClient: vi.fn(() => client),
+			fetchMessageRange: vi.fn(),
+			fetchMessageWindowDescending: vi.fn(),
+			getMailboxStatus: vi.fn(async () => ({
+				uidvalidity: 200,
+				uidNext: 4,
+				messageCount: 3,
+			})),
+			parseRawMessage: vi.fn(),
+			writeRawEml: vi.fn(),
+		}));
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await expect(sync.runReconcile("acct-reconcile-drift")).resolves.toEqual({
+			skipped: true,
+			tombstoned: 0,
+		});
+
+		expect(queueJobIdempotent).toHaveBeenCalledWith({
+			kind: "sync_account_full",
+			scopeType: "account",
+			scopeId: "acct-reconcile-drift",
+		});
+		expect(client.getMailboxLock).not.toHaveBeenCalled();
+
+		const account = await db
+			.selectFrom("accounts")
+			.select(["sync_status"])
+			.where("id", "=", "acct-reconcile-drift")
+			.executeTakeFirstOrThrow();
+		expect(account.sync_status).toBe("resync_required");
+
+		const syncState = await db
+			.selectFrom("account_sync_state")
+			.select(["last_reconcile_at"])
+			.where("account_id", "=", "acct-reconcile-drift")
+			.executeTakeFirstOrThrow();
+		expect(syncState.last_reconcile_at).toBeNull();
 	});
 
 	it("uses child traces when sync entrypoints receive a parent trace", async () => {
@@ -1332,6 +1437,8 @@ describe("sync", () => {
 			syncStatus: "backfilling",
 		});
 		await insertSyncState("acct-reconcile", {
+			latest_uid_cursor: 1,
+			earliest_uid_cursor: 1,
 			backfill_next_uid: 3,
 		});
 
@@ -1398,7 +1505,11 @@ describe("sync", () => {
 			createImapClient: vi.fn(() => client),
 			fetchMessageRange: vi.fn(),
 			fetchMessageWindowDescending: vi.fn(),
-			getMailboxStatus: vi.fn(),
+			getMailboxStatus: vi.fn(async () => ({
+				uidvalidity: 100,
+				uidNext: 2,
+				messageCount: 1,
+			})),
 			parseRawMessage: vi.fn(),
 			writeRawEml: vi.fn(),
 		}));
@@ -1428,6 +1539,8 @@ describe("sync", () => {
 			syncStatus: "idle",
 		});
 		await insertSyncState("acct-tombstone", {
+			latest_uid_cursor: 3,
+			earliest_uid_cursor: 2,
 			backfill_next_uid: null,
 		});
 
@@ -1466,10 +1579,30 @@ describe("sync", () => {
 				remote_message_id: "gm-missing",
 				remote_thread_id: "thr-missing",
 				mailbox: "[Gmail]/All Mail",
-				imap_uid: 1,
+				imap_uid: 2,
 				uidvalidity: 100,
 				raw_rfc822_path: "/tmp/tombstone.eml",
 				raw_sha256: "sha",
+				state: "active",
+				first_seen_at: "2026-01-01T00:00:00.000Z",
+				last_seen_at: "2026-01-01T00:00:00.000Z",
+				tombstoned_at: null,
+				updated_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("message_sources")
+			.values({
+				id: "src-outside-window",
+				message_id: "msg-tombstone",
+				account_id: "acct-tombstone",
+				remote_message_id: "gm-outside-window",
+				remote_thread_id: "thr-outside-window",
+				mailbox: "[Gmail]/All Mail",
+				imap_uid: 1,
+				uidvalidity: 100,
+				raw_rfc822_path: "/tmp/tombstone-outside.eml",
+				raw_sha256: "sha-outside",
 				state: "active",
 				first_seen_at: "2026-01-01T00:00:00.000Z",
 				last_seen_at: "2026-01-01T00:00:00.000Z",
@@ -1486,12 +1619,17 @@ describe("sync", () => {
 			logout: vi.fn(async () => {
 				throw new Error("logout failed");
 			}),
-			fetch: async function* () {
+			fetch: vi.fn(async function* () {
 				yield {
 					emailId: "gm-other",
 				};
-			},
+			}),
 		};
+		const getMailboxStatus = vi.fn(async () => ({
+			uidvalidity: 100,
+			uidNext: 4,
+			messageCount: 3,
+		}));
 
 		vi.doMock("#/lib/google-oauth", () => ({
 			ensureFreshToken: vi.fn(async () => ({
@@ -1502,7 +1640,7 @@ describe("sync", () => {
 			createImapClient: vi.fn(() => client),
 			fetchMessageRange: vi.fn(),
 			fetchMessageWindowDescending: vi.fn(),
-			getMailboxStatus: vi.fn(),
+			getMailboxStatus,
 			parseRawMessage: vi.fn(),
 			writeRawEml: vi.fn(),
 		}));
@@ -1524,6 +1662,21 @@ describe("sync", () => {
 			.executeTakeFirstOrThrow();
 		expect(source.state).toBe("tombstoned");
 		expect(source.tombstoned_at).toBeTruthy();
+		expect(client.fetch).toHaveBeenCalledWith(
+			"2:3",
+			{
+				uid: true,
+			},
+			{ uid: true },
+		);
+
+		const outsideWindow = await db
+			.selectFrom("message_sources")
+			.select(["state", "tombstoned_at"])
+			.where("id", "=", "src-outside-window")
+			.executeTakeFirstOrThrow();
+		expect(outsideWindow.state).toBe("active");
+		expect(outsideWindow.tombstoned_at).toBeNull();
 	});
 
 	it("reconcile surfaces IMAP failures through the structured failure path", async () => {
@@ -1534,6 +1687,8 @@ describe("sync", () => {
 			syncEnabled: 1,
 		});
 		await insertSyncState("acct-reconcile-error", {
+			latest_uid_cursor: 1,
+			earliest_uid_cursor: 1,
 			backfill_next_uid: null,
 		});
 
@@ -1557,7 +1712,11 @@ describe("sync", () => {
 			createImapClient: vi.fn(() => client),
 			fetchMessageRange: vi.fn(),
 			fetchMessageWindowDescending: vi.fn(),
-			getMailboxStatus: vi.fn(),
+			getMailboxStatus: vi.fn(async () => ({
+				uidvalidity: 100,
+				uidNext: 2,
+				messageCount: 1,
+			})),
 			parseRawMessage: vi.fn(),
 			writeRawEml: vi.fn(),
 		}));
@@ -1854,6 +2013,11 @@ describe("sync", () => {
 		await seedTestAccount(db, {
 			id: "acct-reconcile-gm-fallback",
 			syncEnabled: 1,
+		});
+		await insertSyncState("acct-reconcile-gm-fallback", {
+			latest_uid_cursor: 1,
+			earliest_uid_cursor: 1,
+			backfill_next_uid: null,
 		});
 
 		const client = {

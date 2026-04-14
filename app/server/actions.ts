@@ -10,14 +10,25 @@ import {
 	resolveReviewInputSchema,
 } from "#/lib/schemas";
 
+let bootServerOnce: Promise<typeof import("#/lib/db")> | null = null;
+
 async function bootServer() {
-	const [{ ensureWorkerStarted }, dbModule] = await Promise.all([
-		import("#/lib/worker"),
-		import("#/lib/db"),
-	]);
-	dbModule.runMigrations();
-	ensureWorkerStarted();
-	return dbModule;
+	if (!bootServerOnce) {
+		bootServerOnce = (async () => {
+			const [{ ensureWorkerStarted }, dbModule] = await Promise.all([
+				import("#/lib/worker"),
+				import("#/lib/db"),
+			]);
+			dbModule.runMigrations();
+			ensureWorkerStarted();
+			return dbModule;
+		})().catch((error) => {
+			bootServerOnce = null;
+			throw error;
+		});
+	}
+
+	return bootServerOnce;
 }
 
 async function runLoggedAction<TResult>(input: {
