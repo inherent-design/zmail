@@ -682,12 +682,12 @@ describe("route components", () => {
 	});
 
 	it("callback route redirects to the connected account on success", async () => {
-		const completeGoogleConnectCommand = vi.fn(async () => ({
+		const completeGoogleConnect = vi.fn(async () => ({
 			accountId: "account-1",
 		}));
 
 		vi.doMock("#/app/server/actions", () => ({
-			completeGoogleConnectCommand,
+			completeGoogleConnect,
 		}));
 
 		mockRouteRuntime(null);
@@ -731,6 +731,12 @@ describe("route components", () => {
 			to: "/accounts/$accountId",
 			params: {
 				accountId: "account-1",
+			},
+		});
+		expect(completeGoogleConnect).toHaveBeenCalledWith({
+			data: {
+				code: "auth-code",
+				state: "oauth-state",
 			},
 		});
 	});

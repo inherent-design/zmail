@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 const ROOT_DIR = process.cwd();
 const ALLOWED_CONSOLE_FILES = new Set(["scripts/pi-connect-subscription.ts"]);
 const LOGGER_BOUNDARY_FILES = [
-	"app/server/actions.ts",
+	"app/server/actions.server.ts",
 	"lib/jobs.ts",
 	"lib/worker.ts",
 	"lib/sync.ts",

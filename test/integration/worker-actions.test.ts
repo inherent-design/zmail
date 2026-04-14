@@ -148,8 +148,8 @@ describe("worker and server actions", () => {
 		mockPiModule();
 
 		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions")
-		>("#/app/server/actions");
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
 		const worker =
 			await runtime.importFresh<typeof import("#/lib/worker")>("#/lib/worker");
 		const { db } = await bootDb();
@@ -302,8 +302,8 @@ describe("worker and server actions", () => {
 		mockPiModule();
 
 		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions")
-		>("#/app/server/actions");
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
 		const dbModule =
 			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
 		const { db } = await bootDb({ seedDefaultAccount: true });
