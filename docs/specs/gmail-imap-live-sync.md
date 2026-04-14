@@ -136,7 +136,7 @@ Reconnect identity is the normalized Gmail email address. Reconnecting the same 
 Key operations:
 
 - `createImapClient()` connects to `imap.gmail.com:993` with TLS and XOAUTH2
-- `fetchMessageWindow()` fetches an ascending IMAP UID range
+- `fetchMessageWindow()` fetches a bounded ascending IMAP UID range
 - `fetchMessageWindowDescending()` fetches a bounded IMAP UID range and sorts the result descending in userland
 - `writeRawEml()` stores the raw RFC822 file under `data/accounts/<accountId>/raw/<remoteMessageId>.eml`
 - `parseRawMessage()` parses MIME with `mailparser`, normalizes body text, derives thread keys, and extracts attachment metadata

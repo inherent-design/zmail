@@ -258,7 +258,15 @@ async function reconnectWatcher(watcher: AccountWatcher) {
 		}
 		watcher.lock = null;
 	}
-	watcher.client = null;
+	if (watcher.client) {
+		try {
+			await watcher.client.logout();
+			/* c8 ignore next 3 */
+		} catch {
+			// ignore
+		}
+		watcher.client = null;
+	}
 
 	await updateWatcherStatus(watcher.accountId, "connecting");
 

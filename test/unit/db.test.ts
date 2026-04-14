@@ -73,6 +73,44 @@ describe("db", () => {
 		expect(dbModule.fileName("/tmp/file.txt")).toBe("file.txt");
 	});
 
+	it("restores a missing bookkeeping row for migration 002 without replaying it", async () => {
+		const runtime = await createTestRuntime();
+		const dbModule =
+			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
+
+		dbModule.runMigrations();
+		const sqlite = dbModule.getSqlite();
+		sqlite
+			.prepare("DELETE FROM _migrations WHERE name = ?")
+			.run("002_jobs_live_cleanup.sql");
+
+		expect(() => dbModule.runMigrations()).not.toThrow();
+		expect(
+			sqlite
+				.prepare("SELECT name FROM _migrations WHERE name = ?")
+				.get("002_jobs_live_cleanup.sql"),
+		).toEqual({ name: "002_jobs_live_cleanup.sql" });
+	});
+
+	it("restores a missing bookkeeping row for migration 003 without replaying it", async () => {
+		const runtime = await createTestRuntime();
+		const dbModule =
+			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
+
+		dbModule.runMigrations();
+		const sqlite = dbModule.getSqlite();
+		sqlite
+			.prepare("DELETE FROM _migrations WHERE name = ?")
+			.run("003_account_sync_state_resumable_backfill.sql");
+
+		expect(() => dbModule.runMigrations()).not.toThrow();
+		expect(
+			sqlite
+				.prepare("SELECT name FROM _migrations WHERE name = ?")
+				.get("003_account_sync_state_resumable_backfill.sql"),
+		).toEqual({ name: "003_account_sync_state_resumable_backfill.sql" });
+	});
+
 	it("accounts table uses the live-only schema with provider_kind and sync columns", async () => {
 		await createTestRuntime();
 		const { bootDb } = await import("#/test/helpers/db");

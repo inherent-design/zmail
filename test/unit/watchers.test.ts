@@ -288,6 +288,7 @@ describe("watchers", () => {
 		await Promise.resolve();
 
 		expect(firstClient.lock.release).toHaveBeenCalled();
+		expect(firstClient.logout).toHaveBeenCalled();
 		expect(secondClient.connect).toHaveBeenCalled();
 		expect(watchers.getWatcherStatus("acct-3")).toBe("running");
 		expect(log.records).toEqual(
@@ -298,6 +299,52 @@ describe("watchers", () => {
 				}),
 			]),
 		);
+	});
+
+	it("reconnects after a close event when client logout fails", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-3b",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-3b");
+
+		const firstClient = createMockClient();
+		firstClient.logout.mockRejectedValueOnce(new Error("logout failed"));
+		const secondClient = createMockClient();
+
+		vi.doMock("#/lib/google-oauth", () => ({
+			ensureFreshToken: vi.fn(async () => ({
+				accessToken: "access-token",
+			})),
+		}));
+		vi.doMock("#/lib/imap", () => ({
+			createImapClient: vi
+				.fn()
+				.mockImplementationOnce(() => firstClient)
+				.mockImplementationOnce(() => secondClient),
+		}));
+		vi.doMock("#/lib/jobs", async () => {
+			const actual =
+				await vi.importActual<typeof import("#/lib/jobs")>("#/lib/jobs");
+			return actual;
+		});
+
+		const watchers =
+			await runtime.importFresh<typeof import("#/lib/watchers")>(
+				"#/lib/watchers",
+			);
+		await watchers.startWatcher("acct-3b");
+
+		firstClient.emit("close");
+		await vi.advanceTimersByTimeAsync(1);
+		await Promise.resolve();
+
+		expect(firstClient.lock.release).toHaveBeenCalled();
+		expect(firstClient.logout).toHaveBeenCalled();
+		expect(secondClient.connect).toHaveBeenCalled();
+		expect(watchers.getWatcherStatus("acct-3b")).toBe("running");
 	});
 
 	it("backs off after connect failures and retries later", async () => {
