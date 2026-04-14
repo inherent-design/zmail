@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 
+import type { Kysely, Transaction } from "kysely";
+
 import { APP_CONFIG, nowIso } from "#/lib/config";
-import { getDb } from "#/lib/db";
+import { type DB, getDb } from "#/lib/db";
 import { ensureFreshToken } from "#/lib/google-oauth";
 import {
 	createImapClient,
@@ -41,18 +43,20 @@ function parsedMessageValues(
 	};
 }
 
+type SyncExecutor = Kysely<DB> | Transaction<DB>;
+
 async function replaceAttachments(
+	executor: SyncExecutor,
 	messageId: string,
 	attachments: Awaited<ReturnType<typeof parseRawMessage>>["attachments"],
 ) {
-	const db = getDb();
-	await db
+	await executor
 		.deleteFrom("attachments")
 		.where("message_id", "=", messageId)
 		.execute();
 
 	for (const attachment of attachments) {
-		await db
+		await executor
 			.insertInto("attachments")
 			.values({
 				id: attachment.id,
@@ -1090,22 +1094,30 @@ async function ingestMessage(
 				});
 			}
 			const receivedAtFallback = msg.internalDate.toISOString();
-			await db
-				.updateTable("messages")
-				.set(parsedMessageValues(parsed, msg.raw.length, receivedAtFallback))
-				.where("id", "=", existing.message_id)
-				.execute();
-			await replaceAttachments(existing.message_id, parsed.attachments);
+			await db.transaction().execute(async (trx) => {
+				await trx
+					.updateTable("messages")
+					.set(parsedMessageValues(parsed, msg.raw.length, receivedAtFallback))
+					.where("id", "=", existing.message_id)
+					.execute();
+				await replaceAttachments(trx, existing.message_id, parsed.attachments);
 
-			await db
-				.updateTable("message_sources")
-				.set({
-					raw_rfc822_path: rawPath,
-					raw_sha256: msg.sha256,
-					updated_at: nowIso(),
-				})
-				.where("id", "=", existing.id)
-				.execute();
+				await trx
+					.updateTable("message_sources")
+					.set({
+						last_seen_at: now,
+						imap_uid: msg.uid,
+						uidvalidity,
+						state: "active",
+						tombstoned_at: null,
+						raw_rfc822_path: rawPath,
+						raw_sha256: msg.sha256,
+						updated_at: now,
+					})
+					.where("id", "=", existing.id)
+					.execute();
+			});
+			return;
 		}
 		return;
 	}
@@ -1122,36 +1134,38 @@ async function ingestMessage(
 	const now = nowIso();
 	const receivedAtFallback = msg.internalDate.toISOString();
 
-	await db
-		.insertInto("messages")
-		.values({
-			id: parsed.id,
-			account_id: accountId,
-			...parsedMessageValues(parsed, msg.raw.length, receivedAtFallback),
-			created_at: now,
-		})
-		.execute();
+	await db.transaction().execute(async (trx) => {
+		await trx
+			.insertInto("messages")
+			.values({
+				id: parsed.id,
+				account_id: accountId,
+				...parsedMessageValues(parsed, msg.raw.length, receivedAtFallback),
+				created_at: now,
+			})
+			.execute();
 
-	await replaceAttachments(parsed.id, parsed.attachments);
+		await replaceAttachments(trx, parsed.id, parsed.attachments);
 
-	await db
-		.insertInto("message_sources")
-		.values({
-			id: randomUUID(),
-			message_id: parsed.id,
-			account_id: accountId,
-			remote_message_id: msg.gmMsgId,
-			remote_thread_id: msg.gmThrid,
-			mailbox,
-			imap_uid: msg.uid,
-			uidvalidity,
-			raw_rfc822_path: rawPath,
-			raw_sha256: msg.sha256,
-			state: "active",
-			first_seen_at: now,
-			last_seen_at: now,
-			tombstoned_at: null,
-			updated_at: now,
-		})
-		.execute();
+		await trx
+			.insertInto("message_sources")
+			.values({
+				id: randomUUID(),
+				message_id: parsed.id,
+				account_id: accountId,
+				remote_message_id: msg.gmMsgId,
+				remote_thread_id: msg.gmThrid,
+				mailbox,
+				imap_uid: msg.uid,
+				uidvalidity,
+				raw_rfc822_path: rawPath,
+				raw_sha256: msg.sha256,
+				state: "active",
+				first_seen_at: now,
+				last_seen_at: now,
+				tombstoned_at: null,
+				updated_at: now,
+			})
+			.execute();
+	});
 }

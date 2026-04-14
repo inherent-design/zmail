@@ -1888,6 +1888,305 @@ describe("sync", () => {
 		]);
 	});
 
+	it("keeps existing mirrored message content when the raw source is unchanged", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-existing-unchanged",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-existing-unchanged", {
+			uidvalidity: 100,
+			latest_uid_cursor: 0,
+			earliest_uid_cursor: 1,
+			backfill_snapshot_uid: 7,
+			backfill_next_uid: null,
+		});
+		await db
+			.insertInto("messages")
+			.values({
+				id: "msg-existing-unchanged",
+				account_id: "acct-existing-unchanged",
+				message_id: "<msg-existing-unchanged@example.com>",
+				thread_key: "thread-existing-unchanged",
+				received_at: "2026-01-01T00:00:00.000Z",
+				sender_name: "Sender",
+				sender_address: "sender@example.com",
+				to_json: "[]",
+				cc_json: "[]",
+				subject: "Stable subject",
+				in_reply_to: null,
+				body_text_normalized: "stable body",
+				snippet: "stable body",
+				attachment_count: 0,
+				has_html: 0,
+				raw_byte_start: 0,
+				raw_byte_end: 3,
+				parse_status: "parsed",
+				token_estimate: 1,
+				content_sha256: "stable-sha",
+				created_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("message_sources")
+			.values({
+				id: "src-existing-unchanged",
+				message_id: "msg-existing-unchanged",
+				account_id: "acct-existing-unchanged",
+				remote_message_id: "gm-existing-unchanged",
+				remote_thread_id: "thr-existing-unchanged",
+				mailbox: "[Gmail]/All Mail",
+				imap_uid: 5,
+				uidvalidity: 100,
+				raw_rfc822_path: "/tmp/stable.eml",
+				raw_sha256: "stable-sha",
+				state: "active",
+				first_seen_at: "2026-01-01T00:00:00.000Z",
+				last_seen_at: "2026-01-01T00:00:00.000Z",
+				tombstoned_at: null,
+				updated_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+
+		const parseRawMessage = vi.fn();
+		const writeRawEml = vi.fn();
+
+		vi.doMock("#/lib/google-oauth", () => ({
+			ensureFreshToken: vi.fn(async () => ({
+				accessToken: "access-token",
+			})),
+		}));
+		vi.doMock("#/lib/jobs", () => ({
+			queueJobIdempotent: vi.fn(async () => null),
+		}));
+		vi.doMock("#/lib/imap", () => ({
+			createImapClient: vi.fn(() => createMockClient()),
+			fetchMessageRange: vi.fn(async () => [
+				{
+					uid: 6,
+					gmMsgId: "gm-existing-unchanged",
+					gmThrid: "thr-existing-unchanged",
+					internalDate: new Date("2026-01-02T00:00:00.000Z"),
+					raw: Buffer.from("stable raw"),
+					sha256: "stable-sha",
+				},
+			]),
+			fetchMessageWindowDescending: vi.fn(),
+			getMailboxStatus: vi.fn(async () => ({
+				uidvalidity: 100,
+				uidNext: 7,
+				messageCount: 1,
+			})),
+			parseRawMessage,
+			writeRawEml,
+		}));
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await sync.runDeltaSync("acct-existing-unchanged");
+
+		expect(parseRawMessage).not.toHaveBeenCalled();
+		expect(writeRawEml).not.toHaveBeenCalled();
+
+		const message = await db
+			.selectFrom("messages")
+			.select(["subject", "content_sha256"])
+			.where("id", "=", "msg-existing-unchanged")
+			.executeTakeFirstOrThrow();
+		expect(message).toEqual({
+			subject: "Stable subject",
+			content_sha256: "stable-sha",
+		});
+		const source = await db
+			.selectFrom("message_sources")
+			.select(["imap_uid", "raw_rfc822_path", "raw_sha256", "state"])
+			.where("id", "=", "src-existing-unchanged")
+			.executeTakeFirstOrThrow();
+		expect(source).toEqual({
+			imap_uid: 6,
+			raw_rfc822_path: "/tmp/stable.eml",
+			raw_sha256: "stable-sha",
+			state: "active",
+		});
+	});
+
+	it("rolls back refreshed message writes when attachment replacement fails", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-existing-rollback",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-existing-rollback", {
+			uidvalidity: 100,
+			latest_uid_cursor: 0,
+			earliest_uid_cursor: 1,
+			backfill_snapshot_uid: 1,
+			backfill_next_uid: null,
+		});
+		await db
+			.insertInto("messages")
+			.values({
+				id: "msg-existing-rollback",
+				account_id: "acct-existing-rollback",
+				message_id: "<msg-existing-rollback@example.com>",
+				thread_key: "thread-existing-rollback",
+				received_at: "2026-01-01T00:00:00.000Z",
+				sender_name: "Old Sender",
+				sender_address: "old@example.com",
+				to_json: "[]",
+				cc_json: "[]",
+				subject: "Old subject",
+				in_reply_to: null,
+				body_text_normalized: "old body",
+				snippet: "old body",
+				attachment_count: 1,
+				has_html: 0,
+				raw_byte_start: 0,
+				raw_byte_end: 3,
+				parse_status: "parsed",
+				token_estimate: 1,
+				content_sha256: "old-sha",
+				created_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("attachments")
+			.values({
+				id: "att-existing-rollback",
+				message_id: "msg-existing-rollback",
+				filename: "old.pdf",
+				mime_type: "application/pdf",
+				size_bytes: 64,
+				content_id: null,
+				is_inline: 0,
+			})
+			.execute();
+		await db
+			.insertInto("message_sources")
+			.values({
+				id: "src-existing-rollback",
+				message_id: "msg-existing-rollback",
+				account_id: "acct-existing-rollback",
+				remote_message_id: "gm-existing-rollback",
+				remote_thread_id: "thr-existing-rollback",
+				mailbox: "[Gmail]/All Mail",
+				imap_uid: 1,
+				uidvalidity: 100,
+				raw_rfc822_path: "/tmp/old-rollback.eml",
+				raw_sha256: "old-sha",
+				state: "active",
+				first_seen_at: "2026-01-01T00:00:00.000Z",
+				last_seen_at: "2026-01-01T00:00:00.000Z",
+				tombstoned_at: null,
+				updated_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+
+		vi.doMock("#/lib/google-oauth", () => ({
+			ensureFreshToken: vi.fn(async () => ({
+				accessToken: "access-token",
+			})),
+		}));
+		vi.doMock("#/lib/jobs", () => ({
+			queueJobIdempotent: vi.fn(async () => null),
+		}));
+		vi.doMock("#/lib/imap", () => ({
+			createImapClient: vi.fn(() => createMockClient()),
+			fetchMessageRange: vi.fn(async () => [
+				{
+					uid: 1,
+					gmMsgId: "gm-existing-rollback",
+					gmThrid: "thr-existing-rollback",
+					internalDate: new Date("2026-01-02T00:00:00.000Z"),
+					raw: Buffer.from("new raw"),
+					sha256: "new-sha",
+				},
+			]),
+			fetchMessageWindowDescending: vi.fn(),
+			getMailboxStatus: vi.fn(async () => ({
+				uidvalidity: 100,
+				uidNext: 2,
+				messageCount: 1,
+			})),
+			parseRawMessage: vi.fn(async () => ({
+				id: "ignored-id",
+				messageId: "<msg-existing-rollback@example.com>",
+				threadKey: "thread-existing-rollback",
+				receivedAt: null,
+				senderName: "New Sender",
+				senderAddress: "new@example.com",
+				toJson: "[]",
+				ccJson: "[]",
+				subject: "New subject",
+				inReplyTo: null,
+				bodyTextNormalized: "new body",
+				snippet: "new body",
+				attachmentCount: 2,
+				hasHtml: 0,
+				parseStatus: "parsed",
+				tokenEstimate: 2,
+				contentSha256: "new-sha",
+				attachments: [
+					{
+						id: "att-dup",
+						filename: "invoice-a.pdf",
+						mimeType: "application/pdf",
+						sizeBytes: 128,
+						contentId: null,
+						isInline: 0,
+					},
+					{
+						id: "att-dup",
+						filename: "invoice-b.pdf",
+						mimeType: "application/pdf",
+						sizeBytes: 256,
+						contentId: null,
+						isInline: 0,
+					},
+				],
+			})),
+			writeRawEml: vi.fn(() => "/tmp/new-rollback.eml"),
+		}));
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await expect(sync.runDeltaSync("acct-existing-rollback")).rejects.toThrow();
+
+		const message = await db
+			.selectFrom("messages")
+			.select(["subject", "sender_address", "content_sha256"])
+			.where("id", "=", "msg-existing-rollback")
+			.executeTakeFirstOrThrow();
+		expect(message).toEqual({
+			subject: "Old subject",
+			sender_address: "old@example.com",
+			content_sha256: "old-sha",
+		});
+		const source = await db
+			.selectFrom("message_sources")
+			.select(["raw_sha256", "raw_rfc822_path", "imap_uid"])
+			.where("id", "=", "src-existing-rollback")
+			.executeTakeFirstOrThrow();
+		expect(source).toEqual({
+			raw_sha256: "old-sha",
+			raw_rfc822_path: "/tmp/old-rollback.eml",
+			imap_uid: 1,
+		});
+		const attachments = await db
+			.selectFrom("attachments")
+			.select(["id", "filename"])
+			.where("message_id", "=", "msg-existing-rollback")
+			.execute();
+		expect(attachments).toEqual([
+			{
+				id: "att-existing-rollback",
+				filename: "old.pdf",
+			},
+		]);
+	});
+
 	it("logs parse errors when an existing mirrored message is refreshed with malformed raw content", async () => {
 		const runtime = await createTestRuntime();
 		vi.resetModules();
@@ -2175,5 +2474,154 @@ describe("sync", () => {
 			.where("account_id", "=", "acct-parse-error")
 			.executeTakeFirstOrThrow();
 		expect(message.parse_status).toBe("error");
+	});
+
+	it("rolls back newly inserted message rows when source insertion fails", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-insert-rollback",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-insert-rollback", {
+			uidvalidity: 100,
+			latest_uid_cursor: 0,
+			earliest_uid_cursor: 1,
+			backfill_snapshot_uid: 1,
+			backfill_next_uid: null,
+		});
+		await db
+			.insertInto("messages")
+			.values({
+				id: "msg-existing-source-conflict",
+				account_id: "acct-insert-rollback",
+				message_id: "<existing-source-conflict@example.com>",
+				thread_key: "thread-existing-source-conflict",
+				received_at: "2026-01-01T00:00:00.000Z",
+				sender_name: "Existing",
+				sender_address: "existing@example.com",
+				to_json: "[]",
+				cc_json: "[]",
+				subject: "Existing subject",
+				in_reply_to: null,
+				body_text_normalized: "body",
+				snippet: "body",
+				attachment_count: 0,
+				has_html: 0,
+				raw_byte_start: 0,
+				raw_byte_end: 3,
+				parse_status: "parsed",
+				token_estimate: 1,
+				content_sha256: "existing-sha",
+				created_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("message_sources")
+			.values({
+				id: "src-duplicate",
+				message_id: "msg-existing-source-conflict",
+				account_id: "acct-insert-rollback",
+				remote_message_id: "gm-existing-source-conflict",
+				remote_thread_id: "thr-existing-source-conflict",
+				mailbox: "[Gmail]/All Mail",
+				imap_uid: 99,
+				uidvalidity: 100,
+				raw_rfc822_path: "/tmp/existing-source-conflict.eml",
+				raw_sha256: "existing-sha",
+				state: "active",
+				first_seen_at: "2026-01-01T00:00:00.000Z",
+				last_seen_at: "2026-01-01T00:00:00.000Z",
+				tombstoned_at: null,
+				updated_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+
+		vi.doMock("node:crypto", async () => {
+			const actual =
+				await vi.importActual<typeof import("node:crypto")>("node:crypto");
+			return {
+				...actual,
+				randomUUID: vi.fn(() => "src-duplicate"),
+			};
+		});
+		vi.doMock("#/lib/google-oauth", () => ({
+			ensureFreshToken: vi.fn(async () => ({
+				accessToken: "access-token",
+			})),
+		}));
+		vi.doMock("#/lib/jobs", () => ({
+			queueJobIdempotent: vi.fn(async () => null),
+		}));
+		vi.doMock("#/lib/imap", () => ({
+			createImapClient: vi.fn(() => createMockClient()),
+			fetchMessageRange: vi.fn(async () => [createFetchedMessage(1)]),
+			fetchMessageWindowDescending: vi.fn(),
+			getMailboxStatus: vi.fn(async () => ({
+				uidvalidity: 100,
+				uidNext: 2,
+				messageCount: 1,
+			})),
+			parseRawMessage: vi.fn(async () => ({
+				id: "msg-insert-rollback",
+				messageId: "<msg-insert-rollback@example.com>",
+				threadKey: "thread-insert-rollback",
+				receivedAt: "2026-01-01T00:00:00.000Z",
+				senderName: "Sender",
+				senderAddress: "sender@example.com",
+				toJson: "[]",
+				ccJson: "[]",
+				subject: "Subject rollback",
+				inReplyTo: null,
+				bodyTextNormalized: "body",
+				snippet: "body",
+				attachmentCount: 1,
+				hasHtml: 0,
+				parseStatus: "parsed",
+				tokenEstimate: 1,
+				contentSha256: "sha-1",
+				attachments: [
+					{
+						id: "att-insert-rollback",
+						filename: "invoice.pdf",
+						mimeType: "application/pdf",
+						sizeBytes: 128,
+						contentId: null,
+						isInline: 0,
+					},
+				],
+			})),
+			writeRawEml: vi.fn(() => "/tmp/insert-rollback.eml"),
+		}));
+
+		try {
+			const sync =
+				await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+			await expect(sync.runDeltaSync("acct-insert-rollback")).rejects.toThrow();
+		} finally {
+			vi.doUnmock("node:crypto");
+		}
+
+		expect(
+			await db
+				.selectFrom("messages")
+				.select(["id"])
+				.where("id", "=", "msg-insert-rollback")
+				.executeTakeFirst(),
+		).toBeUndefined();
+		expect(
+			await db
+				.selectFrom("attachments")
+				.select(["id"])
+				.where("message_id", "=", "msg-insert-rollback")
+				.execute(),
+		).toEqual([]);
+		expect(
+			await db
+				.selectFrom("message_sources")
+				.select(["remote_message_id"])
+				.where("remote_message_id", "=", "gm-1")
+				.executeTakeFirst(),
+		).toBeUndefined();
 	});
 });

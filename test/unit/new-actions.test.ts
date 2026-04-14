@@ -348,6 +348,79 @@ describe("new server actions", () => {
 		});
 	});
 
+	it("completeGoogleConnectCommand coalesces concurrent connects for the same email", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+
+		vi.doMock("#/lib/worker", () => ({
+			ensureWorkerStarted: vi.fn(),
+		}));
+		vi.doUnmock("#/lib/google-oauth");
+
+		let exchangeCalls = 0;
+		let releaseExchange = () => {};
+		const exchangeBarrier = new Promise<void>((resolve) => {
+			releaseExchange = resolve;
+		});
+		const oauth =
+			await runtime.importFresh<typeof import("#/lib/google-oauth")>(
+				"#/lib/google-oauth",
+			);
+		vi.spyOn(oauth, "exchangeCode").mockImplementation(async () => {
+			exchangeCalls += 1;
+			if (exchangeCalls === 2) {
+				releaseExchange();
+			}
+			await exchangeBarrier;
+			return {
+				access_token: "access-token",
+				refresh_token: "refresh-token",
+				expires_in: 3600,
+				token_type: "Bearer",
+				scope: "openid email https://mail.google.com/",
+			};
+		});
+		vi.spyOn(oauth, "fetchEmailIdentity").mockResolvedValue("USER@example.com");
+
+		const firstAuth = oauth.buildAuthUrl("Connect A");
+		const secondAuth = oauth.buildAuthUrl("Connect B");
+
+		const actions = await runtime.importFresh<
+			typeof import("#/app/server/actions")
+		>("#/app/server/actions");
+		const [first, second] = await Promise.all([
+			actions.completeGoogleConnectCommand({
+				code: "auth-code-a",
+				state: firstAuth.state,
+			}),
+			actions.completeGoogleConnectCommand({
+				code: "auth-code-b",
+				state: secondAuth.state,
+			}),
+		]);
+
+		const accounts = await db
+			.selectFrom("accounts")
+			.selectAll()
+			.where("email_address", "=", "user@example.com")
+			.execute();
+		const syncStates = await db
+			.selectFrom("account_sync_state")
+			.selectAll()
+			.where("account_id", "=", first.accountId)
+			.execute();
+		const jobs = await db
+			.selectFrom("jobs")
+			.select(["scope_id"])
+			.where("kind", "=", "sync_account_full")
+			.execute();
+
+		expect(first.accountId).toBe(second.accountId);
+		expect(accounts).toHaveLength(1);
+		expect(syncStates).toHaveLength(1);
+		expect(jobs).toEqual([{ scope_id: first.accountId }]);
+	});
+
 	it("completeGoogleConnectCommand throws for invalid or expired OAuth state", async () => {
 		const runtime = await createTestRuntime();
 		await bootDb();

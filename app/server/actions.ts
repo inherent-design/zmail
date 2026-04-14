@@ -754,54 +754,52 @@ export async function completeGoogleConnectCommand(input: {
 			const record = oauth.buildOAuthRecord(normalizedEmail, tokens);
 			const now = nowIso();
 
-			const accounts = await db.selectFrom("accounts").selectAll().execute();
-			const existingAccount = accounts.find(
-				(account) =>
-					account.email_address.trim().toLowerCase() === normalizedEmail,
-			);
+			const existingAccount = await db
+				.selectFrom("accounts")
+				.select(["id", "selected_mailbox"])
+				.where("email_address", "=", normalizedEmail)
+				.executeTakeFirst();
+			const selectedMailbox =
+				existingAccount?.selected_mailbox?.trim() || "[Gmail]/All Mail";
+			await db
+				.insertInto("accounts")
+				.values({
+					id: existingAccount?.id ?? crypto.randomUUID(),
+					label: oauthState.label,
+					email_address: normalizedEmail,
+					provider_kind: "gmail",
+					sync_enabled: 1,
+					sync_status: "idle",
+					source_truth: "corpus_mirror",
+					selected_mailbox: selectedMailbox,
+					last_synced_at: null,
+					last_error: null,
+					created_at: now,
+					updated_at: now,
+				})
+				.onConflict((oc) =>
+					oc.column("email_address").doUpdateSet({
+						label: oauthState.label,
+						provider_kind: "gmail",
+						sync_enabled: 1,
+						sync_status: "idle",
+						source_truth: "corpus_mirror",
+						selected_mailbox: selectedMailbox,
+						last_error: null,
+						updated_at: now,
+					}),
+				)
+				.execute();
 
-			const accountId = existingAccount?.id ?? crypto.randomUUID();
+			const account = await db
+				.selectFrom("accounts")
+				.select(["id"])
+				.where("email_address", "=", normalizedEmail)
+				.executeTakeFirstOrThrow();
+			const accountId = account.id;
 			trace.add({
 				account_id: accountId,
 			});
-			const selectedMailbox =
-				existingAccount?.selected_mailbox?.trim() || "[Gmail]/All Mail";
-
-			if (existingAccount) {
-				await db
-					.updateTable("accounts")
-					.set({
-						label: oauthState.label,
-						email_address: normalizedEmail,
-						provider_kind: "gmail",
-						sync_enabled: 1,
-						sync_status: "idle",
-						source_truth: "corpus_mirror",
-						selected_mailbox: selectedMailbox,
-						last_error: null,
-						updated_at: now,
-					})
-					.where("id", "=", accountId)
-					.execute();
-			} else {
-				await db
-					.insertInto("accounts")
-					.values({
-						id: accountId,
-						label: oauthState.label,
-						email_address: normalizedEmail,
-						provider_kind: "gmail",
-						sync_enabled: 1,
-						sync_status: "idle",
-						source_truth: "corpus_mirror",
-						selected_mailbox: selectedMailbox,
-						last_synced_at: null,
-						last_error: null,
-						created_at: now,
-						updated_at: now,
-					})
-					.execute();
-			}
 
 			oauth.writeOAuthToken(accountId, record);
 

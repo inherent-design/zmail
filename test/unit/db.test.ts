@@ -129,4 +129,30 @@ describe("db", () => {
 		expect(account.selected_mailbox).toBe("[Gmail]/All Mail");
 		expect(account.updated_at).toBeTruthy();
 	});
+
+	it("enforces unique account email addresses", async () => {
+		await createTestRuntime();
+		const { bootDb } = await import("#/test/helpers/db");
+		const { db } = await bootDb({ seedDefaultAccount: true });
+
+		await expect(
+			db
+				.insertInto("accounts")
+				.values({
+					id: "acct-2",
+					label: "Duplicate",
+					email_address: "acct-1@example.com",
+					provider_kind: "gmail",
+					sync_enabled: 1,
+					sync_status: "idle",
+					source_truth: "corpus_mirror",
+					selected_mailbox: "[Gmail]/All Mail",
+					last_synced_at: null,
+					last_error: null,
+					created_at: "2026-01-01T00:00:00.000Z",
+					updated_at: "2026-01-01T00:00:00.000Z",
+				})
+				.execute(),
+		).rejects.toThrow(/accounts_email_address_idx|accounts.email_address/);
+	});
 });
