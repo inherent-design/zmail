@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import type { FetchQueryObject } from "imapflow";
 import type { Kysely, Transaction } from "kysely";
 
 import { APP_CONFIG, nowIso } from "#/lib/config";
@@ -973,11 +974,15 @@ export async function runReconcile(accountId: string, trace?: LogTrace) {
 
 			try {
 				const remoteIds = new Set<string>();
+				const reconcileFetchQuery: FetchQueryObject & {
+					emailId: true;
+				} = {
+					uid: true,
+					emailId: true,
+				};
 				for await (const msg of client.fetch(
 					`${earliestUidCursor}:${latestUidCursor}`,
-					{
-						uid: true,
-					},
+					reconcileFetchQuery,
 					{ uid: true },
 				)) {
 					const extra = msg as unknown as Record<string, unknown>;
@@ -1070,55 +1075,55 @@ async function ingestMessage(
 
 	if (existing) {
 		const now = nowIso();
-		await db
-			.updateTable("message_sources")
-			.set({
-				last_seen_at: now,
-				imap_uid: msg.uid,
-				uidvalidity,
-				state: "active",
-				tombstoned_at: null,
-				updated_at: now,
-			})
-			.where("id", "=", existing.id)
-			.execute();
-
-		if (existing.raw_sha256 !== msg.sha256) {
-			const rawPath = writeRawEml(accountId, msg.gmMsgId, msg.raw);
-			const parsed = await parseRawMessage(msg.raw, msg.sha256);
-			if (parsed.parseStatus === "error") {
-				trace?.info("sync.message.parse_error", {
-					outcome: "parse_error",
-					remote_message_id: msg.gmMsgId,
-					uid: msg.uid,
-				});
-			}
-			const receivedAtFallback = msg.internalDate.toISOString();
-			await db.transaction().execute(async (trx) => {
-				await trx
-					.updateTable("messages")
-					.set(parsedMessageValues(parsed, msg.raw.length, receivedAtFallback))
-					.where("id", "=", existing.message_id)
-					.execute();
-				await replaceAttachments(trx, existing.message_id, parsed.attachments);
-
-				await trx
-					.updateTable("message_sources")
-					.set({
-						last_seen_at: now,
-						imap_uid: msg.uid,
-						uidvalidity,
-						state: "active",
-						tombstoned_at: null,
-						raw_rfc822_path: rawPath,
-						raw_sha256: msg.sha256,
-						updated_at: now,
-					})
-					.where("id", "=", existing.id)
-					.execute();
-			});
+		if (existing.raw_sha256 === msg.sha256) {
+			await db
+				.updateTable("message_sources")
+				.set({
+					last_seen_at: now,
+					imap_uid: msg.uid,
+					uidvalidity,
+					state: "active",
+					tombstoned_at: null,
+					updated_at: now,
+				})
+				.where("id", "=", existing.id)
+				.execute();
 			return;
 		}
+
+		const rawPath = writeRawEml(accountId, msg.gmMsgId, msg.raw);
+		const parsed = await parseRawMessage(msg.raw, msg.sha256);
+		if (parsed.parseStatus === "error") {
+			trace?.info("sync.message.parse_error", {
+				outcome: "parse_error",
+				remote_message_id: msg.gmMsgId,
+				uid: msg.uid,
+			});
+		}
+		const receivedAtFallback = msg.internalDate.toISOString();
+		await db.transaction().execute(async (trx) => {
+			await trx
+				.updateTable("messages")
+				.set(parsedMessageValues(parsed, msg.raw.length, receivedAtFallback))
+				.where("id", "=", existing.message_id)
+				.execute();
+			await replaceAttachments(trx, existing.message_id, parsed.attachments);
+
+			await trx
+				.updateTable("message_sources")
+				.set({
+					last_seen_at: now,
+					imap_uid: msg.uid,
+					uidvalidity,
+					state: "active",
+					tombstoned_at: null,
+					raw_rfc822_path: rawPath,
+					raw_sha256: msg.sha256,
+					updated_at: now,
+				})
+				.where("id", "=", existing.id)
+				.execute();
+		});
 		return;
 	}
 
