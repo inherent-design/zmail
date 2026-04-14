@@ -16,12 +16,14 @@ describe("worker edge cases", () => {
 		expect(globalThis.__zmailWorkerStarted__).toBeUndefined();
 	});
 
-	it("starts once when RUN_WORKER is true", async () => {
+	it("resets the worker latch after an in-loop crash and allows restart", async () => {
 		vi.useFakeTimers();
 		const runtime = await createTestRuntime();
 		process.env.RUN_WORKER = "true";
 		process.env.ZMAIL_WORKER_POLL_MS = "1";
 		vi.resetModules();
+		const log = createMockLogModule();
+		vi.doMock("#/lib/log", () => log.module);
 
 		const runMigrations = vi.fn();
 		const requeueExpiredJobs = vi.fn();
@@ -30,6 +32,10 @@ describe("worker edge cases", () => {
 			.mockReturnValueOnce(null)
 			.mockImplementationOnce(() => {
 				throw new Error("stop-loop");
+			})
+			.mockReturnValueOnce(null)
+			.mockImplementationOnce(() => {
+				throw new Error("stop-loop-restarted");
 			});
 
 		vi.doMock("#/lib/db", () => ({
@@ -41,7 +47,7 @@ describe("worker edge cases", () => {
 			completeJob: vi.fn(),
 			extendJobLease: vi.fn(),
 			failJob: vi.fn(),
-			queueJob: vi.fn(),
+			queueJobIdempotent: vi.fn(),
 			requeueExpiredJobs,
 			updateJob: vi.fn(),
 		}));
@@ -68,14 +74,38 @@ describe("worker edge cases", () => {
 
 		worker.ensureWorkerStarted();
 		worker.ensureWorkerStarted();
-		const loopPromise = globalThis.__zmailWorkerLoop__?.catch(() => undefined);
+		const firstLoopPromise = globalThis.__zmailWorkerLoop__;
 		await vi.advanceTimersByTimeAsync(50);
-		await loopPromise;
+		await firstLoopPromise;
 
-		expect(globalThis.__zmailWorkerStarted__).toBe(true);
-		expect(runMigrations).toHaveBeenCalled();
-		expect(requeueExpiredJobs).toHaveBeenCalled();
+		expect(runMigrations).toHaveBeenCalledTimes(1);
+		expect(requeueExpiredJobs).toHaveBeenCalledTimes(1);
 		expect(claimNextJob).toHaveBeenCalledTimes(2);
+		expect(globalThis.__zmailWorkerStarted__).toBe(false);
+		expect(globalThis.__zmailWorkerLoop__).toBeUndefined();
+		expect(
+			log.records.filter(
+				(record) =>
+					record.type === "fail" && record.event === "worker.loop_crashed",
+			),
+		).toHaveLength(1);
+
+		worker.ensureWorkerStarted();
+		const secondLoopPromise = globalThis.__zmailWorkerLoop__;
+		await vi.advanceTimersByTimeAsync(50);
+		await secondLoopPromise;
+
+		expect(runMigrations).toHaveBeenCalledTimes(2);
+		expect(requeueExpiredJobs).toHaveBeenCalledTimes(2);
+		expect(claimNextJob).toHaveBeenCalledTimes(4);
+		expect(globalThis.__zmailWorkerStarted__).toBe(false);
+		expect(globalThis.__zmailWorkerLoop__).toBeUndefined();
+		expect(
+			log.records.filter(
+				(record) =>
+					record.type === "fail" && record.event === "worker.loop_crashed",
+			),
+		).toHaveLength(2);
 		vi.useRealTimers();
 	});
 
@@ -139,6 +169,92 @@ describe("worker edge cases", () => {
 		expect(runMigrations).toHaveBeenCalled();
 		expect(requeueExpiredJobs).toHaveBeenCalled();
 		expect(claimNextJob).toHaveBeenCalledTimes(2);
+		vi.useRealTimers();
+	});
+
+	it("resets the worker latch after startup failure and logs the crash", async () => {
+		vi.useFakeTimers();
+		const runtime = await createTestRuntime();
+		process.env.RUN_WORKER = "true";
+		process.env.ZMAIL_WORKER_POLL_MS = "1";
+		vi.resetModules();
+		const log = createMockLogModule();
+		vi.doMock("#/lib/log", () => log.module);
+
+		const runMigrations = vi
+			.fn()
+			.mockImplementationOnce(() => {
+				throw new Error("migration failed");
+			})
+			.mockImplementation(() => undefined);
+		const requeueExpiredJobs = vi.fn();
+		const claimNextJob = vi
+			.fn()
+			.mockReturnValueOnce(null)
+			.mockImplementationOnce(() => {
+				throw new Error("stop-loop-after-restart");
+			});
+
+		vi.doMock("#/lib/db", () => ({
+			getDb: vi.fn(),
+			runMigrations,
+		}));
+		vi.doMock("#/lib/jobs", () => ({
+			claimNextJob,
+			completeJob: vi.fn(),
+			extendJobLease: vi.fn(),
+			failJob: vi.fn(),
+			queueJobIdempotent: vi.fn(),
+			requeueExpiredJobs,
+			updateJob: vi.fn(),
+		}));
+		vi.doMock("#/lib/classify", () => ({
+			buildAttachmentSummary: vi.fn(),
+			classifyMessageNow: vi.fn(),
+			mergeAllowedTags: vi.fn(),
+		}));
+		vi.doMock("#/lib/moderation", () => ({
+			ensureModerationForMessage: vi.fn(),
+			topModerationScores: vi.fn(),
+		}));
+		vi.doMock("#/lib/overseer", () => ({
+			buildOverseerProfile: vi.fn(),
+			loadLatestOverseerContext: vi.fn(),
+			maybeQueueOverseerForAccount: vi.fn(),
+		}));
+		vi.doMock("#/lib/watchers", () => ({
+			restoreWatchers: vi.fn(async () => undefined),
+		}));
+
+		const worker =
+			await runtime.importFresh<typeof import("#/lib/worker")>("#/lib/worker");
+
+		worker.ensureWorkerStarted();
+		await globalThis.__zmailWorkerLoop__;
+
+		expect(runMigrations).toHaveBeenCalledTimes(1);
+		expect(requeueExpiredJobs).not.toHaveBeenCalled();
+		expect(globalThis.__zmailWorkerStarted__).toBe(false);
+		expect(globalThis.__zmailWorkerLoop__).toBeUndefined();
+		expect(log.records).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					type: "fail",
+					event: "worker.loop_crashed",
+				}),
+			]),
+		);
+
+		worker.ensureWorkerStarted();
+		const restartedLoopPromise = globalThis.__zmailWorkerLoop__;
+		await vi.advanceTimersByTimeAsync(50);
+		await restartedLoopPromise;
+
+		expect(runMigrations).toHaveBeenCalledTimes(2);
+		expect(requeueExpiredJobs).toHaveBeenCalledTimes(1);
+		expect(claimNextJob).toHaveBeenCalledTimes(2);
+		expect(globalThis.__zmailWorkerStarted__).toBe(false);
+		expect(globalThis.__zmailWorkerLoop__).toBeUndefined();
 		vi.useRealTimers();
 	});
 

@@ -30,7 +30,13 @@ export function accountRawDir(accountId: string) {
 	return resolve(accountDir(accountId), "raw");
 }
 
+const REMOTE_MESSAGE_ID_RE = /^[A-Za-z0-9_.-]+$/;
+
 export function rawEmlPath(accountId: string, remoteMessageId: string) {
+	if (!remoteMessageId || !REMOTE_MESSAGE_ID_RE.test(remoteMessageId)) {
+		throw new Error("Invalid remoteMessageId");
+	}
+
 	return resolve(accountRawDir(accountId), `${remoteMessageId}.eml`);
 }
 

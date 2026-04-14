@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -51,6 +52,36 @@ describe("imap", () => {
 		expect(path).toContain("acct-1");
 		expect(path).toContain("msg-abc.eml");
 		expect(existsSync(path)).toBe(true);
+	});
+
+	it("writeRawEml rejects traversal-like remote ids without touching files outside account raw storage", async () => {
+		const runtime = await createTestRuntime();
+		vi.resetModules();
+
+		const mod =
+			await runtime.importFresh<typeof import("#/lib/imap")>("#/lib/imap");
+		const config =
+			await runtime.importFresh<typeof import("#/lib/config")>("#/lib/config");
+		const raw = Buffer.from("raw email content");
+		const victimPath = resolve(config.ACCOUNTS_DIR, "victim.eml");
+
+		expect(() => mod.writeRawEml("acct-1", "../../victim", raw)).toThrow(
+			"Invalid remoteMessageId",
+		);
+		expect(existsSync(victimPath)).toBe(false);
+	});
+
+	it("writeRawEml rejects empty remote ids", async () => {
+		const runtime = await createTestRuntime();
+		vi.resetModules();
+
+		const mod =
+			await runtime.importFresh<typeof import("#/lib/imap")>("#/lib/imap");
+		const raw = Buffer.from("raw email content");
+
+		expect(() => mod.writeRawEml("acct-1", "", raw)).toThrow(
+			"Invalid remoteMessageId",
+		);
 	});
 
 	it("parseRawMessage parses a simple RFC822 message", async () => {
