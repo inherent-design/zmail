@@ -132,7 +132,50 @@ describe("imap", () => {
 		expect(parsed.ccJson).toBe("[]");
 	});
 
-	it("fetchMessageWindow maps Gmail ids, skips empty source, and limits results", async () => {
+	it("fetchMessageWindow uses a bounded range and skips empty source rows", async () => {
+		const runtime = await createTestRuntime();
+		vi.resetModules();
+
+		const mod =
+			await runtime.importFresh<typeof import("#/lib/imap")>("#/lib/imap");
+
+		const fetch = vi.fn(async function* () {
+			yield {
+				uid: 1,
+				source: undefined,
+				internalDate: new Date("2026-01-01T00:00:00.000Z"),
+			};
+			yield {
+				uid: 2,
+				source: Buffer.from("first"),
+				internalDate: new Date("2026-01-02T00:00:00.000Z"),
+				emailId: "gmail-id-2",
+				threadId: "thread-2",
+			};
+		});
+		const client = { fetch };
+
+		const messages = await mod.fetchMessageWindow(client as never, 1, 2);
+
+		expect(fetch).toHaveBeenCalledWith(
+			"1:2",
+			expect.objectContaining({
+				uid: true,
+				source: true,
+				internalDate: true,
+			}),
+			{ uid: true },
+		);
+		expect(messages).toHaveLength(1);
+		expect(messages[0]).toMatchObject({
+			uid: 2,
+			gmMsgId: "gmail-id-2",
+			gmThrid: "thread-2",
+			raw: Buffer.from("first"),
+		});
+	});
+
+	it("fetchMessageWindow maps Gmail ids within the requested bounded range", async () => {
 		const runtime = await createTestRuntime();
 		vi.resetModules();
 
@@ -141,11 +184,6 @@ describe("imap", () => {
 
 		const client = {
 			async *fetch() {
-				yield {
-					uid: 1,
-					source: undefined,
-					internalDate: new Date("2026-01-01T00:00:00.000Z"),
-				};
 				yield {
 					uid: 2,
 					source: Buffer.from("first"),
@@ -160,18 +198,10 @@ describe("imap", () => {
 					emailId: "gmail-id-3",
 					threadId: "thread-3",
 				};
-				yield {
-					uid: 4,
-					source: Buffer.from("third"),
-					internalDate: new Date("2026-01-04T00:00:00.000Z"),
-					emailId: "gmail-id-4",
-					threadId: "thread-4",
-				};
 			},
 		};
 
-		const messages = await mod.fetchMessageWindow(client as never, 1, 2);
-
+		const messages = await mod.fetchMessageWindow(client as never, 2, 2);
 		expect(messages).toHaveLength(2);
 		expect(messages[0]).toMatchObject({
 			uid: 2,
@@ -183,6 +213,21 @@ describe("imap", () => {
 		expect(messages[1].gmMsgId).toBe("gmail-id-3");
 		expect(messages[1].gmThrid).toBe("thread-3");
 		expect(messages[1].internalDate).toBeInstanceOf(Date);
+	});
+
+	it("fetchMessageWindow returns no messages when the window size is less than one", async () => {
+		const runtime = await createTestRuntime();
+		vi.resetModules();
+
+		const mod =
+			await runtime.importFresh<typeof import("#/lib/imap")>("#/lib/imap");
+		const fetch = vi.fn();
+		const client = { fetch };
+
+		await expect(
+			mod.fetchMessageWindow(client as never, 5, 0),
+		).resolves.toEqual([]);
+		expect(fetch).not.toHaveBeenCalled();
 	});
 
 	it("fetchMessageWindow falls back to x-gm fields when typed ids are missing", async () => {

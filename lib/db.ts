@@ -244,6 +244,88 @@ export async function resetDb() {
 	}
 }
 
+function getTableColumns(sqlite: Database.Database, tableName: string) {
+	return new Set(
+		(
+			sqlite.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{
+				name: string;
+			}>
+		).map((column) => column.name),
+	);
+}
+
+function hasTableColumns(
+	sqlite: Database.Database,
+	tableName: string,
+	requiredColumns: string[],
+) {
+	const columns = getTableColumns(sqlite, tableName);
+	return requiredColumns.every((column) => columns.has(column));
+}
+
+function lacksTableColumns(
+	sqlite: Database.Database,
+	tableName: string,
+	forbiddenColumns: string[],
+) {
+	const columns = getTableColumns(sqlite, tableName);
+	return forbiddenColumns.every((column) => !columns.has(column));
+}
+
+function isMigrationAlreadyReflected(sqlite: Database.Database, file: string) {
+	switch (file) {
+		case "002_jobs_live_cleanup.sql":
+			return (
+				hasTableColumns(sqlite, "jobs", [
+					"id",
+					"kind",
+					"scope_type",
+					"scope_id",
+					"status",
+					"model",
+					"prompt_version",
+					"request_count",
+					"success_count",
+					"error_count",
+					"claimed_at",
+					"lease_expires_at",
+					"attempts",
+					"last_error",
+					"created_at",
+					"started_at",
+					"finished_at",
+					"meta_json",
+				]) &&
+				lacksTableColumns(sqlite, "jobs", [
+					"batch_id",
+					"input_file_path",
+					"output_file_path",
+					"error_file_path",
+				])
+			);
+		case "003_account_sync_state_resumable_backfill.sql":
+			return (
+				hasTableColumns(sqlite, "account_sync_state", [
+					"latest_uid_cursor",
+					"earliest_uid_cursor",
+					"backfill_snapshot_uid",
+					"backfill_next_uid",
+					"last_bootstrap_started_at",
+					"last_bootstrap_completed_at",
+					"last_backfill_sync_at",
+					"backfill_completed_at",
+				]) &&
+				lacksTableColumns(sqlite, "account_sync_state", [
+					"last_seen_uid",
+					"last_full_sync_started_at",
+					"last_full_sync_completed_at",
+				])
+			);
+		default:
+			return false;
+	}
+}
+
 export function runMigrations() {
 	const sqlite = getSqlite();
 	sqlite.exec(`
@@ -263,16 +345,23 @@ export function runMigrations() {
 			.all()
 			.map((row) => String((row as { name: string }).name)),
 	);
+	const insertMigration = sqlite.prepare(
+		"INSERT INTO _migrations (name, applied_at) VALUES (?, ?)",
+	);
 
 	for (const file of files) {
 		if (applied.has(file)) {
 			continue;
 		}
+		if (isMigrationAlreadyReflected(sqlite, file)) {
+			insertMigration.run(file, nowIso());
+			applied.add(file);
+			continue;
+		}
 		const sql = readFileSync(resolve(MIGRATIONS_DIR, file), "utf8");
 		sqlite.exec(sql);
-		sqlite
-			.prepare("INSERT INTO _migrations (name, applied_at) VALUES (?, ?)")
-			.run(file, nowIso());
+		insertMigration.run(file, nowIso());
+		applied.add(file);
 	}
 }
 

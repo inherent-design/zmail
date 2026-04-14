@@ -79,38 +79,12 @@ export async function fetchMessageWindow(
 	startUid: number,
 	windowSize: number,
 ): Promise<FetchedMessage[]> {
-	const messages: FetchedMessage[] = [];
-	const range = `${startUid}:*`;
-
-	let count = 0;
-	for await (const msg of client.fetch(
-		range,
-		{
-			uid: true,
-			source: true,
-			internalDate: true,
-			threadId: true,
-			labels: true,
-			headers: false,
-		},
-		{ uid: true },
-	)) {
-		if (count >= windowSize) {
-			break;
-		}
-
-		const mapped = mapFetchedMessage(
-			msg as typeof msg & Record<string, unknown>,
-		);
-		if (!mapped) {
-			continue;
-		}
-
-		messages.push(mapped);
-		count += 1;
+	if (windowSize < 1) {
+		return [];
 	}
 
-	return messages;
+	const endUid = startUid + windowSize - 1;
+	return fetchMessageRange(client, startUid, endUid);
 }
 
 export async function fetchMessageRange(
