@@ -21,13 +21,14 @@ export async function seedTestAccount(
 ) {
 	const { nowIso } = await import("#/lib/config");
 	const id = input?.id ?? "acct-1";
+	const emailAddress = input?.emailAddress ?? `${id}@example.com`;
 
 	await db
 		.insertInto("accounts")
 		.values({
 			id,
 			label: input?.label ?? "Test Account",
-			email_address: input?.emailAddress ?? "test@example.com",
+			email_address: emailAddress,
 			provider_kind: "gmail",
 			sync_enabled: input?.syncEnabled ?? 1,
 			sync_status: input?.syncStatus ?? "idle",
@@ -41,7 +42,7 @@ export async function seedTestAccount(
 		.onConflict((oc) =>
 			oc.column("id").doUpdateSet({
 				label: input?.label ?? "Test Account",
-				email_address: input?.emailAddress ?? "test@example.com",
+				email_address: emailAddress,
 				sync_enabled: input?.syncEnabled ?? 1,
 				sync_status: input?.syncStatus ?? "idle",
 				updated_at: nowIso(),
