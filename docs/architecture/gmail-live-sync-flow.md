@@ -201,6 +201,16 @@ For an already-known synced message:
 
 Duplicate stored data is prevented by the existing `message_sources` identity checks and the unique `(account_id, remote_message_id)` index.
 
+Current model notes:
+
+- `messages.received_at` is the user-facing message time
+- `messages.created_at` is still the current row creation timestamp
+- `messages.thread_key` is only a heuristic thread surrogate
+- `message_sources.remote_thread_id` already carries the Gmail-native thread identity
+- forwarded and parse-error body extraction remain best-effort in v1
+
+The planned message-model refactor is specified in [message-model-v2.md](../specs/message-model-v2.md).
+
 ## Classification Backlog Flow
 
 `classify_account_backlog` executes `classifyAccountBacklogJob()`.
