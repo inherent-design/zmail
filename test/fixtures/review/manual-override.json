@@ -1,0 +1,32 @@
+{
+	"schemaVersion": "message-label.v1",
+	"nsfw": false,
+	"finance": {
+		"relevant": true,
+		"direction": "expense",
+		"owner": "business",
+		"accountHint": "amex",
+		"purpose": "client lunch"
+	},
+	"social": {
+		"personal": false,
+		"private": false,
+		"social": false,
+		"business": true
+	},
+	"risk": {
+		"businessSensitive": false,
+		"leakRisk": false
+	},
+	"routing": {
+		"primaryBucket": "finance",
+		"tags": ["receipt", "meals"]
+	},
+	"confidence": {
+		"overall": 1,
+		"finance": 1,
+		"social": 1,
+		"risk": 1
+	},
+	"explanation": "Manual override for review coverage."
+}

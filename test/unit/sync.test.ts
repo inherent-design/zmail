@@ -1,0 +1,2015 @@
+import { describe, expect, it, vi } from "vitest";
+
+import { bootDb, seedTestAccount } from "#/test/helpers/db";
+import { createMockLogModule } from "#/test/helpers/log";
+import { createTestRuntime } from "#/test/helpers/runtime";
+
+async function insertSyncState(
+	accountId: string,
+	input?: Partial<{
+		uidvalidity: number | null;
+		latest_uid_cursor: number | null;
+		earliest_uid_cursor: number | null;
+		backfill_snapshot_uid: number | null;
+		backfill_next_uid: number | null;
+		last_bootstrap_started_at: string | null;
+		last_bootstrap_completed_at: string | null;
+		last_delta_sync_at: string | null;
+		last_reconcile_at: string | null;
+		last_backfill_sync_at: string | null;
+		backfill_completed_at: string | null;
+		watcher_status: string;
+		consecutive_failures: number;
+		backoff_until: string | null;
+	}>,
+) {
+	const { getDb } = await import("#/lib/db");
+	const db = getDb();
+	const now = "2026-01-01T00:00:00.000Z";
+	await db
+		.insertInto("account_sync_state")
+		.values({
+			account_id: accountId,
+			uidvalidity:
+				input && "uidvalidity" in input ? (input.uidvalidity ?? null) : 100,
+			latest_uid_cursor: input?.latest_uid_cursor ?? null,
+			earliest_uid_cursor: input?.earliest_uid_cursor ?? null,
+			backfill_snapshot_uid: input?.backfill_snapshot_uid ?? null,
+			backfill_next_uid: input?.backfill_next_uid ?? null,
+			last_bootstrap_started_at:
+				input && "last_bootstrap_started_at" in input
+					? (input.last_bootstrap_started_at ?? null)
+					: now,
+			last_bootstrap_completed_at:
+				input && "last_bootstrap_completed_at" in input
+					? (input.last_bootstrap_completed_at ?? null)
+					: now,
+			last_delta_sync_at: input?.last_delta_sync_at ?? null,
+			last_reconcile_at: input?.last_reconcile_at ?? null,
+			last_backfill_sync_at: input?.last_backfill_sync_at ?? null,
+			backfill_completed_at: input?.backfill_completed_at ?? null,
+			last_idle_started_at: null,
+			last_idle_heartbeat_at: null,
+			watcher_status: input?.watcher_status ?? "stopped",
+			consecutive_failures: input?.consecutive_failures ?? 0,
+			backoff_until: input?.backoff_until ?? null,
+			created_at: now,
+			updated_at: now,
+		})
+		.execute();
+}
+
+function createMockClient(
+	fetchImpl?: () => AsyncGenerator<Record<string, unknown>>,
+) {
+	return {
+		connect: vi.fn(async () => undefined),
+		getMailboxLock: vi.fn(async () => ({
+			release: vi.fn(),
+		})),
+		logout: vi.fn(async () => undefined),
+		fetch:
+			fetchImpl ??
+			async function* () {
+				yield* [];
+			},
+	};
+}
+
+function createParsedMessage(id: string, sha: string) {
+	return {
+		id,
+		messageId: `<${id}@example.com>`,
+		threadKey: `thread-${id}`,
+		receivedAt: "2026-01-01T00:00:00.000Z",
+		senderName: "Sender",
+		senderAddress: "sender@example.com",
+		toJson: "[]",
+		ccJson: "[]",
+		subject: `Subject ${id}`,
+		inReplyTo: null,
+		bodyTextNormalized: "body",
+		snippet: "body",
+		attachmentCount: 0,
+		hasHtml: 0,
+		parseStatus: "parsed",
+		tokenEstimate: 1,
+		contentSha256: sha,
+		attachments: [],
+	};
+}
+
+function createFetchedMessage(uid: number) {
+	return {
+		uid,
+		gmMsgId: `gm-${uid}`,
+		gmThrid: `thr-${uid}`,
+		internalDate: new Date(
+			`2026-01-${String(uid).padStart(2, "0")}T00:00:00.000Z`,
+		),
+		raw: Buffer.from(`raw-${uid}`),
+		sha256: `sha-${uid}`,
+	};
+}
+
+function mockFreshToken(accessToken: string | null) {
+	vi.doMock("#/lib/google-oauth", () => ({
+		ensureFreshToken: vi.fn(async () =>
+			accessToken === null ? null : { accessToken },
+		),
+	}));
+}
+
+function mockQueueJobIdempotent(
+	impl: (input: {
+		kind: string;
+		scopeType: string;
+		scopeId: string;
+	}) => Promise<string | null> = async () => null,
+) {
+	const queueJobIdempotent = vi.fn(impl);
+	vi.doMock("#/lib/jobs", () => ({
+		queueJobIdempotent,
+	}));
+	return queueJobIdempotent;
+}
+
+function mockImap(input?: {
+	client?: ReturnType<typeof createMockClient>;
+	fetchMessageRange?: (...args: unknown[]) => Promise<unknown[]>;
+	fetchMessageWindowDescending?: (...args: unknown[]) => Promise<unknown[]>;
+	getMailboxStatus?: (...args: unknown[]) => Promise<{
+		uidvalidity: number;
+		uidNext: number;
+		messageCount: number;
+	}>;
+	parseRawMessage?: (...args: unknown[]) => Promise<unknown>;
+	writeRawEml?: (...args: unknown[]) => string;
+}) {
+	const client = input?.client ?? createMockClient();
+	const fetchMessageRange = vi.fn(input?.fetchMessageRange ?? (async () => []));
+	const fetchMessageWindowDescending = vi.fn(
+		input?.fetchMessageWindowDescending ?? (async () => []),
+	);
+	const getMailboxStatus = vi.fn(
+		input?.getMailboxStatus ??
+			(async () => ({
+				uidvalidity: 100,
+				uidNext: 1,
+				messageCount: 0,
+			})),
+	);
+	const parseRawMessage = vi.fn(
+		input?.parseRawMessage ??
+			(async (_raw: Buffer, sha: string) =>
+				createParsedMessage(`msg-${sha}`, sha)),
+	);
+	const writeRawEml = vi.fn(input?.writeRawEml ?? (() => "/tmp/raw.eml"));
+
+	vi.doMock("#/lib/imap", () => ({
+		createImapClient: vi.fn(() => client),
+		fetchMessageRange,
+		fetchMessageWindowDescending,
+		getMailboxStatus,
+		parseRawMessage,
+		writeRawEml,
+	}));
+
+	return {
+		client,
+		fetchMessageRange,
+		fetchMessageWindowDescending,
+		getMailboxStatus,
+		parseRawMessage,
+		writeRawEml,
+	};
+}
+
+describe("sync", () => {
+	it("bootstraps the newest window and seeds resumable backfill cursors", async () => {
+		const runtime = await createTestRuntime();
+		process.env.ZMAIL_IMAP_FETCH_WINDOW = "3";
+		vi.resetModules();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-bootstrap",
+			syncEnabled: 1,
+		});
+
+		const queueJobIdempotent = vi.fn(async () => "job-backfill");
+		const fetchMessageRange = vi.fn(async () => [
+			createFetchedMessage(3),
+			createFetchedMessage(4),
+			createFetchedMessage(5),
+		]);
+		const client = createMockClient();
+
+		vi.doMock("#/lib/google-oauth", () => ({
+			ensureFreshToken: vi.fn(async () => ({
+				accessToken: "access-token",
+			})),
+		}));
+		vi.doMock("#/lib/jobs", () => ({
+			queueJobIdempotent,
+		}));
+		vi.doMock("#/lib/imap", () => ({
+			createImapClient: vi.fn(() => client),
+			fetchMessageRange,
+			fetchMessageWindowDescending: vi.fn(),
+			getMailboxStatus: vi.fn(async () => ({
+				uidvalidity: 111,
+				uidNext: 6,
+				messageCount: 5,
+			})),
+			parseRawMessage: vi.fn(async (_raw: Buffer, sha: string) =>
+				createParsedMessage(`msg-${sha}`, sha),
+			),
+			writeRawEml: vi.fn(() => "/tmp/raw.eml"),
+		}));
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		const result = await sync.runFullSync("acct-bootstrap");
+
+		expect(result).toMatchObject({
+			skipped: false,
+			phase: "bootstrap",
+			fetched: 3,
+			latestUidCursor: 5,
+			earliestUidCursor: 3,
+			backfillSnapshotUid: 5,
+			backfillNextUid: 2,
+			queuedBackfill: true,
+		});
+		expect(fetchMessageRange).toHaveBeenCalledWith(expect.anything(), 3, 5);
+		expect(queueJobIdempotent).toHaveBeenCalledWith({
+			kind: "sync_account_backfill",
+			scopeType: "account",
+			scopeId: "acct-bootstrap",
+		});
+
+		const syncState = await db
+			.selectFrom("account_sync_state")
+			.selectAll()
+			.where("account_id", "=", "acct-bootstrap")
+			.executeTakeFirstOrThrow();
+		expect(syncState).toMatchObject({
+			uidvalidity: 111,
+			latest_uid_cursor: 5,
+			earliest_uid_cursor: 3,
+			backfill_snapshot_uid: 5,
+			backfill_next_uid: 2,
+		});
+
+		const account = await db
+			.selectFrom("accounts")
+			.select(["sync_status"])
+			.where("id", "=", "acct-bootstrap")
+			.executeTakeFirstOrThrow();
+		expect(account.sync_status).toBe("backfilling");
+	});
+
+	it("completes bootstrap immediately for an empty mailbox", async () => {
+		const runtime = await createTestRuntime();
+		await bootDb();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-empty",
+			syncEnabled: 1,
+		});
+
+		vi.doMock("#/lib/google-oauth", () => ({
+			ensureFreshToken: vi.fn(async () => ({
+				accessToken: "access-token",
+			})),
+		}));
+		vi.doMock("#/lib/jobs", () => ({
+			queueJobIdempotent: vi.fn(async () => "job"),
+		}));
+		vi.doMock("#/lib/imap", () => ({
+			createImapClient: vi.fn(() => createMockClient()),
+			fetchMessageRange: vi.fn(),
+			fetchMessageWindowDescending: vi.fn(),
+			getMailboxStatus: vi.fn(async () => ({
+				uidvalidity: 222,
+				uidNext: 1,
+				messageCount: 0,
+			})),
+			parseRawMessage: vi.fn(),
+			writeRawEml: vi.fn(),
+		}));
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		const result = await sync.runFullSync("acct-empty");
+
+		expect(result).toMatchObject({
+			phase: "bootstrap",
+			fetched: 0,
+			backfillNextUid: null,
+			queuedBackfill: false,
+		});
+		const syncState = await db
+			.selectFrom("account_sync_state")
+			.select(["backfill_completed_at", "latest_uid_cursor"])
+			.where("account_id", "=", "acct-empty")
+			.executeTakeFirstOrThrow();
+		expect(syncState.latest_uid_cursor).toBeNull();
+		expect(syncState.backfill_completed_at).toBeTruthy();
+	});
+
+	it("resumes an existing epoch, advances one head window, and queues follow-up work", async () => {
+		const runtime = await createTestRuntime();
+		process.env.ZMAIL_IMAP_FETCH_WINDOW = "2";
+		vi.resetModules();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-resume",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-resume", {
+			uidvalidity: 100,
+			latest_uid_cursor: 5,
+			earliest_uid_cursor: 1,
+			backfill_snapshot_uid: 5,
+			backfill_next_uid: 4,
+		});
+
+		const queueJobIdempotent = vi.fn(async () => "job-next");
+		vi.doMock("#/lib/google-oauth", () => ({
+			ensureFreshToken: vi.fn(async () => ({
+				accessToken: "access-token",
+			})),
+		}));
+		vi.doMock("#/lib/jobs", () => ({
+			queueJobIdempotent,
+		}));
+		vi.doMock("#/lib/imap", () => ({
+			createImapClient: vi.fn(() => createMockClient()),
+			fetchMessageRange: vi.fn(async () => [
+				createFetchedMessage(6),
+				createFetchedMessage(7),
+			]),
+			fetchMessageWindowDescending: vi.fn(),
+			getMailboxStatus: vi.fn(async () => ({
+				uidvalidity: 100,
+				uidNext: 10,
+				messageCount: 9,
+			})),
+			parseRawMessage: vi.fn(async (_raw: Buffer, sha: string) =>
+				createParsedMessage(`msg-${sha}`, sha),
+			),
+			writeRawEml: vi.fn(() => "/tmp/raw.eml"),
+		}));
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		const result = await sync.runFullSync("acct-resume");
+
+		expect(result).toMatchObject({
+			phase: "resume",
+			fetched: 2,
+			latestUidCursor: 7,
+			backfillNextUid: 4,
+			queuedBackfill: true,
+			queuedDelta: true,
+		});
+		expect(queueJobIdempotent).toHaveBeenCalledWith({
+			kind: "sync_account_delta",
+			scopeType: "account",
+			scopeId: "acct-resume",
+		});
+		expect(queueJobIdempotent).toHaveBeenCalledWith({
+			kind: "sync_account_backfill",
+			scopeType: "account",
+			scopeId: "acct-resume",
+		});
+	});
+
+	it("delta sync ingests one head window and requeues more head work", async () => {
+		const runtime = await createTestRuntime();
+		process.env.ZMAIL_IMAP_FETCH_WINDOW = "2";
+		vi.resetModules();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-delta",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-delta", {
+			uidvalidity: 100,
+			latest_uid_cursor: 4,
+			earliest_uid_cursor: 1,
+			backfill_snapshot_uid: 4,
+			backfill_next_uid: 2,
+		});
+
+		const queueJobIdempotent = vi.fn(async () => "job-next");
+		vi.doMock("#/lib/google-oauth", () => ({
+			ensureFreshToken: vi.fn(async () => ({
+				accessToken: "access-token",
+			})),
+		}));
+		vi.doMock("#/lib/jobs", () => ({
+			queueJobIdempotent,
+		}));
+		vi.doMock("#/lib/imap", () => ({
+			createImapClient: vi.fn(() => createMockClient()),
+			fetchMessageRange: vi.fn(async () => [
+				createFetchedMessage(5),
+				createFetchedMessage(6),
+			]),
+			fetchMessageWindowDescending: vi.fn(),
+			getMailboxStatus: vi.fn(async () => ({
+				uidvalidity: 100,
+				uidNext: 9,
+				messageCount: 8,
+			})),
+			parseRawMessage: vi.fn(async (_raw: Buffer, sha: string) =>
+				createParsedMessage(`msg-${sha}`, sha),
+			),
+			writeRawEml: vi.fn(() => "/tmp/raw.eml"),
+		}));
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		const result = await sync.runDeltaSync("acct-delta");
+
+		expect(result).toMatchObject({
+			fetched: 2,
+			uidvalidityChanged: false,
+			latestUidCursor: 6,
+			backfillNextUid: 2,
+			queuedMore: true,
+		});
+
+		const syncState = await db
+			.selectFrom("account_sync_state")
+			.select(["latest_uid_cursor"])
+			.where("account_id", "=", "acct-delta")
+			.executeTakeFirstOrThrow();
+		expect(syncState.latest_uid_cursor).toBe(6);
+	});
+
+	it("delta sync marks resync_required and queues bootstrap when uidvalidity drifts", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-drift",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-drift", {
+			uidvalidity: 100,
+			latest_uid_cursor: 5,
+			earliest_uid_cursor: 1,
+			backfill_snapshot_uid: 5,
+			backfill_next_uid: null,
+		});
+
+		const queueJobIdempotent = vi.fn(async () => "job-full");
+		vi.doMock("#/lib/google-oauth", () => ({
+			ensureFreshToken: vi.fn(async () => ({
+				accessToken: "access-token",
+			})),
+		}));
+		vi.doMock("#/lib/jobs", () => ({
+			queueJobIdempotent,
+		}));
+		vi.doMock("#/lib/imap", () => ({
+			createImapClient: vi.fn(() => createMockClient()),
+			fetchMessageRange: vi.fn(),
+			fetchMessageWindowDescending: vi.fn(),
+			getMailboxStatus: vi.fn(async () => ({
+				uidvalidity: 101,
+				uidNext: 6,
+				messageCount: 5,
+			})),
+			parseRawMessage: vi.fn(),
+			writeRawEml: vi.fn(),
+		}));
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		const result = await sync.runDeltaSync("acct-drift");
+
+		expect(result.uidvalidityChanged).toBe(true);
+		expect(queueJobIdempotent).toHaveBeenCalledWith({
+			kind: "sync_account_full",
+			scopeType: "account",
+			scopeId: "acct-drift",
+		});
+
+		const account = await db
+			.selectFrom("accounts")
+			.select(["sync_status"])
+			.where("id", "=", "acct-drift")
+			.executeTakeFirstOrThrow();
+		expect(account.sync_status).toBe("resync_required");
+	});
+
+	it("backfill sync processes one descending window and requeues more history", async () => {
+		const runtime = await createTestRuntime();
+		process.env.ZMAIL_IMAP_FETCH_WINDOW = "3";
+		vi.resetModules();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-backfill",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-backfill", {
+			uidvalidity: 100,
+			latest_uid_cursor: 10,
+			earliest_uid_cursor: 6,
+			backfill_snapshot_uid: 10,
+			backfill_next_uid: 5,
+		});
+
+		const queueJobIdempotent = vi.fn(async () => "job-backfill");
+		vi.doMock("#/lib/google-oauth", () => ({
+			ensureFreshToken: vi.fn(async () => ({
+				accessToken: "access-token",
+			})),
+		}));
+		vi.doMock("#/lib/jobs", () => ({
+			queueJobIdempotent,
+		}));
+		vi.doMock("#/lib/imap", () => ({
+			createImapClient: vi.fn(() => createMockClient()),
+			fetchMessageRange: vi.fn(),
+			fetchMessageWindowDescending: vi.fn(async () => [
+				createFetchedMessage(5),
+				createFetchedMessage(4),
+				createFetchedMessage(3),
+			]),
+			getMailboxStatus: vi.fn(async () => ({
+				uidvalidity: 100,
+				uidNext: 11,
+				messageCount: 10,
+			})),
+			parseRawMessage: vi.fn(async (_raw: Buffer, sha: string) =>
+				createParsedMessage(`msg-${sha}`, sha),
+			),
+			writeRawEml: vi.fn(() => "/tmp/raw.eml"),
+		}));
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		const result = await sync.runBackfillSync("acct-backfill");
+
+		expect(result).toMatchObject({
+			fetched: 3,
+			earliestUidCursor: 3,
+			backfillNextUid: 2,
+			rangeStart: 3,
+			rangeEnd: 5,
+			queuedMore: true,
+		});
+	});
+
+	it("backfill sync completes at uid 1 and returns the account to idle", async () => {
+		const runtime = await createTestRuntime();
+		process.env.ZMAIL_IMAP_FETCH_WINDOW = "3";
+		vi.resetModules();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-backfill-final",
+			syncEnabled: 1,
+			syncStatus: "backfilling",
+		});
+		await insertSyncState("acct-backfill-final", {
+			uidvalidity: 100,
+			latest_uid_cursor: 10,
+			earliest_uid_cursor: 3,
+			backfill_snapshot_uid: 10,
+			backfill_next_uid: 2,
+		});
+
+		vi.doMock("#/lib/google-oauth", () => ({
+			ensureFreshToken: vi.fn(async () => ({
+				accessToken: "access-token",
+			})),
+		}));
+		vi.doMock("#/lib/jobs", () => ({
+			queueJobIdempotent: vi.fn(async () => "job-backfill"),
+		}));
+		vi.doMock("#/lib/imap", () => ({
+			createImapClient: vi.fn(() => createMockClient()),
+			fetchMessageRange: vi.fn(),
+			fetchMessageWindowDescending: vi.fn(async () => [
+				createFetchedMessage(2),
+				createFetchedMessage(1),
+			]),
+			getMailboxStatus: vi.fn(async () => ({
+				uidvalidity: 100,
+				uidNext: 11,
+				messageCount: 10,
+			})),
+			parseRawMessage: vi.fn(async (_raw: Buffer, sha: string) =>
+				createParsedMessage(`msg-${sha}`, sha),
+			),
+			writeRawEml: vi.fn(() => "/tmp/raw.eml"),
+		}));
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		const result = await sync.runBackfillSync("acct-backfill-final");
+
+		expect(result.backfillNextUid).toBeNull();
+		const account = await db
+			.selectFrom("accounts")
+			.select(["sync_status"])
+			.where("id", "=", "acct-backfill-final")
+			.executeTakeFirstOrThrow();
+		expect(account.sync_status).toBe("idle");
+	});
+
+	it("skips remote sync work for paused accounts", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-paused",
+			syncEnabled: 0,
+			syncStatus: "paused",
+		});
+
+		const ensureFreshToken = vi.fn();
+		vi.doMock("#/lib/google-oauth", () => ({
+			ensureFreshToken,
+		}));
+		vi.doMock("#/lib/jobs", () => ({
+			queueJobIdempotent: vi.fn(),
+		}));
+		vi.doMock("#/lib/imap", () => ({
+			createImapClient: vi.fn(),
+			fetchMessageRange: vi.fn(),
+			fetchMessageWindowDescending: vi.fn(),
+			getMailboxStatus: vi.fn(),
+			parseRawMessage: vi.fn(),
+			writeRawEml: vi.fn(),
+		}));
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		const result = await sync.runFullSync("acct-paused");
+
+		expect(result.skipped).toBe(true);
+		expect(ensureFreshToken).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		[
+			"has a null uidvalidity",
+			{
+				uidvalidity: null,
+				latest_uid_cursor: 5,
+				earliest_uid_cursor: 1,
+				backfill_snapshot_uid: 5,
+				backfill_next_uid: null,
+			},
+		],
+		[
+			"has a mismatched uidvalidity",
+			{
+				uidvalidity: 99,
+				latest_uid_cursor: 5,
+				earliest_uid_cursor: 1,
+				backfill_snapshot_uid: 5,
+				backfill_next_uid: null,
+			},
+		],
+		[
+			"never completed bootstrap",
+			{
+				uidvalidity: 100,
+				latest_uid_cursor: 5,
+				earliest_uid_cursor: 1,
+				backfill_snapshot_uid: 5,
+				backfill_next_uid: null,
+				last_bootstrap_completed_at: null,
+			},
+		],
+		[
+			"is missing bootstrap cursors",
+			{
+				uidvalidity: 100,
+				latest_uid_cursor: null,
+				earliest_uid_cursor: null,
+				backfill_snapshot_uid: null,
+				backfill_next_uid: null,
+			},
+		],
+	])("bootstraps again when sync state %s", async (_label, input) => {
+		const runtime = await createTestRuntime();
+		process.env.ZMAIL_IMAP_FETCH_WINDOW = "3";
+		vi.resetModules();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-bootstrap-guard",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-bootstrap-guard", input);
+
+		mockFreshToken("access-token");
+		mockQueueJobIdempotent();
+		const imap = mockImap({
+			fetchMessageRange: async () => [
+				createFetchedMessage(4),
+				createFetchedMessage(5),
+			],
+			getMailboxStatus: async () => ({
+				uidvalidity: 100,
+				uidNext: 6,
+				messageCount: 5,
+			}),
+		});
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		const result = await sync.runFullSync("acct-bootstrap-guard");
+
+		expect(result.phase).toBe("bootstrap");
+		expect(imap.fetchMessageRange).toHaveBeenCalledWith(
+			expect.anything(),
+			3,
+			5,
+		);
+	});
+
+	it("marks the account as needs_reconnect when bootstrap has no valid token", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-full-token",
+			syncEnabled: 1,
+		});
+
+		mockFreshToken(null);
+		mockQueueJobIdempotent();
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await expect(sync.runFullSync("acct-full-token")).rejects.toThrow(
+			"No valid OAuth token for account",
+		);
+
+		const account = await db
+			.selectFrom("accounts")
+			.select(["sync_status"])
+			.where("id", "=", "acct-full-token")
+			.executeTakeFirstOrThrow();
+		expect(account.sync_status).toBe("needs_reconnect");
+	});
+
+	it("ignores logout errors after a successful bootstrap", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-full-logout",
+			syncEnabled: 1,
+		});
+
+		const client = createMockClient();
+		client.logout = vi.fn(async () => {
+			throw new Error("logout failed");
+		});
+		mockFreshToken("access-token");
+		mockQueueJobIdempotent();
+		mockImap({
+			client,
+			getMailboxStatus: async () => ({
+				uidvalidity: 100,
+				uidNext: 1,
+				messageCount: 0,
+			}),
+		});
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await expect(sync.runFullSync("acct-full-logout")).resolves.toMatchObject({
+			skipped: false,
+			phase: "bootstrap",
+		});
+	});
+
+	it("resumes empty-head epochs without forcing a fresh bootstrap", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-resume-empty-head",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-resume-empty-head", {
+			uidvalidity: 100,
+			latest_uid_cursor: null,
+			earliest_uid_cursor: null,
+			backfill_snapshot_uid: null,
+			backfill_next_uid: null,
+			last_bootstrap_completed_at: "2026-01-01T00:05:00.000Z",
+		});
+
+		mockFreshToken("access-token");
+		mockQueueJobIdempotent();
+		const imap = mockImap({
+			getMailboxStatus: async () => ({
+				uidvalidity: 100,
+				uidNext: 1,
+				messageCount: 0,
+			}),
+		});
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await expect(
+			sync.runFullSync("acct-resume-empty-head"),
+		).resolves.toMatchObject({
+			phase: "resume",
+			fetched: 0,
+		});
+		expect(imap.fetchMessageRange).not.toHaveBeenCalled();
+	});
+
+	it("surfaces bootstrap failures through the failure path", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-full-error",
+			syncEnabled: 1,
+		});
+
+		mockFreshToken("access-token");
+		mockQueueJobIdempotent();
+		mockImap({
+			getMailboxStatus: async () => {
+				throw new Error("mailbox status failed");
+			},
+		});
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await expect(sync.runFullSync("acct-full-error")).rejects.toThrow(
+			"mailbox status failed",
+		);
+	});
+
+	it("skips delta work for paused accounts", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-delta-paused",
+			syncEnabled: 0,
+			syncStatus: "paused",
+		});
+		await insertSyncState("acct-delta-paused");
+
+		mockFreshToken("access-token");
+		mockQueueJobIdempotent();
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await expect(sync.runDeltaSync("acct-delta-paused")).resolves.toMatchObject(
+			{
+				skipped: true,
+				fetched: 0,
+			},
+		);
+	});
+
+	it("requires sync state before delta work can run", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-delta-missing-state",
+			syncEnabled: 1,
+		});
+
+		mockFreshToken("access-token");
+		mockQueueJobIdempotent();
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await expect(sync.runDeltaSync("acct-delta-missing-state")).rejects.toThrow(
+			"No sync state found; run full sync first",
+		);
+	});
+
+	it("marks the account as needs_reconnect when delta has no valid token", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-delta-token",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-delta-token");
+
+		mockFreshToken(null);
+		mockQueueJobIdempotent();
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await expect(sync.runDeltaSync("acct-delta-token")).rejects.toThrow(
+			"No valid OAuth token for account",
+		);
+
+		const account = await db
+			.selectFrom("accounts")
+			.select(["sync_status"])
+			.where("id", "=", "acct-delta-token")
+			.executeTakeFirstOrThrow();
+		expect(account.sync_status).toBe("needs_reconnect");
+	});
+
+	it("ignores logout errors after delta sync succeeds", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-delta-logout",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-delta-logout", {
+			latest_uid_cursor: 1,
+			backfill_next_uid: null,
+		});
+
+		const client = createMockClient();
+		client.logout = vi.fn(async () => {
+			throw new Error("logout failed");
+		});
+		mockFreshToken("access-token");
+		mockQueueJobIdempotent();
+		mockImap({
+			client,
+			getMailboxStatus: async () => ({
+				uidvalidity: 100,
+				uidNext: 2,
+				messageCount: 1,
+			}),
+		});
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await expect(sync.runDeltaSync("acct-delta-logout")).resolves.toMatchObject(
+			{
+				skipped: false,
+				fetched: 0,
+			},
+		);
+	});
+
+	it("seeds delta cursors from null state when head mail exists", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-delta-seed",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-delta-seed", {
+			uidvalidity: 100,
+			latest_uid_cursor: null,
+			earliest_uid_cursor: null,
+			backfill_snapshot_uid: null,
+			backfill_next_uid: null,
+		});
+
+		mockFreshToken("access-token");
+		mockQueueJobIdempotent();
+		mockImap({
+			fetchMessageRange: async () => [createFetchedMessage(1)],
+			getMailboxStatus: async () => ({
+				uidvalidity: 100,
+				uidNext: 2,
+				messageCount: 1,
+			}),
+		});
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await expect(sync.runDeltaSync("acct-delta-seed")).resolves.toMatchObject({
+			skipped: false,
+			fetched: 1,
+			latestUidCursor: 1,
+		});
+
+		const syncState = await db
+			.selectFrom("account_sync_state")
+			.select(["earliest_uid_cursor"])
+			.where("account_id", "=", "acct-delta-seed")
+			.executeTakeFirstOrThrow();
+		expect(syncState.earliest_uid_cursor).toBe(1);
+	});
+
+	it("surfaces delta failures through the failure path", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-delta-error",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-delta-error");
+
+		mockFreshToken("access-token");
+		mockQueueJobIdempotent();
+		mockImap({
+			getMailboxStatus: async () => {
+				throw new Error("delta status failed");
+			},
+		});
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await expect(sync.runDeltaSync("acct-delta-error")).rejects.toThrow(
+			"delta status failed",
+		);
+	});
+
+	it("skips backfill work for paused accounts", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-backfill-paused",
+			syncEnabled: 0,
+			syncStatus: "paused",
+		});
+		await insertSyncState("acct-backfill-paused", {
+			backfill_next_uid: 3,
+		});
+
+		mockFreshToken("access-token");
+		mockQueueJobIdempotent();
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await expect(
+			sync.runBackfillSync("acct-backfill-paused"),
+		).resolves.toMatchObject({
+			skipped: true,
+			fetched: 0,
+		});
+	});
+
+	it("requires sync state before backfill work can run", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-backfill-missing-state",
+			syncEnabled: 1,
+		});
+
+		mockFreshToken("access-token");
+		mockQueueJobIdempotent();
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await expect(
+			sync.runBackfillSync("acct-backfill-missing-state"),
+		).rejects.toThrow("No sync state found; run full sync first");
+	});
+
+	it("treats null backfill_next_uid as already-complete historical sync", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-backfill-complete",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-backfill-complete", {
+			earliest_uid_cursor: 1,
+			backfill_next_uid: null,
+		});
+
+		mockFreshToken("access-token");
+		mockQueueJobIdempotent();
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await expect(
+			sync.runBackfillSync("acct-backfill-complete"),
+		).resolves.toMatchObject({
+			skipped: false,
+			fetched: 0,
+			backfillNextUid: null,
+			earliestUidCursor: 1,
+		});
+	});
+
+	it("marks the account as needs_reconnect when backfill has no valid token", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-backfill-token",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-backfill-token", {
+			backfill_next_uid: 3,
+		});
+
+		mockFreshToken(null);
+		mockQueueJobIdempotent();
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await expect(sync.runBackfillSync("acct-backfill-token")).rejects.toThrow(
+			"No valid OAuth token for account",
+		);
+
+		const account = await db
+			.selectFrom("accounts")
+			.select(["sync_status"])
+			.where("id", "=", "acct-backfill-token")
+			.executeTakeFirstOrThrow();
+		expect(account.sync_status).toBe("needs_reconnect");
+	});
+
+	it("requeues a fresh bootstrap when backfill sees uidvalidity drift", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-backfill-drift",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-backfill-drift", {
+			uidvalidity: 100,
+			earliest_uid_cursor: 6,
+			backfill_next_uid: 5,
+		});
+
+		mockFreshToken("access-token");
+		const queueJobIdempotent = mockQueueJobIdempotent(async () => "job-full");
+		mockImap({
+			getMailboxStatus: async () => ({
+				uidvalidity: 101,
+				uidNext: 11,
+				messageCount: 10,
+			}),
+		});
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await expect(
+			sync.runBackfillSync("acct-backfill-drift"),
+		).resolves.toMatchObject({
+			uidvalidityChanged: true,
+		});
+		expect(queueJobIdempotent).toHaveBeenCalledWith({
+			kind: "sync_account_full",
+			scopeType: "account",
+			scopeId: "acct-backfill-drift",
+		});
+	});
+
+	it("ignores logout errors after backfill succeeds", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-backfill-logout",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-backfill-logout", {
+			uidvalidity: 100,
+			earliest_uid_cursor: 3,
+			backfill_next_uid: 2,
+		});
+
+		const client = createMockClient();
+		client.logout = vi.fn(async () => {
+			throw new Error("logout failed");
+		});
+		mockFreshToken("access-token");
+		mockQueueJobIdempotent();
+		mockImap({
+			client,
+			fetchMessageWindowDescending: async () => [],
+			getMailboxStatus: async () => ({
+				uidvalidity: 100,
+				uidNext: 3,
+				messageCount: 2,
+			}),
+		});
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await expect(
+			sync.runBackfillSync("acct-backfill-logout"),
+		).resolves.toMatchObject({
+			skipped: false,
+			fetched: 0,
+		});
+	});
+
+	it("surfaces backfill failures through the failure path", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-backfill-error",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-backfill-error", {
+			uidvalidity: 100,
+			earliest_uid_cursor: 3,
+			backfill_next_uid: 2,
+		});
+
+		mockFreshToken("access-token");
+		mockQueueJobIdempotent();
+		mockImap({
+			getMailboxStatus: async () => ({
+				uidvalidity: 100,
+				uidNext: 3,
+				messageCount: 2,
+			}),
+			fetchMessageWindowDescending: async () => {
+				throw new Error("backfill failed");
+			},
+		});
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await expect(sync.runBackfillSync("acct-backfill-error")).rejects.toThrow(
+			"backfill failed",
+		);
+	});
+
+	it("skips reconcile for paused accounts", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-reconcile-paused",
+			syncEnabled: 0,
+			syncStatus: "paused",
+		});
+
+		mockFreshToken("access-token");
+		mockQueueJobIdempotent();
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await expect(sync.runReconcile("acct-reconcile-paused")).resolves.toEqual({
+			skipped: true,
+			tombstoned: 0,
+		});
+	});
+
+	it("marks the account as needs_reconnect when reconcile has no valid token", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-reconcile-token",
+			syncEnabled: 1,
+		});
+
+		mockFreshToken(null);
+		mockQueueJobIdempotent();
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await expect(sync.runReconcile("acct-reconcile-token")).rejects.toThrow(
+			"No valid OAuth token for account",
+		);
+
+		const account = await db
+			.selectFrom("accounts")
+			.select(["sync_status"])
+			.where("id", "=", "acct-reconcile-token")
+			.executeTakeFirstOrThrow();
+		expect(account.sync_status).toBe("needs_reconnect");
+	});
+
+	it("uses child traces when sync entrypoints receive a parent trace", async () => {
+		const runtime = await createTestRuntime();
+		vi.resetModules();
+		const log = createMockLogModule();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-trace-full",
+			syncEnabled: 0,
+			syncStatus: "paused",
+		});
+		await seedTestAccount(db, {
+			id: "acct-trace-delta",
+			syncEnabled: 0,
+			syncStatus: "paused",
+		});
+		await seedTestAccount(db, {
+			id: "acct-trace-backfill",
+			syncEnabled: 0,
+			syncStatus: "paused",
+		});
+		await seedTestAccount(db, {
+			id: "acct-trace-reconcile",
+			syncEnabled: 0,
+			syncStatus: "paused",
+		});
+		await insertSyncState("acct-trace-delta");
+		await insertSyncState("acct-trace-backfill", {
+			backfill_next_uid: 1,
+		});
+
+		vi.doMock("#/lib/log", () => log.module);
+		mockFreshToken("access-token");
+		mockQueueJobIdempotent();
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		const parentTrace = log.module.startTrace({
+			kind: "worker",
+			operation: "parent_trace",
+		});
+
+		await sync.runFullSync("acct-trace-full", parentTrace);
+		await sync.runDeltaSync("acct-trace-delta", parentTrace);
+		await sync.runBackfillSync("acct-trace-backfill", parentTrace);
+		await sync.runReconcile("acct-trace-reconcile", parentTrace);
+
+		expect(
+			log.records.filter((record) => record.type === "child").length,
+		).toBeGreaterThanOrEqual(4);
+	});
+
+	it("reconcile preserves backfilling accounts", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-reconcile",
+			syncEnabled: 1,
+			syncStatus: "backfilling",
+		});
+		await insertSyncState("acct-reconcile", {
+			backfill_next_uid: 3,
+		});
+
+		const messageId = "msg-reconcile";
+		await db
+			.insertInto("messages")
+			.values({
+				id: messageId,
+				account_id: "acct-reconcile",
+				message_id: "<msg-reconcile@example.com>",
+				thread_key: "thread-reconcile",
+				received_at: "2026-01-01T00:00:00.000Z",
+				sender_name: "Sender",
+				sender_address: "sender@example.com",
+				to_json: "[]",
+				cc_json: "[]",
+				subject: "Subject",
+				in_reply_to: null,
+				body_text_normalized: "body",
+				snippet: "body",
+				attachment_count: 0,
+				has_html: 0,
+				raw_byte_start: 0,
+				raw_byte_end: 3,
+				parse_status: "parsed",
+				token_estimate: 1,
+				content_sha256: "sha",
+				created_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("message_sources")
+			.values({
+				id: "src-reconcile",
+				message_id: messageId,
+				account_id: "acct-reconcile",
+				remote_message_id: "gm-reconcile",
+				remote_thread_id: "thr-reconcile",
+				mailbox: "[Gmail]/All Mail",
+				imap_uid: 1,
+				uidvalidity: 100,
+				raw_rfc822_path: "/tmp/reconcile.eml",
+				raw_sha256: "sha",
+				state: "active",
+				first_seen_at: "2026-01-01T00:00:00.000Z",
+				last_seen_at: "2026-01-01T00:00:00.000Z",
+				tombstoned_at: null,
+				updated_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+
+		const client = createMockClient(async function* () {
+			yield {
+				emailId: "gm-reconcile",
+			};
+		});
+
+		vi.doMock("#/lib/google-oauth", () => ({
+			ensureFreshToken: vi.fn(async () => ({
+				accessToken: "access-token",
+			})),
+		}));
+		vi.doMock("#/lib/imap", () => ({
+			createImapClient: vi.fn(() => client),
+			fetchMessageRange: vi.fn(),
+			fetchMessageWindowDescending: vi.fn(),
+			getMailboxStatus: vi.fn(),
+			parseRawMessage: vi.fn(),
+			writeRawEml: vi.fn(),
+		}));
+		vi.doMock("#/lib/jobs", () => ({
+			queueJobIdempotent: vi.fn(),
+		}));
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		const result = await sync.runReconcile("acct-reconcile");
+		expect(result).toEqual({ skipped: false, tombstoned: 0 });
+
+		const account = await db
+			.selectFrom("accounts")
+			.select(["sync_status"])
+			.where("id", "=", "acct-reconcile")
+			.executeTakeFirstOrThrow();
+		expect(account.sync_status).toBe("backfilling");
+	});
+
+	it("reconcile tombstones missing remote messages and ignores logout errors", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-tombstone",
+			syncEnabled: 1,
+			syncStatus: "idle",
+		});
+		await insertSyncState("acct-tombstone", {
+			backfill_next_uid: null,
+		});
+
+		await db
+			.insertInto("messages")
+			.values({
+				id: "msg-tombstone",
+				account_id: "acct-tombstone",
+				message_id: "<msg-tombstone@example.com>",
+				thread_key: "thread-tombstone",
+				received_at: "2026-01-01T00:00:00.000Z",
+				sender_name: "Sender",
+				sender_address: "sender@example.com",
+				to_json: "[]",
+				cc_json: "[]",
+				subject: "Subject",
+				in_reply_to: null,
+				body_text_normalized: "body",
+				snippet: "body",
+				attachment_count: 0,
+				has_html: 0,
+				raw_byte_start: 0,
+				raw_byte_end: 3,
+				parse_status: "parsed",
+				token_estimate: 1,
+				content_sha256: "sha",
+				created_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("message_sources")
+			.values({
+				id: "src-tombstone",
+				message_id: "msg-tombstone",
+				account_id: "acct-tombstone",
+				remote_message_id: "gm-missing",
+				remote_thread_id: "thr-missing",
+				mailbox: "[Gmail]/All Mail",
+				imap_uid: 1,
+				uidvalidity: 100,
+				raw_rfc822_path: "/tmp/tombstone.eml",
+				raw_sha256: "sha",
+				state: "active",
+				first_seen_at: "2026-01-01T00:00:00.000Z",
+				last_seen_at: "2026-01-01T00:00:00.000Z",
+				tombstoned_at: null,
+				updated_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+
+		const client = {
+			connect: vi.fn(async () => undefined),
+			getMailboxLock: vi.fn(async () => ({
+				release: vi.fn(),
+			})),
+			logout: vi.fn(async () => {
+				throw new Error("logout failed");
+			}),
+			fetch: async function* () {
+				yield {
+					emailId: "gm-other",
+				};
+			},
+		};
+
+		vi.doMock("#/lib/google-oauth", () => ({
+			ensureFreshToken: vi.fn(async () => ({
+				accessToken: "access-token",
+			})),
+		}));
+		vi.doMock("#/lib/imap", () => ({
+			createImapClient: vi.fn(() => client),
+			fetchMessageRange: vi.fn(),
+			fetchMessageWindowDescending: vi.fn(),
+			getMailboxStatus: vi.fn(),
+			parseRawMessage: vi.fn(),
+			writeRawEml: vi.fn(),
+		}));
+		vi.doMock("#/lib/jobs", () => ({
+			queueJobIdempotent: vi.fn(),
+		}));
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await expect(sync.runReconcile("acct-tombstone")).resolves.toEqual({
+			skipped: false,
+			tombstoned: 1,
+		});
+
+		const source = await db
+			.selectFrom("message_sources")
+			.select(["state", "tombstoned_at"])
+			.where("id", "=", "src-tombstone")
+			.executeTakeFirstOrThrow();
+		expect(source.state).toBe("tombstoned");
+		expect(source.tombstoned_at).toBeTruthy();
+	});
+
+	it("reconcile surfaces IMAP failures through the structured failure path", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-reconcile-error",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-reconcile-error", {
+			backfill_next_uid: null,
+		});
+
+		const client = {
+			connect: vi.fn(async () => undefined),
+			getMailboxLock: vi.fn(async () => ({
+				release: vi.fn(),
+			})),
+			logout: vi.fn(async () => undefined),
+			fetch: vi.fn(() => {
+				throw new Error("imap fetch failed");
+			}),
+		};
+
+		vi.doMock("#/lib/google-oauth", () => ({
+			ensureFreshToken: vi.fn(async () => ({
+				accessToken: "access-token",
+			})),
+		}));
+		vi.doMock("#/lib/imap", () => ({
+			createImapClient: vi.fn(() => client),
+			fetchMessageRange: vi.fn(),
+			fetchMessageWindowDescending: vi.fn(),
+			getMailboxStatus: vi.fn(),
+			parseRawMessage: vi.fn(),
+			writeRawEml: vi.fn(),
+		}));
+		vi.doMock("#/lib/jobs", () => ({
+			queueJobIdempotent: vi.fn(),
+		}));
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await expect(sync.runReconcile("acct-reconcile-error")).rejects.toThrow(
+			"imap fetch failed",
+		);
+	});
+
+	it("updates existing mirrored messages when the raw source changes", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-existing",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-existing", {
+			uidvalidity: 100,
+			latest_uid_cursor: 0,
+			earliest_uid_cursor: 1,
+			backfill_snapshot_uid: 1,
+			backfill_next_uid: null,
+		});
+		await db
+			.insertInto("messages")
+			.values({
+				id: "msg-existing",
+				account_id: "acct-existing",
+				message_id: "<msg-existing@example.com>",
+				thread_key: "thread-existing",
+				received_at: "2026-01-01T00:00:00.000Z",
+				sender_name: "Old Sender",
+				sender_address: "old@example.com",
+				to_json: "[]",
+				cc_json: "[]",
+				subject: "Old subject",
+				in_reply_to: null,
+				body_text_normalized: "old body",
+				snippet: "old body",
+				attachment_count: 0,
+				has_html: 0,
+				raw_byte_start: 0,
+				raw_byte_end: 3,
+				parse_status: "parsed",
+				token_estimate: 1,
+				content_sha256: "old-sha",
+				created_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("message_sources")
+			.values({
+				id: "src-existing",
+				message_id: "msg-existing",
+				account_id: "acct-existing",
+				remote_message_id: "gm-existing",
+				remote_thread_id: "thr-existing",
+				mailbox: "[Gmail]/All Mail",
+				imap_uid: 1,
+				uidvalidity: 100,
+				raw_rfc822_path: "/tmp/old.eml",
+				raw_sha256: "old-sha",
+				state: "active",
+				first_seen_at: "2026-01-01T00:00:00.000Z",
+				last_seen_at: "2026-01-01T00:00:00.000Z",
+				tombstoned_at: null,
+				updated_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+
+		vi.doMock("#/lib/google-oauth", () => ({
+			ensureFreshToken: vi.fn(async () => ({
+				accessToken: "access-token",
+			})),
+		}));
+		vi.doMock("#/lib/jobs", () => ({
+			queueJobIdempotent: vi.fn(async () => null),
+		}));
+		vi.doMock("#/lib/imap", () => ({
+			createImapClient: vi.fn(() => createMockClient()),
+			fetchMessageRange: vi.fn(async () => [
+				{
+					uid: 1,
+					gmMsgId: "gm-existing",
+					gmThrid: "thr-existing",
+					internalDate: new Date("2026-01-02T00:00:00.000Z"),
+					raw: Buffer.from("new raw"),
+					sha256: "new-sha",
+				},
+			]),
+			fetchMessageWindowDescending: vi.fn(),
+			getMailboxStatus: vi.fn(async () => ({
+				uidvalidity: 100,
+				uidNext: 2,
+				messageCount: 1,
+			})),
+			parseRawMessage: vi.fn(async () => ({
+				id: "ignored-id",
+				messageId: "<msg-existing@example.com>",
+				threadKey: "thread-existing",
+				receivedAt: null,
+				senderName: "New Sender",
+				senderAddress: "new@example.com",
+				toJson: "[]",
+				ccJson: "[]",
+				subject: "New subject",
+				inReplyTo: null,
+				bodyTextNormalized: "new body",
+				snippet: "new body",
+				attachmentCount: 1,
+				hasHtml: 0,
+				parseStatus: "parsed",
+				tokenEstimate: 2,
+				contentSha256: "new-sha",
+				attachments: [
+					{
+						id: "att-new",
+						filename: "invoice.pdf",
+						mimeType: "application/pdf",
+						sizeBytes: 128,
+						contentId: null,
+						isInline: 0,
+					},
+				],
+			})),
+			writeRawEml: vi.fn(() => "/tmp/new.eml"),
+		}));
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await sync.runDeltaSync("acct-existing");
+
+		const message = await db
+			.selectFrom("messages")
+			.select(["subject", "sender_address", "content_sha256"])
+			.where("id", "=", "msg-existing")
+			.executeTakeFirstOrThrow();
+		expect(message).toEqual({
+			subject: "New subject",
+			sender_address: "new@example.com",
+			content_sha256: "new-sha",
+		});
+		const source = await db
+			.selectFrom("message_sources")
+			.select(["raw_sha256", "raw_rfc822_path", "imap_uid"])
+			.where("id", "=", "src-existing")
+			.executeTakeFirstOrThrow();
+		expect(source).toEqual({
+			raw_sha256: "new-sha",
+			raw_rfc822_path: "/tmp/new.eml",
+			imap_uid: 1,
+		});
+		const attachments = await db
+			.selectFrom("attachments")
+			.select(["filename", "mime_type", "size_bytes"])
+			.where("message_id", "=", "msg-existing")
+			.execute();
+		expect(attachments).toEqual([
+			{
+				filename: "invoice.pdf",
+				mime_type: "application/pdf",
+				size_bytes: 128,
+			},
+		]);
+	});
+
+	it("logs parse errors when an existing mirrored message is refreshed with malformed raw content", async () => {
+		const runtime = await createTestRuntime();
+		vi.resetModules();
+		const log = createMockLogModule();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-existing-parse-error",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-existing-parse-error", {
+			uidvalidity: 100,
+			latest_uid_cursor: 0,
+			earliest_uid_cursor: 1,
+			backfill_snapshot_uid: 1,
+			backfill_next_uid: null,
+		});
+		await db
+			.insertInto("messages")
+			.values({
+				id: "msg-existing-parse-error",
+				account_id: "acct-existing-parse-error",
+				message_id: "<msg-existing-parse-error@example.com>",
+				thread_key: "thread-existing-parse-error",
+				received_at: "2026-01-01T00:00:00.000Z",
+				sender_name: "Sender",
+				sender_address: "sender@example.com",
+				to_json: "[]",
+				cc_json: "[]",
+				subject: "Subject",
+				in_reply_to: null,
+				body_text_normalized: "body",
+				snippet: "body",
+				attachment_count: 0,
+				has_html: 0,
+				raw_byte_start: 0,
+				raw_byte_end: 3,
+				parse_status: "parsed",
+				token_estimate: 1,
+				content_sha256: "old-sha",
+				created_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("message_sources")
+			.values({
+				id: "src-existing-parse-error",
+				message_id: "msg-existing-parse-error",
+				account_id: "acct-existing-parse-error",
+				remote_message_id: "gm-existing-parse-error",
+				remote_thread_id: "thr-existing-parse-error",
+				mailbox: "[Gmail]/All Mail",
+				imap_uid: 1,
+				uidvalidity: 100,
+				raw_rfc822_path: "/tmp/old-parse-error.eml",
+				raw_sha256: "old-sha",
+				state: "active",
+				first_seen_at: "2026-01-01T00:00:00.000Z",
+				last_seen_at: "2026-01-01T00:00:00.000Z",
+				tombstoned_at: null,
+				updated_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+
+		vi.doMock("#/lib/log", () => log.module);
+		mockFreshToken("access-token");
+		mockQueueJobIdempotent();
+		mockImap({
+			fetchMessageRange: async () => [
+				{
+					uid: 1,
+					gmMsgId: "gm-existing-parse-error",
+					gmThrid: "thr-existing-parse-error",
+					internalDate: new Date("2026-01-02T00:00:00.000Z"),
+					raw: Buffer.from("new raw"),
+					sha256: "new-sha",
+				},
+			],
+			getMailboxStatus: async () => ({
+				uidvalidity: 100,
+				uidNext: 2,
+				messageCount: 1,
+			}),
+			parseRawMessage: async () => ({
+				id: "ignored-id",
+				messageId: "<msg-existing-parse-error@example.com>",
+				threadKey: "thread-existing-parse-error",
+				receivedAt: "2026-01-02T00:00:00.000Z",
+				senderName: null,
+				senderAddress: null,
+				toJson: "[]",
+				ccJson: "[]",
+				subject: null,
+				inReplyTo: null,
+				bodyTextNormalized: "",
+				snippet: "",
+				attachmentCount: 0,
+				hasHtml: 0,
+				parseStatus: "error",
+				tokenEstimate: 0,
+				contentSha256: "new-sha",
+				attachments: [],
+			}),
+			writeRawEml: () => "/tmp/new-parse-error.eml",
+		});
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await sync.runDeltaSync("acct-existing-parse-error");
+
+		expect(log.records).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					type: "info",
+					event: "sync.message.parse_error",
+				}),
+			]),
+		);
+	});
+
+	it("reconcile accepts x-gm-msgid fallbacks and ignores messages with no Gmail id", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-reconcile-gm-fallback",
+			syncEnabled: 1,
+		});
+
+		const client = {
+			connect: vi.fn(async () => undefined),
+			getMailboxLock: vi.fn(async () => ({
+				release: vi.fn(),
+			})),
+			logout: vi.fn(async () => undefined),
+			fetch: async function* () {
+				yield {
+					"x-gm-msgid": "gm-fallback",
+				};
+				yield {};
+			},
+		};
+
+		mockFreshToken("access-token");
+		mockQueueJobIdempotent();
+		mockImap({
+			client: client as ReturnType<typeof createMockClient>,
+		});
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await expect(
+			sync.runReconcile("acct-reconcile-gm-fallback"),
+		).resolves.toEqual({
+			skipped: false,
+			tombstoned: 0,
+		});
+	});
+
+	it("emits bootstrap log events with the new namespace", async () => {
+		const runtime = await createTestRuntime();
+		process.env.ZMAIL_IMAP_FETCH_WINDOW = "2";
+		vi.resetModules();
+		const log = createMockLogModule();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-log",
+			syncEnabled: 1,
+		});
+
+		vi.doMock("#/lib/log", () => log.module);
+		vi.doMock("#/lib/google-oauth", () => ({
+			ensureFreshToken: vi.fn(async () => ({
+				accessToken: "access-token",
+			})),
+		}));
+		vi.doMock("#/lib/jobs", () => ({
+			queueJobIdempotent: vi.fn(async () => "job-backfill"),
+		}));
+		vi.doMock("#/lib/imap", () => ({
+			createImapClient: vi.fn(() => createMockClient()),
+			fetchMessageRange: vi.fn(async () => [
+				createFetchedMessage(1),
+				createFetchedMessage(2),
+			]),
+			fetchMessageWindowDescending: vi.fn(),
+			getMailboxStatus: vi.fn(async () => ({
+				uidvalidity: 55,
+				uidNext: 3,
+				messageCount: 2,
+			})),
+			parseRawMessage: vi.fn(async (_raw: Buffer, sha: string) =>
+				createParsedMessage(`msg-${sha}`, sha),
+			),
+			writeRawEml: vi.fn(() => "/tmp/raw.eml"),
+		}));
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await sync.runFullSync("acct-log");
+
+		expect(log.records).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					type: "info",
+					event: "sync.bootstrap.start",
+				}),
+				expect.objectContaining({
+					type: "complete",
+					event: "sync.bootstrap.complete",
+				}),
+			]),
+		);
+	});
+
+	it("logs parse errors when bootstrap ingests a newly inserted malformed message", async () => {
+		const runtime = await createTestRuntime();
+		vi.resetModules();
+		const log = createMockLogModule();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-parse-error",
+			syncEnabled: 1,
+		});
+
+		vi.doMock("#/lib/log", () => log.module);
+		vi.doMock("#/lib/google-oauth", () => ({
+			ensureFreshToken: vi.fn(async () => ({
+				accessToken: "access-token",
+			})),
+		}));
+		vi.doMock("#/lib/jobs", () => ({
+			queueJobIdempotent: vi.fn(async () => null),
+		}));
+		vi.doMock("#/lib/imap", () => ({
+			createImapClient: vi.fn(() => createMockClient()),
+			fetchMessageRange: vi.fn(async () => [createFetchedMessage(1)]),
+			fetchMessageWindowDescending: vi.fn(),
+			getMailboxStatus: vi.fn(async () => ({
+				uidvalidity: 55,
+				uidNext: 2,
+				messageCount: 1,
+			})),
+			parseRawMessage: vi.fn(async () => ({
+				id: "msg-parse-error",
+				messageId: "<parse-error@example.com>",
+				threadKey: "thread-parse-error",
+				receivedAt: "2026-01-01T00:00:00.000Z",
+				senderName: null,
+				senderAddress: null,
+				toJson: "[]",
+				ccJson: "[]",
+				subject: null,
+				inReplyTo: null,
+				bodyTextNormalized: "",
+				snippet: "",
+				attachmentCount: 0,
+				hasHtml: 0,
+				parseStatus: "error",
+				tokenEstimate: 0,
+				contentSha256: "sha-1",
+				attachments: [],
+			})),
+			writeRawEml: vi.fn(() => "/tmp/raw.eml"),
+		}));
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await sync.runFullSync("acct-parse-error");
+
+		expect(log.records).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					type: "info",
+					event: "sync.message.parse_error",
+				}),
+			]),
+		);
+		const message = await db
+			.selectFrom("messages")
+			.select(["parse_status"])
+			.where("account_id", "=", "acct-parse-error")
+			.executeTakeFirstOrThrow();
+		expect(message.parse_status).toBe("error");
+	});
+});

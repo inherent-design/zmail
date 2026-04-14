@@ -1,0 +1,26 @@
+[env]
+_.file = ["secrets.enc.yaml"]
+
+[tasks.dev]
+description = "Start the local app with repo-managed Google OAuth secrets loaded"
+run = "pnpm dev"
+
+[tasks."db:migrate"]
+description = "Run database migrations with repo-managed Google OAuth secrets loaded"
+run = "pnpm db:migrate"
+
+[tasks."db:reset"]
+description = "Reset the local database and storage"
+run = "pnpm db:reset"
+
+[tasks.check]
+description = "Run the deterministic proof gate"
+run = "pnpm check"
+
+[tasks."check:full"]
+description = "Run the full proof gate including live Playwright"
+run = "pnpm check:full"
+
+[tasks."worker:drain"]
+description = "Drain the worker queue once"
+run = "pnpm worker:drain"
