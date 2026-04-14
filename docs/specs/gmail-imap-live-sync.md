@@ -145,6 +145,15 @@ Key operations:
 
 `internalDate` is used as the fallback timestamp when the parsed message date is absent.
 
+Current message-model caveats:
+
+- `messages.received_at` is the canonical user-facing message timestamp
+- `messages.created_at` is currently the row creation timestamp, not a dedicated ingestion field
+- `messages.thread_key` is a local heuristic and not the canonical Gmail conversation identity
+- forwarded-email and parse-error body extraction remain best-effort in the active runtime
+
+The planned refactor for timestamps, conversations, and body extraction is tracked in [message-model-v2.md](./message-model-v2.md).
+
 ## Cursor Model
 
 `account_sync_state` persists a two-sided live-sync window per account:
