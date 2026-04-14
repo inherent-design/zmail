@@ -1,0 +1,81 @@
+{
+  "name": "zmail",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "imports": {
+    "#/*": "./*"
+  },
+  "scripts": {
+    "dev": "pnpm router:generate && RUN_WORKER=true vite dev --port 3000",
+    "build": "pnpm router:generate && vite build",
+    "preview": "pnpm router:generate && vite preview",
+    "router:generate": "tsx scripts/generate-route-tree.ts",
+    "typecheck": "pnpm router:generate && tsc --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "coverage": "vitest run --coverage",
+    "test:e2e:live": "playwright test --config playwright.live.config.ts",
+    "playwright:install": "pnpm exec playwright install chromium",
+    "format": "biome check --write .",
+    "lint": "biome check .",
+    "check": "pnpm lint && pnpm typecheck && pnpm coverage",
+    "check:full": "pnpm check && pnpm test:e2e:live",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "db:reset": "rm -f data/zmail.sqlite data/zmail.sqlite-wal data/zmail.sqlite-shm && rm -rf data/accounts data/imports data/tmp/oauth",
+    "pi:connect": "tsx scripts/pi-connect-subscription.ts",
+    "worker:drain": "tsx scripts/worker-drain.ts"
+  },
+  "dependencies": {
+    "@mariozechner/pi-ai": "^0.66.1",
+    "@tailwindcss/vite": "^4.1.18",
+    "@tanstack/react-devtools": "latest",
+    "@tanstack/react-router": "latest",
+    "@tanstack/react-router-devtools": "latest",
+    "@tanstack/react-router-ssr-query": "latest",
+    "@tanstack/react-start": "latest",
+    "@tanstack/router-plugin": "^1.132.0",
+    "better-sqlite3": "^12.8.0",
+    "html-to-text": "^9.0.5",
+    "imapflow": "^1.3.1",
+    "kysely": "^0.28.8",
+    "lucide-react": "^0.545.0",
+    "mailparser": "^3.9.0",
+    "nitro": "npm:nitro-nightly@latest",
+    "openai": "^6.4.0",
+    "pino": "^10.3.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "tailwindcss": "^4.1.18",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.5",
+    "@playwright/test": "^1.54.2",
+    "@tailwindcss/typography": "^0.5.16",
+    "@tanstack/devtools-vite": "latest",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^6.0.1",
+    "@vitest/coverage-v8": "^3.2.4",
+    "jsdom": "^28.1.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.2",
+    "vite": "^8.0.0",
+    "vitest": "^3.0.5"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild",
+      "lightningcss",
+      "protobufjs"
+    ]
+  }
+}
