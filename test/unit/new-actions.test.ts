@@ -17,8 +17,8 @@ describe("new server actions", () => {
 		}));
 
 		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions")
-		>("#/app/server/actions");
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
 		const result = await actions.loadAccountsData();
 
 		expect(result.accounts).toEqual([]);
@@ -57,8 +57,8 @@ describe("new server actions", () => {
 		}));
 
 		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions")
-		>("#/app/server/actions");
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
 		const result = await actions.loadAccountsData();
 		const account = result.accounts.find((a) => a.id === "acct-1");
 
@@ -110,8 +110,8 @@ describe("new server actions", () => {
 		}));
 
 		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions")
-		>("#/app/server/actions");
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
 		const result = await actions.loadAccountsData();
 
 		expect(result.accounts).toEqual([
@@ -139,8 +139,8 @@ describe("new server actions", () => {
 		}));
 
 		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions")
-		>("#/app/server/actions");
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
 		const result = await actions.loadAccountNewData();
 
 		expect(result.oauthReady).toBe(false);
@@ -165,8 +165,8 @@ describe("new server actions", () => {
 		}));
 
 		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions")
-		>("#/app/server/actions");
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
 		const result = await actions.loadAccountNewData();
 
 		expect(result.oauthReady).toBe(true);
@@ -186,8 +186,8 @@ describe("new server actions", () => {
 		}));
 
 		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions")
-		>("#/app/server/actions");
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
 		const result = await actions.loadAccountDetailData({
 			accountId: "acct-1",
 		});
@@ -210,8 +210,8 @@ describe("new server actions", () => {
 		}));
 
 		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions")
-		>("#/app/server/actions");
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
 		await expect(
 			actions.loadAccountDetailData({ accountId: "nonexistent" }),
 		).rejects.toThrow();
@@ -248,8 +248,8 @@ describe("new server actions", () => {
 		});
 
 		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions")
-		>("#/app/server/actions");
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
 		const config =
 			await runtime.importFresh<typeof import("#/lib/config")>("#/lib/config");
 		const dbModule =
@@ -329,8 +329,8 @@ describe("new server actions", () => {
 		});
 
 		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions")
-		>("#/app/server/actions");
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
 		const result = await actions.completeGoogleConnectCommand({
 			code: "auth-code",
 			state: "oauth-state",
@@ -386,8 +386,8 @@ describe("new server actions", () => {
 		const secondAuth = oauth.buildAuthUrl("Connect B");
 
 		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions")
-		>("#/app/server/actions");
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
 		const [first, second] = await Promise.all([
 			actions.completeGoogleConnectCommand({
 				code: "auth-code-a",
@@ -440,8 +440,8 @@ describe("new server actions", () => {
 		});
 
 		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions")
-		>("#/app/server/actions");
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
 
 		await expect(
 			actions.completeGoogleConnectCommand({
@@ -477,8 +477,8 @@ describe("new server actions", () => {
 		});
 
 		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions")
-		>("#/app/server/actions");
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
 
 		await expect(
 			actions.completeGoogleConnectCommand({
@@ -529,8 +529,8 @@ describe("new server actions", () => {
 		});
 
 		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions")
-		>("#/app/server/actions");
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
 		const result = await actions.completeGoogleConnectCommand({
 			code: "auth-code",
 			state: "oauth-state",
@@ -561,8 +561,8 @@ describe("new server actions", () => {
 		});
 
 		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions")
-		>("#/app/server/actions");
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
 		const result = await actions.beginGoogleConnectCommand({
 			label: "Personal Gmail",
 		});
@@ -606,8 +606,8 @@ describe("new server actions", () => {
 
 		try {
 			const actions = await runtime.importFresh<
-				typeof import("#/app/server/actions")
-			>("#/app/server/actions");
+				typeof import("#/app/server/actions.server")
+			>("#/app/server/actions.server");
 
 			await actions.beginGoogleConnectCommand({ label: "One" });
 			await actions.beginGoogleConnectCommand({ label: "Two" });
@@ -661,8 +661,8 @@ describe("new server actions", () => {
 
 		try {
 			const actions = await runtime.importFresh<
-				typeof import("#/app/server/actions")
-			>("#/app/server/actions");
+				typeof import("#/app/server/actions.server")
+			>("#/app/server/actions.server");
 
 			await expect(
 				actions.beginGoogleConnectCommand({ label: "Retry" }),
@@ -708,8 +708,8 @@ describe("new server actions", () => {
 		});
 
 		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions")
-		>("#/app/server/actions");
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
 		await actions.queueAccountFullSyncCommand({ accountId: "acct-1" });
 		await actions.queueAccountDeltaSyncCommand({ accountId: "acct-1" });
 		await actions.queueAccountReconcileCommand({ accountId: "acct-1" });
@@ -762,8 +762,8 @@ describe("new server actions", () => {
 		});
 
 		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions")
-		>("#/app/server/actions");
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
 
 		await expect(
 			actions.queueAccountFullSyncCommand({ accountId: "acct-paused" }),
@@ -816,8 +816,8 @@ describe("new server actions", () => {
 		});
 
 		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions")
-		>("#/app/server/actions");
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
 		const config =
 			await runtime.importFresh<typeof import("#/lib/config")>("#/lib/config");
 		await actions.enqueueOverseerCommand({ accountId: "acct-1" });
@@ -886,8 +886,8 @@ describe("new server actions", () => {
 		});
 
 		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions")
-		>("#/app/server/actions");
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
 
 		await expect(
 			actions.pauseAccountSyncCommand({ accountId: "acct-1" }),
@@ -986,8 +986,8 @@ describe("new server actions", () => {
 		});
 
 		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions")
-		>("#/app/server/actions");
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
 
 		await expect(
 			actions.resumeAccountSyncCommand({ accountId: "acct-backfill" }),
@@ -1022,8 +1022,8 @@ describe("new server actions", () => {
 		}));
 
 		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions")
-		>("#/app/server/actions");
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
 		await actions.loadAccountsData();
 		await actions.loadAccountNewData();
 		await actions.loadAccountDetailData({ accountId: "acct-1" });
@@ -1102,8 +1102,8 @@ describe("new server actions", () => {
 		}));
 
 		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions")
-		>("#/app/server/actions");
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
 		await actions.loadRunsData();
 
 		expect(log.records).toEqual(
@@ -1172,8 +1172,8 @@ describe("new server actions", () => {
 		});
 
 		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions")
-		>("#/app/server/actions");
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
 		await actions.beginGoogleConnectCommand({
 			label: "Personal Gmail",
 		});
@@ -1358,8 +1358,8 @@ describe("new server actions", () => {
 		}));
 
 		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions")
-		>("#/app/server/actions");
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
 		await actions.resolveReviewCommand({
 			reviewId: "review-1",
 			action: "accept",
@@ -1454,8 +1454,8 @@ describe("new server actions", () => {
 		});
 
 		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions")
-		>("#/app/server/actions");
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
 		await expect(
 			actions.completeGoogleConnectCommand({
 				code: "auth-code",

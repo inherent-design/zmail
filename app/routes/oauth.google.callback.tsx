@@ -1,12 +1,7 @@
 import { createFileRoute, Link, redirect } from "@tanstack/react-router";
-import { z } from "zod";
 
-import { completeGoogleConnectCommand } from "#/app/server/actions";
-
-const callbackSearchSchema = z.object({
-	code: z.string().min(1),
-	state: z.string().min(1),
-});
+import { completeGoogleConnect } from "#/app/server/actions";
+import { completeGoogleConnectInputSchema } from "#/lib/schemas";
 
 function CallbackError({ error }: { error: Error }) {
 	return (
@@ -27,13 +22,13 @@ function CallbackError({ error }: { error: Error }) {
 }
 
 export const Route = createFileRoute("/oauth/google/callback")({
-	validateSearch: (search) => callbackSearchSchema.parse(search),
+	validateSearch: (search) => completeGoogleConnectInputSchema.parse(search),
 	loaderDeps: ({ search }) => ({
 		code: search.code,
 		state: search.state,
 	}),
 	loader: async ({ deps }) => {
-		const { accountId } = await completeGoogleConnectCommand(deps);
+		const { accountId } = await completeGoogleConnect({ data: deps });
 		throw redirect({
 			to: "/accounts/$accountId",
 			params: { accountId },

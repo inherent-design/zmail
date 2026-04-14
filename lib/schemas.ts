@@ -204,6 +204,11 @@ export const beginGoogleConnectInputSchema = z.object({
 	label: z.string().min(1),
 });
 
+export const completeGoogleConnectInputSchema = z.object({
+	code: z.string().min(1),
+	state: z.string().min(1),
+});
+
 export const accountIdInputSchema = z.object({
 	accountId: z.string().min(1),
 });
