@@ -38,6 +38,20 @@ Attachment extraction, embeddings, semantic retrieval, and cross-message synthes
 - raw RFC822 and attachment provenance must remain intact
 - review semantics for the current label contract must already be trustworthy
 
+## Dependency On Message Model V2
+
+Search and retrieval should not treat `body_text_normalized` as the final
+canonical text surface.
+
+Before retrieval semantics are treated as stable:
+
+- V2 body extraction fields should land so primary and forwarded content can be
+  indexed deliberately
+- canonical conversation identity should land so retrieval can group or filter
+  by Gmail conversation rather than `thread_key`
+- attachment extraction should preserve provenance back to both attachment
+  metadata and parent message/conversation identity
+
 ## Expected New Components
 
 - attachment extraction workers

@@ -42,6 +42,10 @@ Before adding these lenses:
 - add new prompt versions rather than mutating the existing contract in place
 - store new lens outputs as additive result versions first
 - promote new fields into the current label surface only after review and stability
+- once Message Model V2 lands, any conversation-aware analysis should key off
+  Gmail conversation identity rather than `thread_key`
+- content-hash freshness should remain the invalidation mechanism for lens
+  outputs
 
 ## Non-Goals For This Document
 

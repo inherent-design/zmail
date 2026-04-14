@@ -2,84 +2,222 @@
 
 ## Summary
 
-This document defines the next message-storage refactor after the current live-sync hardening pass.
+This document defines the next message-storage refactor after the current
+Gmail live-sync hardening pass.
 
 Goals:
 
 - separate user-facing message time from ingestion time
 - make Gmail thread identity the canonical conversation identity
-- improve forwarded-email and parse-failure body extraction without breaking the current UI or classifiers
+- improve forwarded-email and parse-failure body extraction without breaking the
+  current UI, moderation, or classification paths
 
 Non-goals:
 
 - changing the active Gmail OAuth flow
-- changing watcher/job semantics
+- changing worker or watcher control flow
 - changing the current live-sync window model
+- introducing cross-provider canonical email deduplication
 
-## Current Observed Data
+## Current V1 Runtime Semantics
 
-Observed from the live SQLite on **2026-04-14**:
+The active runtime is a Gmail-only corpus mirror.
 
-- `messages = 337`
-- `parse_status = 'error'` on `13` rows
-- `null received_at = 0`
-- `null or empty subject = 13`
-- `null or empty sender_address = 13`
-- average drift from `received_at` to current row `created_at` is `362.09` hours
-- max drift is `703.94` hours
-- min drift is `6.29` hours
-- distinct `message_sources.remote_thread_id = 326`
-- distinct `messages.thread_key = 310`
-- `4` Gmail thread ids currently map to multiple local `thread_key` values
-- `10` local `thread_key` values currently collapse multiple Gmail thread ids
-
-Observed forwarded-email issue:
-
-- the live DB currently has `2` `Fw:` messages
-- both normalize to a `31` character footer-only body: `Sent from Yahoo Mail for iPhone`
-- the raw RFC822 sample for `Fw: 2026 Swim Lessons` contains:
-  - a Yahoo footer
-  - `Begin forwarded message:`
-  - a large forwarded text/plain block after that marker
-
-Observed parse-error issue:
-
-- all `13` parse-error rows currently persist empty normalized bodies
-- parse-error rows also account for the current empty subject / empty sender rows
-
-Implication:
-
-- `messages.created_at` is not an acceptable substitute for ingestion semantics in product/UI discussions
-- `messages.thread_key` is not reliable as the primary conversation identity
-- the current normalization path is insufficient for forwarded and parser-edge-case messages
-
-## Active V1 Semantics
+- each stored `messages` row currently corresponds to one Gmail
+  `message_sources` row
+- the current corpus does not implement cross-source canonical email
+  deduplication
+- V2 conversation work is about grouping stored messages into conversations, not
+  deduplicating logical emails across providers
 
 Today:
 
 - `messages.received_at`
   - canonical user-facing message timestamp
 - `messages.created_at`
-  - row creation time for the current mirror
+  - current row creation time for the local mirror
 - `message_sources.first_seen_at` / `last_seen_at`
-  - sync-observation timestamps
+  - source-observation timestamps
 - `messages.thread_key`
   - heuristic thread identity from `In-Reply-To` or normalized subject
 - `message_sources.remote_thread_id`
   - Gmail-native thread identity
 - `messages.body_text_normalized`
-  - best-available current downstream text for UI, search, and classification
+  - best-available downstream text for UI, search, moderation, and
+    classification
+- `messages.snippet`
+  - display-oriented excerpt derived from normalized body text
+
+Parse errors are non-fatal ingestion fallbacks in V1.
+
+When parsing fails, the runtime still persists:
+
+- `received_at` via IMAP `internalDate` fallback
+- remote Gmail ids and UID state
+- raw RFC822 path and raw hash
+- parsed-content hash
+
+It currently degrades:
+
+- subject, sender, and recipient structure
+- normalized body text and snippet
+- parse failure detail, which is not stored as a structured reason yet
+
+## Current Identity And Freshness Semantics
+
+The current runtime uses distinct identities and hashes for different purposes.
+
+### Message identities
+
+- `messages.id`
+  - local primary key only
+- `messages.message_id`
+  - RFC822 `Message-ID`
+  - descriptive/header identity
+  - not the current dedupe key
+  - not guaranteed unique by schema
+- `message_sources.remote_message_id`
+  - current Gmail corpus dedupe key per account
+  - the identity used by `ingestMessage()` refresh detection
+- `message_sources.remote_thread_id`
+  - current Gmail-native conversation identity
+
+### Hashes and freshness
+
+- `message_sources.raw_sha256`
+  - raw RFC822 byte hash
+  - used by sync to decide whether an already-known source needs a re-parse and
+    refresh
+- `messages.content_sha256`
+  - normalized parsed-content hash
+  - used to determine whether moderation, classification results, and materialized
+    labels are stale
+- `classification_results.input_content_sha256`
+  - records which parsed-content hash a classification run used
+- `message_labels.content_sha256`
+  - records which parsed-content hash the current active label corresponds to
+
+Current behavior comes from:
+
+- [`lib/sync.ts`](/Users/zer0cell/production/zmail/lib/sync.ts)
+- [`lib/worker.ts`](/Users/zer0cell/production/zmail/lib/worker.ts)
+- [`lib/classify.ts`](/Users/zer0cell/production/zmail/lib/classify.ts)
+- [`lib/moderation.ts`](/Users/zer0cell/production/zmail/lib/moderation.ts)
+
+## Current Gmail Corpus Invariants
+
+The following are observed runtime invariants for the current Gmail-only corpus.
+They are not universal future guarantees unless later enforced by schema or code.
+
+- every current `messages` row has exactly one `message_sources` row
+- no current rows have null `message_sources.remote_message_id`
+- no current rows have null `message_sources.remote_thread_id`
+
+Observed values from the live corpus on `2026-04-14`:
+
+- `multi_source_messages = 0`
+- `messages_without_remote_message = 0`
+- `messages_without_remote_thread = 0`
+
+Implications:
+
+- conversation backfill for the existing corpus can be written as a complete join
+  from `message_sources.remote_thread_id`
+- `conversation_id = NULL` is only a future edge-case path for missing Gmail
+  thread ids, not the expected state for the current corpus
+
+## Current UI / Loader / Inference Surfaces
+
+### Message List Surface
+
+Current list surfaces use:
+
+- `received_at`
+- `sender_address`
+- `subject`
+- current label state:
+  - `primary_bucket`
+  - `nsfw`
+  - `low_confidence`
+
+The list is currently ordered by `received_at`.
+
+### Message Detail Surface
+
+Current detail surfaces use:
+
+- `received_at`
+- `sender_name`
+- `sender_address`
+- `to_json`
+- `cc_json`
+- `subject`
+- `in_reply_to`
+- `thread_key`
+- `body_text_normalized`
+- `snippet`
+- `attachment_count`
+- `has_html`
+- `parse_status`
+- `token_estimate`
+- attachments
+- moderation result
+- classification history
+- latest overseer profile
+
+### Review Surface
+
+Current low-confidence review surfaces use:
+
+- `subject`
+- `sender_address`
+- `snippet`
+- current classification result payload
+
+### Classification And Moderation Inputs
+
+Current moderation and classification flows use:
+
+- `received_at`
+- `body_text_normalized`
+- attachment summaries
+- `messages.content_sha256` freshness
+
+During V2 migration, these inputs must remain stable until body re-extraction
+and downstream validation are complete.
+
+## Why Thread Key Drifts From Gmail Threads
+
+`thread_key` is derived in [`lib/normalize.ts`](/Users/zer0cell/production/zmail/lib/normalize.ts):
+
+- `In-Reply-To` takes precedence
+- normalized subject root is the fallback
+
+That makes it intentionally heuristic.
+
+It can:
+
+- fragment one Gmail thread into many local `thread_key` values
+- collapse unrelated Gmail threads under one normalized subject
+
+Observed evidence from the live corpus on `2026-04-14`:
+
+- `4` Gmail thread ids currently fan out to multiple `thread_key` values
+- `10` local `thread_key` values currently collapse multiple Gmail thread ids
+
+`thread_key` should therefore be treated as fallback/debug metadata, not the
+primary conversation identity.
 
 ## Target V2 Semantics
 
-### Timestamps
+## Timestamps
 
 Target meanings:
 
 - `messages.received_at`
   - the message timestamp shown to users and used for message chronology
 - `messages.ingested_at`
-  - first time zmail persisted the message row into the corpus mirror
+  - first time zmail persisted the local message row into the corpus mirror
 - `messages.created_at`
   - transitional technical field kept for backward compatibility during migration
 - `message_sources.first_seen_at`
@@ -90,10 +228,11 @@ Target meanings:
 Rules:
 
 - UI lists remain sorted by `messages.received_at`
-- product discussions and reporting should use `messages.ingested_at` for ingestion timing
-- `message_sources.first_seen_at` / `last_seen_at` remain source-provenance fields, not primary UI timestamps
+- product/debug discussions should use `messages.ingested_at` for ingestion timing
+- source-observation timestamps remain provenance fields, not primary UI
+  timestamps
 
-### Conversations
+## Conversations
 
 Target meanings:
 
@@ -118,28 +257,31 @@ CREATE TABLE conversations (
 
 Target message link:
 
-- add `messages.conversation_id TEXT REFERENCES conversations(id)`
+- `messages.conversation_id TEXT REFERENCES conversations(id)`
 
 Rules:
 
 - when `message_sources.remote_thread_id` exists, it is authoritative
-- `messages.thread_key` remains populated for diagnostics, fallback grouping, and migration support
-- if a message somehow lacks a Gmail thread id, fallback grouping can still use `thread_key`, but that is explicitly a fallback path and not the primary identity model
+- `messages.thread_key` remains populated for diagnostics, fallback grouping, and
+  migration support
+- if a message lacks a Gmail thread id in future data, fallback grouping can use
+  `thread_key`, but that is explicitly secondary behavior
 
-### Body Extraction
+## Body Extraction
 
 Target meanings:
 
 - `messages.body_text_normalized`
   - best-available downstream classifier/search text
 - `messages.body_text_primary`
-  - the main human-authored message body excluding forwarded blocks when detectable
+  - the main human-authored message body excluding forwarded blocks when
+    detectable
 - `messages.body_text_forwarded`
   - extracted forwarded payload when present
 - `messages.body_extraction_strategy`
   - enum-like string describing how the body was derived
 - `messages.parse_error_reason`
-  - structured or semi-structured parse failure detail for parser-edge cases
+  - stored failure detail for parser-edge cases
 
 Suggested `body_extraction_strategy` values:
 
@@ -152,9 +294,54 @@ Suggested `body_extraction_strategy` values:
 
 Rules:
 
-- `body_text_normalized` remains the field consumed by current classifiers during migration
-- forwarded-message extraction should preserve useful forwarded content instead of collapsing to a footer-only body
+- `body_text_normalized` remains the field consumed by current classifiers during
+  migration
+- forwarded-message extraction should preserve useful forwarded content instead
+  of collapsing to a footer-only body
 - parse failures should preserve an explicit reason, not just an empty body
+
+### Snippet Semantics
+
+Current V1:
+
+- `snippet` is derived from `body_text_normalized`
+
+Target V2:
+
+- derive `snippet` from `body_text_primary` when non-empty
+- otherwise derive it from `body_text_forwarded` when present
+- otherwise keep it empty
+
+`snippet` remains a display/read-model field, not a canonical storage primitive
+for inference.
+
+### Hash Semantics And Reprocessing
+
+- `message_sources.raw_sha256`
+  - triggers refresh and re-parse when remote raw bytes change
+- `messages.content_sha256`
+  - invalidates moderation, classification, and labels when normalized content
+    changes
+- body re-extraction or backfill that changes `body_text_normalized` must
+  recompute `messages.content_sha256`
+- the existing stale-label logic in the worker remains the compatibility
+  mechanism during migration
+
+### Forwarded-Email Handling
+
+V1 forwarded handling is destructive.
+
+Current source strips content starting at `Begin forwarded message:` in
+[`lib/normalize.ts`](/Users/zer0cell/production/zmail/lib/normalize.ts), because
+forwarded markers are treated like quoted tails.
+
+That is why the current corpus can retain footer-only bodies for forwarded mail.
+
+V2 body extraction must:
+
+- split forwarded payloads before quote-tail stripping
+- preserve forwarded content in `body_text_forwarded`
+- derive a useful primary snippet/body instead of keeping only footer residue
 
 ## Schema Changes
 
@@ -173,6 +360,7 @@ Columns to keep:
 - `messages.received_at`
 - `messages.thread_key`
 - `messages.body_text_normalized`
+- `messages.snippet`
 - `messages.created_at`
 - `message_sources.remote_thread_id`
 
@@ -181,7 +369,7 @@ Columns to treat as transitional:
 - `messages.created_at`
 - `messages.thread_key`
 
-## Migration and Backfill Plan
+## Migration And Backfill Plan
 
 This is an application-assisted migration, not a pure SQL migration.
 
@@ -198,17 +386,22 @@ This is an application-assisted migration, not a pure SQL migration.
 
 1. backfill `messages.ingested_at = messages.created_at`
 2. create conversations from distinct `(account_id, remote_thread_id)` pairs
-3. backfill `messages.conversation_id` by joining through `message_sources.remote_thread_id`
+3. backfill `messages.conversation_id` by joining through
+   `message_sources.remote_thread_id`
 
 Fallback rule for messages with missing `remote_thread_id`:
 
 - leave `conversation_id = NULL` initially
 - do not synthesize a fake Gmail thread id in the migration
-- later ingestion code may create fallback conversations only for new data if needed
+- later ingestion code may create fallback conversations only for new data if
+  needed
 
 ### Phase C: body re-extraction backfill
 
 This should be handled by an application-level maintenance job, not by SQL.
+
+Re-extraction should prioritize `parse_status = 'error'` rows first, because they
+currently preserve sync continuity but lose structured parse output.
 
 For each message with an available `raw_rfc822_path`:
 
@@ -220,17 +413,20 @@ For each message with an available `raw_rfc822_path`:
    - `body_extraction_strategy`
    - `parse_error_reason`
    - refreshed `body_text_normalized`
+   - refreshed `snippet`
+   - refreshed `content_sha256`
 
 If raw content is unavailable:
 
 - preserve current `body_text_normalized`
+- preserve current `snippet`
 - set `body_extraction_strategy = 'fallback_empty'` or equivalent
 
 ### Phase D: read-path migration
 
 Update loaders/UI/inference in this order:
 
-1. loaders continue returning `received_at`
+1. loaders continue returning current read fields unchanged
 2. detail/debug surfaces add:
    - `ingested_at`
    - `conversation_id`
@@ -239,8 +435,9 @@ Update loaders/UI/inference in this order:
    - `body_text_forwarded`
    - `body_extraction_strategy`
    - `parse_error_reason`
-3. classification/moderation continue using `body_text_normalized` initially
-4. after validation, evaluate whether classifiers should switch to `body_text_primary + body_text_forwarded` composition
+3. classification and moderation continue using `body_text_normalized` initially
+4. after validation, evaluate whether downstream inference should use
+   `body_text_primary + body_text_forwarded`
 
 ### Phase E: deprecation
 
@@ -253,49 +450,121 @@ Do not drop them until all dependent code and exports are migrated.
 
 ## Compatibility Plan
 
-### UI
+### Message List Surface
 
-Current UI surfaces that depend on existing fields:
+- keep list ordering on `received_at`
+- keep sender/subject/label fields stable during the additive migration
 
-- message list uses `messages.received_at`
-- message detail shows:
-  - `received_at`
-  - `thread_key`
-  - `parse_status`
-  - `body_text_normalized`
+### Message Detail Surface
 
-Compatibility defaults:
+- the current detail page still needs `thread_key` during transition
+- future conversation metadata can be additive rather than replacing
+  `thread_key` immediately
+- `body_text_normalized` must remain available until V2 read paths are proven
 
-- message list keeps using `received_at`
-- detail page can continue showing `thread_key` while adding Gmail conversation metadata later
-- `body_text_normalized` remains available during the migration
+### Review Surface
 
-### Server loaders
+- review flow depends on `snippet`
+- V2 body extraction must continue producing a stable display snippet even when
+  the underlying body model becomes richer
 
-Current loaders can remain stable during the additive migration.
+### Classification And Moderation Inputs
 
-Future additive loader fields:
+- moderation and classification continue consuming `body_text_normalized` until
+  V2 re-extraction is complete
+- `content_sha256` must continue driving stale-label detection and reprocessing
 
-- `ingested_at`
-- `conversation_id`
-- `remote_thread_id`
+## Known Source Drift
+
+The following are planned, not current runtime:
+
+- `messages.ingested_at`
+- `conversations`
+- `messages.conversation_id`
 - `body_text_primary`
 - `body_text_forwarded`
 - `body_extraction_strategy`
 - `parse_error_reason`
 
-### Inference
+Current source drift to keep explicit:
 
-Current moderation/classification inputs use `body_text_normalized`.
+- source still has only `body_text_normalized` and `snippet`
+- source still uses `thread_key` in the message detail UI
+- source has no read path for `remote_thread_id` or conversation metadata
+- source has no application job yet for body re-extraction
 
-Default migration strategy:
+## Acceptance Criteria For The Eventual Implementation
 
-- keep `body_text_normalized` as the inference input until the re-extraction backfill is complete
-- only then evaluate whether a structured primary/forwarded composition improves classification quality
+### Timestamps
 
-## Research Queries
+- every message has:
+  - `received_at`
+  - `ingested_at`
+- message list ordering continues using `received_at`
+- debug/admin views can distinguish message time from ingest time
 
-These are the baseline queries for future design reviews and validation:
+### Conversations
+
+- every message with a Gmail thread id resolves to a `conversation_id`
+- repeated Gmail thread ids group into a single conversation per account
+- `thread_key` remains available only as fallback/debug metadata
+
+### Body extraction
+
+- forwarded messages no longer collapse to footer-only text when recoverable
+  forwarded content exists
+- parse-error rows retain a reason and explicit extraction strategy
+- `snippet` remains stable for review and message-detail surfaces
+- `body_text_normalized` remains non-breaking for current inference paths
+
+### Migration safety
+
+- additive migration preserves current routes and loaders
+- backfill can be resumed safely
+- existing rows without raw RFC822 remain readable and classifiable under
+  fallback rules
+
+## Assumptions
+
+- Gmail remains the only provider in scope
+- Gmail thread id is the correct canonical conversation identity for this
+  product
+- the current live corpus is representative enough to justify the refactor
+  direction
+- the eventual implementation will be staged and additive rather than a
+  destructive one-shot rewrite
+
+## Evidence Snapshot (2026-04-14)
+
+Observed from the live SQLite on `2026-04-14`:
+
+- `messages = 337`
+- `parse_status = 'error'` on `13` rows
+- `null received_at = 0`
+- `null or empty subject = 13`
+- `null or empty sender_address = 13`
+- average drift from `received_at` to current row `created_at` is `362.09`
+  hours
+- max drift is `703.94` hours
+- min drift is `6.29` hours
+- distinct `message_sources.remote_thread_id = 326`
+- distinct `messages.thread_key = 310`
+- `4` Gmail thread ids currently map to multiple local `thread_key` values
+- `10` local `thread_key` values currently collapse multiple Gmail thread ids
+
+Observed forwarded-email issue:
+
+- the live DB currently has `2` `Fw:` messages
+- both normalize to a `31` character footer-only body:
+  `Sent from Yahoo Mail for iPhone`
+
+Observed parse-error issue:
+
+- all `13` parse-error rows currently persist empty normalized bodies
+- parse-error rows also account for the current empty subject and empty sender
+  rows
+
+Reference queries:
 
 ```sql
 select count(*) as messages,
@@ -311,6 +580,28 @@ select round(avg((julianday(created_at)-julianday(received_at))*24),2) as avg_ho
   round(min((julianday(created_at)-julianday(received_at))*24),2) as min_hours_to_ingest
 from messages
 where received_at is not null;
+```
+
+```sql
+select count(*) as multi_source_messages
+from (
+  select message_id
+  from message_sources
+  group by message_id
+  having count(*) > 1
+);
+```
+
+```sql
+select count(*) as messages_without_remote_message
+from message_sources
+where remote_message_id is null;
+```
+
+```sql
+select count(*) as messages_without_remote_thread
+from message_sources
+where remote_thread_id is null;
 ```
 
 ```sql
@@ -341,55 +632,3 @@ from (
   having count(distinct remote_thread_id) > 1
 );
 ```
-
-```sql
-select parse_status,
-  count(*) as n,
-  round(avg(length(body_text_normalized)),1) as avg_body_len,
-  sum(case when trim(body_text_normalized)='' then 1 else 0 end) as empty_bodies
-from messages
-group by parse_status;
-```
-
-```sql
-select messages.id, subject, sender_address, received_at, raw_rfc822_path
-from messages
-join message_sources on message_sources.message_id = messages.id
-where lower(subject) like 'fwd:%' or lower(subject) like 'fw:%'
-order by received_at desc;
-```
-
-## Acceptance Criteria For The Eventual Implementation
-
-### Timestamps
-
-- every message has:
-  - `received_at`
-  - `ingested_at`
-- message list ordering continues using `received_at`
-- admin/debug views can distinguish message time from ingest time
-
-### Conversations
-
-- every message with a Gmail thread id resolves to a `conversation_id`
-- repeated Gmail thread ids group into a single conversation per account
-- `thread_key` remains visible only as fallback/debug metadata
-
-### Body extraction
-
-- forwarded messages no longer collapse to footer-only text when recoverable forwarded content exists
-- parse-error rows retain a reason and explicit extraction strategy
-- `body_text_normalized` remains non-breaking for existing inference paths
-
-### Migration safety
-
-- additive migration preserves current routes and loaders
-- backfill can be resumed safely
-- existing rows without raw RFC822 remain readable and classifiable under fallback rules
-
-## Assumptions
-
-- Gmail remains the only provider in scope.
-- Gmail thread id is the correct canonical conversation identity for this product.
-- The current live corpus is representative enough to justify the refactor direction.
-- The eventual implementation will be staged and additive rather than a destructive one-shot rewrite.
