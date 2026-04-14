@@ -1666,6 +1666,7 @@ describe("sync", () => {
 			"2:3",
 			{
 				uid: true,
+				emailId: true,
 			},
 			{ uid: true },
 		);
@@ -2166,13 +2167,21 @@ describe("sync", () => {
 		});
 		const source = await db
 			.selectFrom("message_sources")
-			.select(["raw_sha256", "raw_rfc822_path", "imap_uid"])
+			.select([
+				"raw_sha256",
+				"raw_rfc822_path",
+				"imap_uid",
+				"last_seen_at",
+				"updated_at",
+			])
 			.where("id", "=", "src-existing-rollback")
 			.executeTakeFirstOrThrow();
 		expect(source).toEqual({
 			raw_sha256: "old-sha",
 			raw_rfc822_path: "/tmp/old-rollback.eml",
 			imap_uid: 1,
+			last_seen_at: "2026-01-01T00:00:00.000Z",
+			updated_at: "2026-01-01T00:00:00.000Z",
 		});
 		const attachments = await db
 			.selectFrom("attachments")
