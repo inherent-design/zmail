@@ -538,7 +538,14 @@ export function ensureWorkerStarted() {
 	}
 
 	globalThis.__zmailWorkerStarted__ = true;
-	globalThis.__zmailWorkerLoop__ = workerLoop();
+	globalThis.__zmailWorkerLoop__ = workerLoop().catch((error) => {
+		globalThis.__zmailWorkerStarted__ = false;
+		globalThis.__zmailWorkerLoop__ = undefined;
+		startTrace({
+			kind: "worker",
+			operation: "worker_loop_crash",
+		}).fail("worker.loop_crashed", error);
+	});
 }
 
 export async function drainWorkerUntilIdle() {

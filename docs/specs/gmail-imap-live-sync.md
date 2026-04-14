@@ -126,6 +126,7 @@ Flow:
 4. The callback writes `data/accounts/<accountId>/google-oauth.json`, upserts `account_sync_state`, and queues `sync_account_full`.
 5. The callback does not start the watcher directly.
 6. After the first successful bootstrap window, the worker starts the watcher for that account when live sync is enabled.
+7. If the worker loop exits because of an unhandled fatal error, the single-start latch is cleared, the crash is logged, and a later request can restart the worker in the same process.
 
 Reconnect identity is the normalized Gmail email address. Reconnecting the same Gmail account reuses the same account row.
 
@@ -138,7 +139,7 @@ Key operations:
 - `createImapClient()` connects to `imap.gmail.com:993` with TLS and XOAUTH2
 - `fetchMessageWindow()` fetches a bounded ascending IMAP UID range
 - `fetchMessageWindowDescending()` fetches a bounded IMAP UID range and sorts the result descending in userland
-- `writeRawEml()` stores the raw RFC822 file under `data/accounts/<accountId>/raw/<remoteMessageId>.eml`
+- `writeRawEml()` stores the raw RFC822 file under `data/accounts/<accountId>/raw/<remoteMessageId>.eml` only when `remoteMessageId` is non-empty and passes path-safe validation; invalid IDs fail closed before any filesystem write
 - `parseRawMessage()` parses MIME with `mailparser`, normalizes body text, derives thread keys, and extracts attachment metadata
 - `getMailboxStatus()` reads mailbox cursor metadata including `UIDVALIDITY` and `UIDNEXT`
 

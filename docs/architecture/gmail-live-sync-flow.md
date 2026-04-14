@@ -28,6 +28,8 @@ The worker loop in `lib/worker.ts` starts with:
 
 `bootServer()` ensures the worker is started once per process.
 
+If the worker loop escapes because of an unhandled fatal error, the crash is logged, the worker globals are cleared, and a later `ensureWorkerStarted()` call can retry startup in the same process.
+
 ## Job Lease Safety
 
 Every claimed job gets a lease expiration time.
@@ -180,6 +182,7 @@ Reconcile must not collapse `backfilling` to `idle`.
 For a new synced message:
 
 - write raw RFC822 to disk
+- raw `.eml` writes require a validated non-empty path-safe `remoteMessageId`
 - parse MIME
 - normalize message fields
 - insert `messages`
