@@ -1,8 +1,188 @@
-import { APP_CONFIG, OVERSEER_PROMPT_VERSION } from "#/lib/config";
+import {
+	APP_CONFIG,
+	CLASSIFY_PROMPT_VERSION,
+	FINANCE_INTEL_PROMPT_VERSION,
+	FINANCE_KNOWLEDGE_PROMPT_VERSION,
+	OVERSEER_PROMPT_VERSION,
+} from "#/lib/config";
 import { type LogFields, type LogTrace, startTrace } from "#/lib/log";
-import { messageLabelSchema } from "#/lib/schemas";
 
 let bootServerOnce: Promise<typeof import("#/lib/db")> | null = null;
+
+function sourceStatePriority(state: string) {
+	return state === "active" ? 0 : 1;
+}
+
+function buildPreferredSourceByMessageId<
+	T extends {
+		message_id: string;
+		state: string;
+		updated_at: string;
+	},
+>(rows: T[]) {
+	const sortedRows = [...rows].sort((left, right) => {
+		const stateOrder =
+			sourceStatePriority(left.state) - sourceStatePriority(right.state);
+		if (stateOrder !== 0) {
+			return stateOrder;
+		}
+		return right.updated_at.localeCompare(left.updated_at);
+	});
+	const preferred = new Map<string, T>();
+	for (const row of sortedRows) {
+		if (!preferred.has(row.message_id)) {
+			preferred.set(row.message_id, row);
+		}
+	}
+	return preferred;
+}
+
+function createFinanceStatusCounts() {
+	return {
+		ready: 0,
+		review: 0,
+		stale: 0,
+		blockedParseError: 0,
+	};
+}
+
+function parseFinanceRelevant(
+	safeJsonParse: <T>(input: string | null, fallback: T) => T,
+	labelJson: string | null,
+) {
+	const label = safeJsonParse<{ finance?: { relevant?: boolean } } | null>(
+		labelJson,
+		null,
+	);
+	return Boolean(label?.finance?.relevant);
+}
+
+async function loadRegistryState(
+	db: Awaited<ReturnType<typeof import("#/lib/db")["getDb"]>>,
+	safeJsonParse: <T>(input: string | null, fallback: T) => T,
+) {
+	const state = await db
+		.selectFrom("registry_import_state")
+		.selectAll()
+		.where("key", "=", "operator_registry")
+		.executeTakeFirst();
+
+	if (!state) {
+		return {
+			sha256: null,
+			importedAt: null,
+			sourceDir: APP_CONFIG.registryDir,
+			counts: {
+				identities: 0,
+				institutions: 0,
+				financialAccounts: 0,
+				senderRules: 0,
+			},
+		};
+	}
+
+	return {
+		sha256: state.combined_sha256,
+		importedAt: state.imported_at,
+		sourceDir: state.source_dir,
+		counts: safeJsonParse(state.counts_json, {
+			identities: 0,
+			institutions: 0,
+			financialAccounts: 0,
+			senderRules: 0,
+		}),
+	};
+}
+
+async function loadFinanceCoverageSummary(input: {
+	db: Awaited<ReturnType<typeof import("#/lib/db")["getDb"]>>;
+	safeJsonParse: <T>(input: string | null, fallback: T) => T;
+	accountId?: string;
+}) {
+	let labelQuery = input.db
+		.selectFrom("message_labels")
+		.innerJoin("messages", "messages.id", "message_labels.message_id")
+		.select(["message_labels.label_json"]);
+	let headQuery = input.db
+		.selectFrom("message_secondary_heads")
+		.innerJoin("messages", "messages.id", "message_secondary_heads.message_id")
+		.select([
+			"message_secondary_heads.status",
+			"message_secondary_heads.message_id",
+		])
+		.where("message_secondary_heads.classifier_key", "=", "finance_intel");
+	let evidenceQuery = input.db
+		.selectFrom("finance_event_evidence")
+		.innerJoin("messages", "messages.id", "finance_event_evidence.message_id")
+		.select([
+			"finance_event_evidence.event_candidate_id",
+			"finance_event_evidence.document_candidate_id",
+		]);
+
+	if (input.accountId) {
+		labelQuery = labelQuery.where("messages.account_id", "=", input.accountId);
+		headQuery = headQuery.where("messages.account_id", "=", input.accountId);
+		evidenceQuery = evidenceQuery.where(
+			"messages.account_id",
+			"=",
+			input.accountId,
+		);
+	}
+
+	const [labelRows, headRows, evidenceRows] = await Promise.all([
+		labelQuery.execute(),
+		headQuery.execute(),
+		evidenceQuery.execute(),
+	]);
+
+	const rootFinanceRelevantCount = labelRows.reduce((count, row) => {
+		return (
+			count + Number(parseFinanceRelevant(input.safeJsonParse, row.label_json))
+		);
+	}, 0);
+
+	const statusCounts = createFinanceStatusCounts();
+	for (const head of headRows) {
+		switch (head.status) {
+			case "ready":
+				statusCounts.ready += 1;
+				break;
+			case "review":
+				statusCounts.review += 1;
+				break;
+			case "stale":
+				statusCounts.stale += 1;
+				break;
+			case "blocked_parse_error":
+				statusCounts.blockedParseError += 1;
+				break;
+			default:
+				break;
+		}
+	}
+
+	const eventCandidateIds = new Set<string>();
+	const documentCandidateIds = new Set<string>();
+	for (const row of evidenceRows) {
+		if (row.event_candidate_id) {
+			eventCandidateIds.add(row.event_candidate_id);
+		}
+		if (row.document_candidate_id) {
+			documentCandidateIds.add(row.document_candidate_id);
+		}
+	}
+
+	return {
+		rootFinanceRelevantCount,
+		totalHeads: headRows.length,
+		readyCount: statusCounts.ready,
+		reviewCount: statusCounts.review,
+		staleCount: statusCounts.stale,
+		blockedParseErrorCount: statusCounts.blockedParseError,
+		eventCandidateCount: eventCandidateIds.size,
+		documentCandidateCount: documentCandidateIds.size,
+	};
+}
 
 async function bootServer() {
 	if (!bootServerOnce) {
@@ -65,6 +245,50 @@ async function assertRemoteSyncCommandAllowed(accountId: string) {
 	return { db, account };
 }
 
+async function queueFinanceBacklogJob(accountId: string) {
+	const { queueJobIdempotent } = await import("#/lib/jobs");
+	return queueJobIdempotent({
+		kind: "classify_finance_backlog",
+		scopeType: "account",
+		scopeId: accountId,
+		model: APP_CONFIG.classifierModel,
+		promptVersion: FINANCE_INTEL_PROMPT_VERSION,
+	});
+}
+
+async function queueFinanceKnowledgeJob() {
+	const { queueJobIdempotent } = await import("#/lib/jobs");
+	return queueJobIdempotent({
+		kind: "rebuild_finance_knowledge",
+		scopeType: "system",
+		scopeId: "finance",
+		model: APP_CONFIG.fallbackModel,
+		promptVersion: FINANCE_KNOWLEDGE_PROMPT_VERSION,
+	});
+}
+
+async function queueFinanceRollupsJob() {
+	const { queueJobIdempotent } = await import("#/lib/jobs");
+	return queueJobIdempotent({
+		kind: "rebuild_finance_rollups",
+		scopeType: "system",
+		scopeId: "finance_rollups",
+		model: APP_CONFIG.fallbackModel,
+		promptVersion: FINANCE_KNOWLEDGE_PROMPT_VERSION,
+	});
+}
+
+async function queueRegistrySuggestionReconcileJob() {
+	const { queueJobIdempotent } = await import("#/lib/jobs");
+	return queueJobIdempotent({
+		kind: "reconcile_registry_suggestions",
+		scopeType: "system",
+		scopeId: "registry_suggestions",
+		model: APP_CONFIG.fallbackModel,
+		promptVersion: FINANCE_KNOWLEDGE_PROMPT_VERSION,
+	});
+}
+
 export async function loadHomeData() {
 	return runLoggedAction({
 		operation: "loadHomeData",
@@ -122,6 +346,10 @@ export async function loadMessagesData() {
 				.select([
 					"messages.id",
 					"messages.received_at",
+					"messages.conversation_id",
+					"messages.body_extraction_strategy",
+					"messages.body_text_forwarded",
+					"messages.parse_status",
 					"messages.sender_address",
 					"messages.subject",
 					"accounts.label as account_label",
@@ -133,9 +361,25 @@ export async function loadMessagesData() {
 				.orderBy("messages.received_at", "desc")
 				.limit(250)
 				.execute();
+			const sourceRows =
+				rows.length === 0
+					? []
+					: await db
+							.selectFrom("message_sources")
+							.select(["message_id", "remote_thread_id", "state", "updated_at"])
+							.where(
+								"message_id",
+								"in",
+								rows.map((row) => row.id),
+							)
+							.execute();
+			const sourceByMessageId = buildPreferredSourceByMessageId(sourceRows);
 
-			return rows.map((row) => ({
+			return rows.map(({ body_text_forwarded, ...row }) => ({
 				...row,
+				remote_thread_id:
+					sourceByMessageId.get(row.id)?.remote_thread_id ?? null,
+				has_forwarded: body_text_forwarded.length > 0,
 				label: safeJsonParse(row.label_json ?? null, null),
 			}));
 		},
@@ -165,18 +409,25 @@ export async function loadMessageDetailData(input: { messageId: string }) {
 					"messages.message_id",
 					"messages.thread_key",
 					"messages.received_at",
+					"messages.ingested_at",
+					"messages.conversation_id",
 					"messages.sender_name",
 					"messages.sender_address",
 					"messages.to_json",
 					"messages.cc_json",
 					"messages.subject",
 					"messages.in_reply_to",
+					"messages.body_text_primary",
+					"messages.body_text_forwarded",
 					"messages.body_text_normalized",
 					"messages.snippet",
 					"messages.attachment_count",
 					"messages.has_html",
 					"messages.parse_status",
+					"messages.body_extraction_strategy",
+					"messages.parse_error_reason",
 					"messages.token_estimate",
+					"messages.content_sha256",
 				])
 				.where("messages.id", "=", input.messageId)
 				.executeTakeFirstOrThrow();
@@ -189,6 +440,21 @@ export async function loadMessageDetailData(input: { messageId: string }) {
 				.selectAll()
 				.where("message_id", "=", input.messageId)
 				.execute();
+			const sourceRows = await db
+				.selectFrom("message_sources")
+				.select([
+					"message_id",
+					"remote_thread_id",
+					"raw_rfc822_path",
+					"raw_sha256",
+					"state",
+					"updated_at",
+				])
+				.where("message_id", "=", input.messageId)
+				.execute();
+			const currentSource =
+				buildPreferredSourceByMessageId(sourceRows).get(input.messageId) ??
+				null;
 
 			const moderation = await db
 				.selectFrom("moderation_results")
@@ -215,10 +481,73 @@ export async function loadMessageDetailData(input: { messageId: string }) {
 				.where("account_id", "=", message.account_id)
 				.orderBy("created_at", "desc")
 				.executeTakeFirst();
+			const financeHead = await db
+				.selectFrom("message_secondary_heads")
+				.leftJoin(
+					"message_secondary_results",
+					"message_secondary_results.id",
+					"message_secondary_heads.secondary_result_id",
+				)
+				.select([
+					"message_secondary_heads.status",
+					"message_secondary_heads.low_confidence",
+					"message_secondary_heads.content_sha256",
+					"message_secondary_heads.registry_sha256",
+					"message_secondary_heads.updated_at",
+					"message_secondary_results.id as result_id",
+					"message_secondary_results.schema_version",
+					"message_secondary_results.model",
+					"message_secondary_results.prompt_version",
+					"message_secondary_results.source",
+					"message_secondary_results.result_json",
+					"message_secondary_results.raw_response_json",
+					"message_secondary_results.usage_json",
+					"message_secondary_results.created_at",
+				])
+				.where("message_secondary_heads.message_id", "=", input.messageId)
+				.where("message_secondary_heads.classifier_key", "=", "finance_intel")
+				.executeTakeFirst();
+			const financeHistory = await db
+				.selectFrom("message_secondary_results")
+				.selectAll()
+				.where("message_id", "=", input.messageId)
+				.where("classifier_key", "=", "finance_intel")
+				.orderBy("created_at", "desc")
+				.execute();
+			const financeEvidence = await db
+				.selectFrom("finance_event_evidence")
+				.leftJoin(
+					"finance_event_candidates",
+					"finance_event_candidates.id",
+					"finance_event_evidence.event_candidate_id",
+				)
+				.leftJoin(
+					"finance_document_candidates",
+					"finance_document_candidates.id",
+					"finance_event_evidence.document_candidate_id",
+				)
+				.select([
+					"finance_event_evidence.id",
+					"finance_event_evidence.event_candidate_id",
+					"finance_event_evidence.document_candidate_id",
+					"finance_event_evidence.transaction_index",
+					"finance_event_evidence.document_index",
+					"finance_event_evidence.evidence_json",
+					"finance_event_candidates.canonical_key as event_canonical_key",
+					"finance_event_candidates.status as event_status",
+					"finance_document_candidates.canonical_key as document_canonical_key",
+					"finance_document_candidates.status as document_status",
+				])
+				.where("finance_event_evidence.message_id", "=", input.messageId)
+				.orderBy("finance_event_evidence.created_at", "desc")
+				.execute();
 
 			return {
 				message: {
 					...message,
+					remote_thread_id: currentSource?.remote_thread_id ?? null,
+					raw_rfc822_path: currentSource?.raw_rfc822_path ?? null,
+					raw_sha256: currentSource?.raw_sha256 ?? null,
 					to: safeJsonParse(message.to_json, []),
 					cc: safeJsonParse(message.cc_json, []),
 				},
@@ -247,6 +576,56 @@ export async function loadMessageDetailData(input: { messageId: string }) {
 				latestProfile: latestProfile
 					? safeJsonParse(latestProfile.profile_json, null)
 					: null,
+				financeIntel: financeHead
+					? {
+							head: {
+								status: financeHead.status,
+								lowConfidence: financeHead.low_confidence,
+								contentSha256: financeHead.content_sha256,
+								registrySha256: financeHead.registry_sha256,
+								updatedAt: financeHead.updated_at,
+							},
+							current: financeHead.result_id
+								? {
+										id: financeHead.result_id,
+										schemaVersion: financeHead.schema_version,
+										model: financeHead.model,
+										promptVersion: financeHead.prompt_version,
+										source: financeHead.source,
+										createdAt: financeHead.created_at,
+										result: safeJsonParse(financeHead.result_json, null),
+										rawResponse: safeJsonParse(
+											financeHead.raw_response_json,
+											null,
+										),
+										usage: safeJsonParse(financeHead.usage_json ?? null, null),
+									}
+								: null,
+							history: financeHistory.map((row) => ({
+								id: row.id,
+								schemaVersion: row.schema_version,
+								model: row.model,
+								promptVersion: row.prompt_version,
+								source: row.source,
+								createdAt: row.created_at,
+								result: safeJsonParse(row.result_json, null),
+								rawResponse: safeJsonParse(row.raw_response_json, null),
+								usage: safeJsonParse(row.usage_json ?? null, null),
+							})),
+							evidence: financeEvidence.map((row) => ({
+								id: row.id,
+								eventCandidateId: row.event_candidate_id,
+								documentCandidateId: row.document_candidate_id,
+								transactionIndex: row.transaction_index,
+								documentIndex: row.document_index,
+								eventCanonicalKey: row.event_canonical_key,
+								eventStatus: row.event_status,
+								documentCanonicalKey: row.document_canonical_key,
+								documentStatus: row.document_status,
+								evidenceJson: row.evidence_json,
+							})),
+						}
+					: null,
 			};
 		},
 		summarize: (result) => ({
@@ -256,6 +635,7 @@ export async function loadMessageDetailData(input: { messageId: string }) {
 			has_moderation: Boolean(result.moderation),
 			has_current_label: Boolean(result.currentLabel),
 			has_latest_profile: Boolean(result.latestProfile),
+			has_finance_intel: Boolean(result.financeIntel),
 		}),
 	});
 }
@@ -283,14 +663,19 @@ export async function loadReviewData() {
 					"messages.sender_address",
 					"messages.subject",
 					"messages.snippet",
+					"messages.body_extraction_strategy",
+					"messages.body_text_forwarded",
+					"messages.parse_status",
+					"messages.parse_error_reason",
 					"classification_results.result_json",
 				])
 				.where("reviews.status", "=", "open")
 				.orderBy("reviews.created_at", "asc")
 				.execute();
 
-			return rows.map((row) => ({
+			return rows.map(({ body_text_forwarded, ...row }) => ({
 				...row,
+				has_forwarded: body_text_forwarded.length > 0,
 				result: safeJsonParse(row.result_json, null),
 			}));
 		},
@@ -333,19 +718,27 @@ export async function loadProfileData(input: { accountId: string }) {
 		run: async () => {
 			const { getDb, safeJsonParse } = await bootServer();
 			const db = getDb();
-			const account = await db
-				.selectFrom("accounts")
-				.selectAll()
-				.where("id", "=", input.accountId)
-				.executeTakeFirstOrThrow();
-			const profiles = await db
-				.selectFrom("overseer_profiles")
-				.selectAll()
-				.where("account_id", "=", input.accountId)
-				.orderBy("created_at", "desc")
-				.execute();
+			const [account, profiles, financeCoverage] = await Promise.all([
+				db
+					.selectFrom("accounts")
+					.selectAll()
+					.where("id", "=", input.accountId)
+					.executeTakeFirstOrThrow(),
+				db
+					.selectFrom("overseer_profiles")
+					.selectAll()
+					.where("account_id", "=", input.accountId)
+					.orderBy("created_at", "desc")
+					.execute(),
+				loadFinanceCoverageSummary({
+					db,
+					safeJsonParse,
+					accountId: input.accountId,
+				}),
+			]);
 			return {
 				account,
+				financeCoverage,
 				profiles: profiles.map((profile) => ({
 					...profile,
 					profile: safeJsonParse(profile.profile_json, null),
@@ -355,6 +748,367 @@ export async function loadProfileData(input: { accountId: string }) {
 		},
 		summarize: (result) => ({
 			profiles: result.profiles.length,
+			root_finance_relevant: result.financeCoverage.rootFinanceRelevantCount,
+			finance_heads: result.financeCoverage.totalHeads,
+		}),
+	});
+}
+
+export async function loadFinanceData(
+	input: {
+		year?: number;
+		accountId?: string;
+		institutionId?: string;
+		ownerIdentityId?: string;
+		sourceKind?: "email" | "pdf" | "statement" | "csv" | "ofx";
+	} = {},
+) {
+	return runLoggedAction({
+		operation: "loadFinanceData",
+		kind: "loader",
+		run: async () => {
+			const { getDb, safeJsonParse } = await bootServer();
+			const [{ loadCombinedFinanceLedger }, { rebuildFinanceRollups }] =
+				await Promise.all([
+					import("#/lib/finance-rollups"),
+					import("#/lib/finance-rollups"),
+				]);
+			const db = getDb();
+			const [
+				registry,
+				coverage,
+				eventRows,
+				documentRows,
+				evidenceRows,
+				ledger,
+				rollupRows,
+				subcategoryRows,
+				importDocumentRows,
+				suggestionRows,
+				accountRows,
+			] = await Promise.all([
+				loadRegistryState(db, safeJsonParse),
+				loadFinanceCoverageSummary({ db, safeJsonParse }),
+				db
+					.selectFrom("finance_event_candidates")
+					.selectAll()
+					.orderBy("last_message_received_at", "desc")
+					.orderBy("updated_at", "desc")
+					.limit(100)
+					.execute(),
+				db
+					.selectFrom("finance_document_candidates")
+					.selectAll()
+					.orderBy("last_message_received_at", "desc")
+					.orderBy("updated_at", "desc")
+					.limit(100)
+					.execute(),
+				db
+					.selectFrom("finance_event_evidence")
+					.innerJoin(
+						"messages",
+						"messages.id",
+						"finance_event_evidence.message_id",
+					)
+					.innerJoin("accounts", "accounts.id", "messages.account_id")
+					.select([
+						"finance_event_evidence.id",
+						"finance_event_evidence.event_candidate_id",
+						"finance_event_evidence.document_candidate_id",
+						"finance_event_evidence.message_id",
+						"finance_event_evidence.transaction_index",
+						"finance_event_evidence.document_index",
+						"finance_event_evidence.evidence_json",
+						"messages.subject",
+						"messages.received_at",
+						"accounts.label as account_label",
+					])
+					.orderBy("finance_event_evidence.created_at", "desc")
+					.execute(),
+				loadCombinedFinanceLedger(),
+				db
+					.selectFrom("finance_yearly_rollups")
+					.selectAll()
+					.orderBy("year", "desc")
+					.orderBy("primary_category", "asc")
+					.execute(),
+				db
+					.selectFrom("finance_yearly_subcategory_rollups")
+					.selectAll()
+					.orderBy("year", "desc")
+					.orderBy("primary_category", "asc")
+					.orderBy("secondary_category", "asc")
+					.execute(),
+				db
+					.selectFrom("finance_import_documents")
+					.selectAll()
+					.orderBy("created_at", "desc")
+					.limit(100)
+					.execute(),
+				db
+					.selectFrom("registry_suggestions")
+					.selectAll()
+					.orderBy("updated_at", "desc")
+					.limit(100)
+					.execute(),
+				db
+					.selectFrom("accounts")
+					.select(["id", "label"])
+					.orderBy("label", "asc")
+					.execute(),
+			]);
+
+			if (rollupRows.length === 0 && ledger.length > 0) {
+				await rebuildFinanceRollups();
+			}
+			const refreshedRollupRows =
+				rollupRows.length > 0
+					? rollupRows
+					: await db
+							.selectFrom("finance_yearly_rollups")
+							.selectAll()
+							.orderBy("year", "desc")
+							.orderBy("primary_category", "asc")
+							.execute();
+			const refreshedSubcategoryRows =
+				subcategoryRows.length > 0
+					? subcategoryRows
+					: await db
+							.selectFrom("finance_yearly_subcategory_rollups")
+							.selectAll()
+							.orderBy("year", "desc")
+							.orderBy("primary_category", "asc")
+							.orderBy("secondary_category", "asc")
+							.execute();
+
+			const availableYears = Array.from(
+				new Set([
+					...ledger.map((entry) => entry.year),
+					...refreshedRollupRows.map((row) => row.year),
+					...importDocumentRows
+						.map((row) =>
+							row.statement_period_end
+								? Number.parseInt(row.statement_period_end.slice(0, 4), 10)
+								: null,
+						)
+						.filter((value): value is number => Number.isInteger(value)),
+				]),
+			).sort((left, right) => right - left);
+			const selectedYear =
+				input.year ?? availableYears[0] ?? new Date().getUTCFullYear();
+
+			const filteredLedger = ledger.filter((entry) => {
+				if (entry.year !== selectedYear) {
+					return false;
+				}
+				if (input.accountId && entry.accountId !== input.accountId) {
+					return false;
+				}
+				if (input.sourceKind && entry.sourceKind !== input.sourceKind) {
+					return false;
+				}
+				if (
+					input.institutionId &&
+					entry.institutionId !== input.institutionId
+				) {
+					return false;
+				}
+				if (
+					input.ownerIdentityId &&
+					entry.ownerIdentityId !== input.ownerIdentityId
+				) {
+					return false;
+				}
+				return true;
+			});
+
+			const summary = filteredLedger.reduce(
+				(acc, entry) => {
+					const amount = entry.amountMinor ?? 0;
+					if (entry.direction === "income") {
+						acc.inflowMinor += amount;
+						acc.netMinor += amount;
+					}
+					if (entry.direction === "expense") {
+						acc.outflowMinor += amount;
+						acc.netMinor -= amount;
+					}
+					acc.extractedTransactionCount += 1;
+					if (entry.primaryCategory === "uncategorized") {
+						acc.uncategorizedCount += 1;
+					}
+					return acc;
+				},
+				{
+					inflowMinor: 0,
+					outflowMinor: 0,
+					netMinor: 0,
+					importedStatementCount: importDocumentRows.filter((row) =>
+						row.statement_period_end?.startsWith(String(selectedYear)),
+					).length,
+					extractedTransactionCount: 0,
+					uncategorizedCount: 0,
+				},
+			);
+
+			const evidenceByCandidate = new Map<
+				string,
+				Array<{
+					id: string;
+					messageId: string;
+					accountLabel: string;
+					subject: string | null;
+					receivedAt: string | null;
+					transactionIndex: number | null;
+					documentIndex: number | null;
+				}>
+			>();
+			for (const row of evidenceRows) {
+				const candidateKey = row.event_candidate_id
+					? `event:${row.event_candidate_id}`
+					: row.document_candidate_id
+						? `document:${row.document_candidate_id}`
+						: null;
+				if (!candidateKey) {
+					continue;
+				}
+				const current = evidenceByCandidate.get(candidateKey) ?? [];
+				current.push({
+					id: row.id,
+					messageId: row.message_id,
+					accountLabel: row.account_label,
+					subject: row.subject,
+					receivedAt: row.received_at,
+					transactionIndex: row.transaction_index,
+					documentIndex: row.document_index,
+				});
+				evidenceByCandidate.set(candidateKey, current);
+			}
+
+			return {
+				year: selectedYear,
+				availableYears,
+				filters: {
+					accountId: input.accountId ?? null,
+					institutionId: input.institutionId ?? null,
+					ownerIdentityId: input.ownerIdentityId ?? null,
+					sourceKind: input.sourceKind ?? null,
+					accounts: accountRows.map((row) => ({
+						id: row.id,
+						label: row.label,
+					})),
+				},
+				registry,
+				coverage,
+				summary,
+				rollups: refreshedRollupRows
+					.filter((row) => row.year === selectedYear)
+					.map((row) => ({
+						year: row.year,
+						sourceKind: row.source_kind,
+						primaryCategory: row.primary_category,
+						inflowMinor: row.inflow_minor,
+						outflowMinor: row.outflow_minor,
+						netMinor: row.net_minor,
+						transactionCount: row.transaction_count,
+						importedStatementCount: row.imported_statement_count,
+						extractedTransactionCount: row.extracted_transaction_count,
+						uncategorizedCount: row.uncategorized_count,
+					})),
+				subcategoryRollups: refreshedSubcategoryRows
+					.filter((row) => row.year === selectedYear)
+					.map((row) => ({
+						year: row.year,
+						sourceKind: row.source_kind,
+						primaryCategory: row.primary_category,
+						secondaryCategory: row.secondary_category,
+						inflowMinor: row.inflow_minor,
+						outflowMinor: row.outflow_minor,
+						netMinor: row.net_minor,
+						transactionCount: row.transaction_count,
+					})),
+				ledgerPreview: filteredLedger.slice(0, 100),
+				importedDocuments: importDocumentRows
+					.filter(
+						(row) =>
+							row.statement_period_end?.startsWith(String(selectedYear)) ??
+							true,
+					)
+					.slice(0, 50)
+					.map((row) => ({
+						id: row.id,
+						documentType: row.document_type,
+						issuer: row.issuer,
+						externalId: row.external_id,
+						statementPeriodStart: row.statement_period_start,
+						statementPeriodEnd: row.statement_period_end,
+						dueAt: row.due_at,
+						taxYear: row.tax_year,
+						ownerIdentityHint: row.owner_identity_hint,
+						financialAccountHint: row.financial_account_hint,
+						institutionHint: row.institution_hint,
+						evidenceText: row.evidence_text,
+					})),
+				registrySuggestions: suggestionRows.map((row) => ({
+					id: row.id,
+					entityKind: row.entity_kind,
+					canonicalKey: row.canonical_key,
+					sourceKind: row.source_kind,
+					confidence: row.confidence,
+					status: row.status,
+					appliedRegistryId: row.applied_registry_id,
+					suggestion: safeJsonParse(row.suggestion_json, null),
+					updatedAt: row.updated_at,
+				})),
+				eventCandidates: eventRows.map((row) => ({
+					id: row.id,
+					canonicalKey: row.canonical_key,
+					status: row.status,
+					eventKind: row.event_kind,
+					direction: row.direction,
+					amountValue: row.amount_value,
+					currency: row.currency,
+					occurredAt: row.occurred_at,
+					merchantOrCounterparty: row.merchant_or_counterparty,
+					ownerIdentityId: row.owner_identity_id,
+					financialAccountId: row.financial_account_id,
+					institutionId: row.institution_id,
+					categoryHint: row.category_hint,
+					taxRelevanceHint: row.tax_relevance_hint,
+					evidenceCount: row.evidence_count,
+					firstMessageReceivedAt: row.first_message_received_at,
+					lastMessageReceivedAt: row.last_message_received_at,
+					updatedAt: row.updated_at,
+					evidence: evidenceByCandidate.get(`event:${row.id}`) ?? [],
+				})),
+				documentCandidates: documentRows.map((row) => ({
+					id: row.id,
+					canonicalKey: row.canonical_key,
+					status: row.status,
+					documentType: row.document_type,
+					issuer: row.issuer,
+					externalId: row.external_id,
+					statementPeriodStart: row.statement_period_start,
+					statementPeriodEnd: row.statement_period_end,
+					dueAt: row.due_at,
+					taxYear: row.tax_year,
+					ownerIdentityId: row.owner_identity_id,
+					financialAccountId: row.financial_account_id,
+					institutionId: row.institution_id,
+					evidenceCount: row.evidence_count,
+					firstMessageReceivedAt: row.first_message_received_at,
+					lastMessageReceivedAt: row.last_message_received_at,
+					updatedAt: row.updated_at,
+					evidence: evidenceByCandidate.get(`document:${row.id}`) ?? [],
+				})),
+			};
+		},
+		summarize: (result) => ({
+			year: result.year,
+			event_candidates: result.eventCandidates.length,
+			document_candidates: result.documentCandidates.length,
+			finance_heads: result.coverage.totalHeads,
+			rollups: result.rollups.length,
 		}),
 	});
 }
@@ -397,20 +1151,24 @@ export async function resolveReviewCommand(input: {
 			review_action: input.action,
 		},
 		run: async (trace) => {
-			const [{ getDb }, { nowIso }] = await Promise.all([
-				import("#/lib/db"),
+			const [{ getDb, safeJsonParse }, { nowIso }] = await Promise.all([
+				bootServer(),
 				import("#/lib/config"),
 			]);
-			await bootServer();
 			const db = getDb();
 
 			const review = await db
 				.selectFrom("reviews")
-				.select(["message_id"])
-				.where("id", "=", input.reviewId)
+				.innerJoin("messages", "messages.id", "reviews.message_id")
+				.select([
+					"reviews.message_id as message_id",
+					"messages.account_id as account_id",
+				])
+				.where("reviews.id", "=", input.reviewId)
 				.executeTakeFirstOrThrow();
 			trace.add({
 				message_id: review.message_id,
+				account_id: review.account_id,
 			});
 
 			if (input.action === "accept") {
@@ -423,6 +1181,16 @@ export async function resolveReviewCommand(input: {
 					})
 					.where("id", "=", input.reviewId)
 					.execute();
+				const currentLabel = await db
+					.selectFrom("message_labels")
+					.select(["label_json"])
+					.where("message_id", "=", review.message_id)
+					.executeTakeFirst();
+				if (
+					parseFinanceRelevant(safeJsonParse, currentLabel?.label_json ?? null)
+				) {
+					await queueFinanceBacklogJob(review.account_id);
+				}
 				return { status: "accepted" as const };
 			}
 
@@ -430,13 +1198,20 @@ export async function resolveReviewCommand(input: {
 				throw new Error("Override label is required for override action");
 			}
 
-			const { writeManualOverride } = await import("#/lib/classify");
+			const { normalizeManualOverrideLabel, writeManualOverride } =
+				await import("#/lib/classify");
+			const overrideLabel = normalizeManualOverrideLabel(input.override);
 			await writeManualOverride({
 				reviewId: input.reviewId,
 				messageId: review.message_id,
 				note: input.note ?? null,
-				label: messageLabelSchema.parse(input.override),
+				label: overrideLabel,
 			});
+			if (overrideLabel.finance.relevant) {
+				await queueFinanceBacklogJob(review.account_id);
+			} else {
+				await queueFinanceKnowledgeJob();
+			}
 			return { status: "overridden" as const };
 		},
 		summarize: (result) => ({
@@ -501,7 +1276,7 @@ export async function classifyOneNowCommand(input: { messageId: string }) {
 				message.account_id,
 			);
 
-			await classifyModule.classifyMessageNow({
+			const classification = await classifyModule.classifyMessageNow({
 				jobId: null,
 				messageId: message.id,
 				accountLabel: message.account_label,
@@ -515,6 +1290,12 @@ export async function classifyOneNowCommand(input: { messageId: string }) {
 				promptPreamble: context.promptPreamble,
 				allowedTags: classifyModule.mergeAllowedTags(context.promotedTags),
 			});
+
+			if (classification.label.finance.relevant) {
+				await queueFinanceBacklogJob(message.account_id);
+			} else {
+				await queueFinanceKnowledgeJob();
+			}
 
 			return { status: "classified" as const };
 		},
@@ -599,44 +1380,55 @@ export async function loadAccountDetailData(input: { accountId: string }) {
 			account_id: input.accountId,
 		},
 		run: async () => {
-			const { getDb } = await bootServer();
+			const { getDb, safeJsonParse } = await bootServer();
 			const db = getDb();
-			const account = await db
-				.selectFrom("accounts")
-				.selectAll()
-				.where("id", "=", input.accountId)
-				.executeTakeFirstOrThrow();
-
-			const syncState = await db
-				.selectFrom("account_sync_state")
-				.selectAll()
-				.where("account_id", "=", input.accountId)
-				.executeTakeFirst();
-
-			const recentJobs = await db
-				.selectFrom("jobs")
-				.select(["id", "kind", "status", "created_at", "last_error"])
-				.where("scope_type", "=", "account")
-				.where("scope_id", "=", input.accountId)
-				.orderBy("created_at", "desc")
-				.limit(10)
-				.execute();
-
-			const msgCount = await db
-				.selectFrom("messages")
-				.select((eb) => eb.fn.countAll<number>().as("count"))
-				.where("account_id", "=", input.accountId)
-				.executeTakeFirstOrThrow();
-
-			const tombCount = await db
-				.selectFrom("message_sources")
-				.select((eb) => eb.fn.countAll<number>().as("count"))
-				.where("account_id", "=", input.accountId)
-				.where("state", "=", "tombstoned")
-				.executeTakeFirstOrThrow();
+			const [
+				account,
+				syncState,
+				recentJobs,
+				msgCount,
+				tombCount,
+				financeCoverage,
+			] = await Promise.all([
+				db
+					.selectFrom("accounts")
+					.selectAll()
+					.where("id", "=", input.accountId)
+					.executeTakeFirstOrThrow(),
+				db
+					.selectFrom("account_sync_state")
+					.selectAll()
+					.where("account_id", "=", input.accountId)
+					.executeTakeFirst(),
+				db
+					.selectFrom("jobs")
+					.select(["id", "kind", "status", "created_at", "last_error"])
+					.where("scope_type", "=", "account")
+					.where("scope_id", "=", input.accountId)
+					.orderBy("created_at", "desc")
+					.limit(10)
+					.execute(),
+				db
+					.selectFrom("messages")
+					.select((eb) => eb.fn.countAll<number>().as("count"))
+					.where("account_id", "=", input.accountId)
+					.executeTakeFirstOrThrow(),
+				db
+					.selectFrom("message_sources")
+					.select((eb) => eb.fn.countAll<number>().as("count"))
+					.where("account_id", "=", input.accountId)
+					.where("state", "=", "tombstoned")
+					.executeTakeFirstOrThrow(),
+				loadFinanceCoverageSummary({
+					db,
+					safeJsonParse,
+					accountId: input.accountId,
+				}),
+			]);
 
 			return {
 				account,
+				financeCoverage,
 				syncState: syncState ?? null,
 				recentJobs,
 				messageCount: Number(msgCount.count),
@@ -648,6 +1440,7 @@ export async function loadAccountDetailData(input: { accountId: string }) {
 			tombstone_count: result.tombstoneCount,
 			recent_jobs: result.recentJobs.length,
 			has_sync_state: Boolean(result.syncState),
+			root_finance_relevant: result.financeCoverage.rootFinanceRelevantCount,
 		}),
 	});
 }
@@ -881,9 +1674,158 @@ export async function queueAccountClassifyBacklogCommand(input: {
 				kind: "classify_account_backlog",
 				scopeType: "account",
 				scopeId: input.accountId,
-				model: process.env.ZMAIL_CLASSIFIER_MODEL ?? "gpt-5.4-mini",
-				promptVersion: "classify-email-v1",
+				model: APP_CONFIG.classifierModel,
+				promptVersion: CLASSIFY_PROMPT_VERSION,
 			});
+		},
+		summarize: (result) => ({
+			job_id: result,
+		}),
+	});
+}
+
+export async function queueAccountFinanceBacklogCommand(input: {
+	accountId: string;
+}) {
+	return runLoggedAction({
+		operation: "queueAccountFinanceBacklogCommand",
+		kind: "command",
+		context: {
+			account_id: input.accountId,
+		},
+		run: async () => {
+			await bootServer();
+			return queueFinanceBacklogJob(input.accountId);
+		},
+		summarize: (result) => ({
+			job_id: result,
+		}),
+	});
+}
+
+export async function queueImportOperatorRegistryCommand() {
+	return runLoggedAction({
+		operation: "queueImportOperatorRegistryCommand",
+		kind: "command",
+		run: async () => {
+			await bootServer();
+			const { queueJobIdempotent } = await import("#/lib/jobs");
+			return queueJobIdempotent({
+				kind: "import_operator_registry",
+				scopeType: "system",
+				scopeId: "operator_registry",
+			});
+		},
+		summarize: (result) => ({
+			job_id: result,
+		}),
+	});
+}
+
+export async function queueRebuildFinanceKnowledgeCommand() {
+	return runLoggedAction({
+		operation: "queueRebuildFinanceKnowledgeCommand",
+		kind: "command",
+		run: async () => {
+			await bootServer();
+			return queueFinanceKnowledgeJob();
+		},
+		summarize: (result) => ({
+			job_id: result,
+		}),
+	});
+}
+
+export async function queueRebuildFinanceRollupsCommand() {
+	return runLoggedAction({
+		operation: "queueRebuildFinanceRollupsCommand",
+		kind: "command",
+		run: async () => {
+			await bootServer();
+			return queueFinanceRollupsJob();
+		},
+		summarize: (result) => ({
+			job_id: result,
+		}),
+	});
+}
+
+export async function queueReconcileRegistrySuggestionsCommand() {
+	return runLoggedAction({
+		operation: "queueReconcileRegistrySuggestionsCommand",
+		kind: "command",
+		run: async () => {
+			await bootServer();
+			return queueRegistrySuggestionReconcileJob();
+		},
+		summarize: (result) => ({
+			job_id: result,
+		}),
+	});
+}
+
+export async function queueImportFinanceArtifactCommand(input: {
+	artifact: unknown;
+}) {
+	return runLoggedAction({
+		operation: "queueImportFinanceArtifactCommand",
+		kind: "command",
+		run: async () => {
+			await bootServer();
+			const { financeSourceImportSchema } = await import("#/lib/schemas");
+			const artifact = financeSourceImportSchema.parse(input.artifact);
+			const { queueJobIdempotent } = await import("#/lib/jobs");
+			return queueJobIdempotent({
+				kind: "import_finance_artifact",
+				scopeType: "system",
+				scopeId: artifact.sourceFile.sha256,
+				meta: { artifact },
+			});
+		},
+		summarize: (result) => ({
+			job_id: result,
+		}),
+	});
+}
+
+export async function queueReclassifyRootBacklogCommand(input: {
+	accountId: string;
+}) {
+	return runLoggedAction({
+		operation: "queueReclassifyRootBacklogCommand",
+		kind: "command",
+		context: {
+			account_id: input.accountId,
+		},
+		run: async () => {
+			await bootServer();
+			const { queueJobIdempotent } = await import("#/lib/jobs");
+			return queueJobIdempotent({
+				kind: "classify_account_backlog",
+				scopeType: "account",
+				scopeId: input.accountId,
+				model: APP_CONFIG.classifierModel,
+				promptVersion: CLASSIFY_PROMPT_VERSION,
+			});
+		},
+		summarize: (result) => ({
+			job_id: result,
+		}),
+	});
+}
+
+export async function queueReclassifyFinanceBacklogCommand(input: {
+	accountId: string;
+}) {
+	return runLoggedAction({
+		operation: "queueReclassifyFinanceBacklogCommand",
+		kind: "command",
+		context: {
+			account_id: input.accountId,
+		},
+		run: async () => {
+			await bootServer();
+			return queueFinanceBacklogJob(input.accountId);
 		},
 		summarize: (result) => ({
 			job_id: result,

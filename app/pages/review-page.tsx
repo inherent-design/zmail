@@ -4,13 +4,17 @@ import { useState } from "react";
 
 import { JsonBlock } from "#/app/components/JsonBlock";
 import { resolveReview } from "#/app/server/actions";
-import type { MessageLabelV1 } from "#/lib/schemas";
+import type { MessageLabel } from "#/lib/schemas";
 
 interface ReviewPageData {
 	id: string;
 	subject: string | null;
 	sender_address: string | null;
 	snippet: string;
+	body_extraction_strategy: string;
+	has_forwarded: boolean;
+	parse_status: string;
+	parse_error_reason: string | null;
 	result: unknown;
 }
 
@@ -38,8 +42,16 @@ export function ReviewPage({ data }: { data: ReviewPageData[] }) {
 						<span className="pill">
 							{row.sender_address ?? "unknown sender"}
 						</span>
+						<span className="pill">{row.body_extraction_strategy}</span>
+						{row.has_forwarded ? <span className="pill">Forwarded</span> : null}
+						{row.parse_status === "error" ? (
+							<span className="pill">Parse error</span>
+						) : null}
 					</div>
 					<p>{row.snippet}</p>
+					{row.parse_status === "error" && row.parse_error_reason ? (
+						<p className="muted">Parse issue: {row.parse_error_reason}</p>
+					) : null}
 					<JsonBlock value={row.result} />
 					<label>
 						Override JSON
@@ -87,11 +99,9 @@ export function ReviewPage({ data }: { data: ReviewPageData[] }) {
 							className="button"
 							type="button"
 							onClick={async () => {
-								let override: MessageLabelV1;
+								let override: MessageLabel;
 								try {
-									override = JSON.parse(
-										drafts[row.id] ?? "{}",
-									) as MessageLabelV1;
+									override = JSON.parse(drafts[row.id] ?? "{}") as MessageLabel;
 								} catch {
 									setErrors((current) => ({
 										...current,

@@ -5,6 +5,21 @@ import { setEnv } from "#/test/helpers/env";
 import { createMockLogModule } from "#/test/helpers/log";
 import { createTestRuntime } from "#/test/helpers/runtime";
 
+function createEmptyBackfillScannerDb() {
+	const builder = {
+		innerJoin: vi.fn(),
+		select: vi.fn(),
+		where: vi.fn(),
+		execute: vi.fn(async () => []),
+	};
+	builder.innerJoin.mockReturnValue(builder);
+	builder.select.mockReturnValue(builder);
+	builder.where.mockReturnValue(builder);
+	return {
+		selectFrom: vi.fn(() => builder),
+	};
+}
+
 describe("worker edge cases", () => {
 	it("does not start when RUN_WORKER is false", async () => {
 		const runtime = await createTestRuntime();
@@ -27,6 +42,7 @@ describe("worker edge cases", () => {
 
 		const runMigrations = vi.fn();
 		const requeueExpiredJobs = vi.fn();
+		const getDb = vi.fn(() => createEmptyBackfillScannerDb());
 		const claimNextJob = vi
 			.fn()
 			.mockReturnValueOnce(null)
@@ -39,7 +55,7 @@ describe("worker edge cases", () => {
 			});
 
 		vi.doMock("#/lib/db", () => ({
-			getDb: vi.fn(),
+			getDb,
 			runMigrations,
 		}));
 		vi.doMock("#/lib/jobs", () => ({
@@ -47,6 +63,7 @@ describe("worker edge cases", () => {
 			completeJob: vi.fn(),
 			extendJobLease: vi.fn(),
 			failJob: vi.fn(),
+			findOpenJob: vi.fn(async () => null),
 			queueJobIdempotent: vi.fn(),
 			requeueExpiredJobs,
 			updateJob: vi.fn(),
@@ -118,6 +135,7 @@ describe("worker edge cases", () => {
 
 		const runMigrations = vi.fn();
 		const requeueExpiredJobs = vi.fn();
+		const getDb = vi.fn(() => createEmptyBackfillScannerDb());
 		const claimNextJob = vi
 			.fn()
 			.mockReturnValueOnce(null)
@@ -126,7 +144,7 @@ describe("worker edge cases", () => {
 			});
 
 		vi.doMock("#/lib/db", () => ({
-			getDb: vi.fn(),
+			getDb,
 			runMigrations,
 		}));
 		vi.doMock("#/lib/jobs", () => ({
@@ -134,6 +152,7 @@ describe("worker edge cases", () => {
 			completeJob: vi.fn(),
 			extendJobLease: vi.fn(),
 			failJob: vi.fn(),
+			findOpenJob: vi.fn(async () => null),
 			queueJobIdempotent: vi.fn(),
 			requeueExpiredJobs,
 			updateJob: vi.fn(),
@@ -188,6 +207,7 @@ describe("worker edge cases", () => {
 			})
 			.mockImplementation(() => undefined);
 		const requeueExpiredJobs = vi.fn();
+		const getDb = vi.fn(() => createEmptyBackfillScannerDb());
 		const claimNextJob = vi
 			.fn()
 			.mockReturnValueOnce(null)
@@ -196,7 +216,7 @@ describe("worker edge cases", () => {
 			});
 
 		vi.doMock("#/lib/db", () => ({
-			getDb: vi.fn(),
+			getDb,
 			runMigrations,
 		}));
 		vi.doMock("#/lib/jobs", () => ({
@@ -204,6 +224,7 @@ describe("worker edge cases", () => {
 			completeJob: vi.fn(),
 			extendJobLease: vi.fn(),
 			failJob: vi.fn(),
+			findOpenJob: vi.fn(async () => null),
 			queueJobIdempotent: vi.fn(),
 			requeueExpiredJobs,
 			updateJob: vi.fn(),
@@ -483,16 +504,91 @@ describe("worker edge cases", () => {
 				}),
 			}),
 		);
-		expect(queueJobIdempotent).toHaveBeenCalledWith({
-			kind: "classify_account_backlog",
-			scopeType: "account",
-			scopeId: "acct-1",
-			model: "gpt-5.4-mini",
-			promptVersion: "classify-email-v1",
-		});
+		expect(queueJobIdempotent.mock.calls).toEqual([
+			[
+				{
+					kind: "sync_account_backfill",
+					scopeType: "account",
+					scopeId: "acct-1",
+				},
+			],
+			[
+				{
+					kind: "classify_account_backlog",
+					scopeType: "account",
+					scopeId: "acct-1",
+					model: "gpt-5.4-mini",
+					promptVersion: "classify-email-v1",
+				},
+			],
+		]);
 		vi.doUnmock("#/lib/jobs");
 		vi.doUnmock("#/lib/sync");
 		vi.useRealTimers();
+	});
+
+	it("requeues missing backfill jobs from sync state before draining", async () => {
+		const runtime = await createTestRuntime();
+		vi.resetModules();
+		vi.doUnmock("#/lib/db");
+		vi.doUnmock("#/lib/jobs");
+
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		await db
+			.insertInto("account_sync_state")
+			.values({
+				account_id: "acct-1",
+				uidvalidity: 100,
+				latest_uid_cursor: 50,
+				earliest_uid_cursor: 25,
+				backfill_snapshot_uid: 50,
+				backfill_next_uid: 24,
+				last_bootstrap_started_at: "2026-01-01T00:00:00.000Z",
+				last_bootstrap_completed_at: "2026-01-01T00:00:01.000Z",
+				last_delta_sync_at: null,
+				last_reconcile_at: null,
+				last_backfill_sync_at: "2026-01-01T00:00:02.000Z",
+				backfill_completed_at: null,
+				last_idle_started_at: null,
+				last_idle_heartbeat_at: null,
+				watcher_status: "idle",
+				consecutive_failures: 0,
+				backoff_until: null,
+				created_at: "2026-01-01T00:00:00.000Z",
+				updated_at: "2026-01-01T00:00:02.000Z",
+			})
+			.execute();
+
+		vi.doMock("#/lib/sync", () => ({
+			runBackfillSync: vi.fn(async () => ({
+				skipped: false,
+				fetched: 0,
+				earliestUidCursor: 1,
+				backfillNextUid: null,
+				rangeStart: 1,
+				rangeEnd: 24,
+				queuedMore: false,
+				uidvalidityChanged: false,
+			})),
+		}));
+
+		const worker =
+			await runtime.importFresh<typeof import("#/lib/worker")>("#/lib/worker");
+		await worker.drainWorkerUntilIdle();
+
+		const jobs = await db
+			.selectFrom("jobs")
+			.select(["kind", "status", "scope_id"])
+			.orderBy("created_at")
+			.execute();
+		expect(jobs).toEqual([
+			{
+				kind: "sync_account_backfill",
+				status: "complete",
+				scope_id: "acct-1",
+			},
+		]);
+		vi.doUnmock("#/lib/sync");
 	});
 
 	it("emits backlog progress and worker completion events", async () => {

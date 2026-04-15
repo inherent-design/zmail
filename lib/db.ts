@@ -2,6 +2,7 @@ import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 
 import Database from "better-sqlite3";
+import type { Generated } from "kysely";
 import { Kysely, SqliteDialect } from "kysely";
 
 import {
@@ -54,12 +55,16 @@ interface MessagesTable {
 	message_id: string;
 	thread_key: string;
 	received_at: string | null;
+	ingested_at: string;
+	conversation_id: string | null;
 	sender_name: string | null;
 	sender_address: string | null;
 	to_json: string;
 	cc_json: string;
 	subject: string | null;
 	in_reply_to: string | null;
+	body_text_primary: string;
+	body_text_forwarded: string;
 	body_text_normalized: string;
 	snippet: string;
 	attachment_count: number;
@@ -67,9 +72,22 @@ interface MessagesTable {
 	raw_byte_start: number;
 	raw_byte_end: number;
 	parse_status: string;
+	body_extraction_strategy: string;
+	parse_error_reason: string | null;
 	token_estimate: number;
 	content_sha256: string | null;
 	created_at: string;
+}
+
+interface ConversationsTable {
+	id: string;
+	account_id: string;
+	gmail_thread_id: string;
+	first_message_received_at: string | null;
+	last_message_received_at: string | null;
+	message_count: number;
+	created_at: string;
+	updated_at: string;
 }
 
 interface AttachmentsTable {
@@ -137,6 +155,7 @@ interface ClassificationResultsTable {
 	id: string;
 	job_id: string | null;
 	message_id: string;
+	schema_version: Generated<string>;
 	model: string;
 	prompt_version: string;
 	source: string;
@@ -151,6 +170,7 @@ interface ClassificationResultsTable {
 interface MessageLabelsTable {
 	message_id: string;
 	classification_result_id: string;
+	schema_version: Generated<string>;
 	source: string;
 	label_json: string;
 	primary_bucket: string;
@@ -158,6 +178,146 @@ interface MessageLabelsTable {
 	nsfw: number;
 	content_sha256: string | null;
 	updated_at: string;
+}
+
+interface MessageSecondaryResultsTable {
+	id: string;
+	message_id: string;
+	classifier_key: string;
+	schema_version: string;
+	job_id: string | null;
+	model: string;
+	prompt_version: string;
+	source: string;
+	result_json: string;
+	raw_response_json: string;
+	usage_json: string | null;
+	input_content_sha256: string | null;
+	input_registry_sha256: string | null;
+	created_at: string;
+}
+
+interface MessageSecondaryHeadsTable {
+	message_id: string;
+	classifier_key: string;
+	secondary_result_id: string | null;
+	status: string;
+	low_confidence: number;
+	content_sha256: string | null;
+	registry_sha256: string | null;
+	updated_at: string;
+}
+
+interface RegistryIdentitiesTable {
+	id: string;
+	kind: string;
+	source_kind: Generated<string>;
+	display_name: string;
+	aliases_json: string;
+	email_addresses_json: string;
+	domains_json: string;
+	tax_owner_hint: string | null;
+	notes: string | null;
+}
+
+interface RegistryInstitutionsTable {
+	id: string;
+	source_kind: Generated<string>;
+	display_name: string;
+	aliases_json: string;
+	domains_json: string;
+	notes: string | null;
+}
+
+interface RegistryFinancialAccountsTable {
+	id: string;
+	source_kind: Generated<string>;
+	institution_id: string | null;
+	owner_identity_id: string | null;
+	display_name: string;
+	aliases_json: string;
+	account_mask: string | null;
+	account_last4: string | null;
+	account_type: string | null;
+	currency: string | null;
+	tax_owner_hint: string | null;
+	notes: string | null;
+}
+
+interface RegistrySenderRulesTable {
+	id: string;
+	source_kind: Generated<string>;
+	sender_pattern: string;
+	domain: string | null;
+	owner_identity_id: string | null;
+	institution_id: string | null;
+	financial_account_id: string | null;
+	message_kind_hint: string | null;
+	priority: number;
+	notes: string | null;
+}
+
+interface RegistryImportStateTable {
+	key: string;
+	combined_sha256: string;
+	source_dir: string;
+	counts_json: string;
+	imported_at: string;
+}
+
+interface FinanceEventCandidatesTable {
+	id: string;
+	canonical_key: string;
+	status: string;
+	event_kind: string;
+	direction: string | null;
+	amount_value: string | null;
+	currency: string | null;
+	occurred_at: string | null;
+	merchant_or_counterparty: string | null;
+	owner_identity_id: string | null;
+	financial_account_id: string | null;
+	institution_id: string | null;
+	category_hint: string | null;
+	tax_relevance_hint: string | null;
+	evidence_count: number;
+	first_message_received_at: string | null;
+	last_message_received_at: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+interface FinanceDocumentCandidatesTable {
+	id: string;
+	canonical_key: string;
+	status: string;
+	document_type: string;
+	issuer: string | null;
+	external_id: string | null;
+	statement_period_start: string | null;
+	statement_period_end: string | null;
+	due_at: string | null;
+	tax_year: number | null;
+	owner_identity_id: string | null;
+	financial_account_id: string | null;
+	institution_id: string | null;
+	evidence_count: number;
+	first_message_received_at: string | null;
+	last_message_received_at: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+interface FinanceEventEvidenceTable {
+	id: string;
+	event_candidate_id: string | null;
+	document_candidate_id: string | null;
+	message_id: string;
+	secondary_result_id: string;
+	transaction_index: number | null;
+	document_index: number | null;
+	evidence_json: string;
+	created_at: string;
 }
 
 interface ReviewsTable {
@@ -181,9 +341,158 @@ interface OverseerProfilesTable {
 	created_at: string;
 }
 
+interface ClassificationRuleSetsTable {
+	key: string;
+	schema_version: string;
+	source_path: string;
+	sha256: string;
+	payload_json: string;
+	imported_at: string;
+}
+
+interface ClassificationRulesTable {
+	id: string;
+	rule_set_key: string;
+	rule_key: string;
+	priority: number;
+	enabled: number;
+	match_json: string;
+	projection_json: string;
+	created_at: string;
+}
+
+interface MessageCategoryAssignmentsTable {
+	id: string;
+	message_id: string;
+	source: string;
+	matched_rule_key: string | null;
+	projected_primary_category: string;
+	projected_secondary_category: string | null;
+	projected_finance_primary: string | null;
+	projected_finance_secondary: string | null;
+	result_json: string;
+	input_content_sha256: string | null;
+	rule_set_sha256: string | null;
+	finance_result_id: string | null;
+	created_at: string;
+}
+
+interface MessageCategoryAssignmentHeadsTable {
+	message_id: string;
+	assignment_id: string;
+	source: string;
+	input_content_sha256: string | null;
+	rule_set_sha256: string | null;
+	finance_result_id: string | null;
+	updated_at: string;
+}
+
+interface FinanceImportRunsTable {
+	id: string;
+	source_kind: string;
+	source_file_path: string;
+	source_file_sha256: string;
+	filename: string;
+	artifact_sha256: string;
+	extractor_runner: string;
+	extractor_model: string;
+	extractor_prompt_version: string;
+	extracted_text_hash: string | null;
+	status: string;
+	raw_artifact_json: string;
+	imported_at: string;
+}
+
+interface FinanceImportDocumentsTable {
+	id: string;
+	import_run_id: string;
+	source_document_ref: string | null;
+	document_type: string;
+	issuer: string | null;
+	external_id: string | null;
+	statement_period_start: string | null;
+	statement_period_end: string | null;
+	due_at: string | null;
+	tax_year: number | null;
+	owner_identity_hint: string | null;
+	financial_account_hint: string | null;
+	institution_hint: string | null;
+	evidence_text: string;
+	payload_json: string;
+	created_at: string;
+}
+
+interface FinanceImportTransactionsTable {
+	id: string;
+	import_run_id: string;
+	source_document_ref: string | null;
+	occurred_at: string | null;
+	posted_at: string | null;
+	amount_value: string | null;
+	amount_minor: number | null;
+	currency: string | null;
+	direction: string;
+	description: string | null;
+	merchant_or_counterparty: string | null;
+	balance_value: string | null;
+	owner_identity_hint: string | null;
+	financial_account_hint: string | null;
+	institution_hint: string | null;
+	category_primary: string | null;
+	category_secondary: string | null;
+	evidence_text: string;
+	payload_json: string;
+	created_at: string;
+}
+
+interface RegistrySuggestionsTable {
+	id: string;
+	entity_kind: string;
+	canonical_key: string;
+	suggestion_json: string;
+	source_kind: string;
+	source_ref_id: string;
+	confidence: number;
+	status: string;
+	applied_registry_id: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+interface FinanceYearlyRollupsTable {
+	id: string;
+	year: number;
+	source_kind: string;
+	primary_category: string;
+	inflow_minor: number;
+	outflow_minor: number;
+	net_minor: number;
+	transaction_count: number;
+	imported_statement_count: number;
+	extracted_transaction_count: number;
+	uncategorized_count: number;
+	created_at: string;
+	updated_at: string;
+}
+
+interface FinanceYearlySubcategoryRollupsTable {
+	id: string;
+	year: number;
+	source_kind: string;
+	primary_category: string;
+	secondary_category: string;
+	inflow_minor: number;
+	outflow_minor: number;
+	net_minor: number;
+	transaction_count: number;
+	created_at: string;
+	updated_at: string;
+}
+
 export interface DB {
 	accounts: AccountsTable;
 	account_sync_state: AccountSyncStateTable;
+	conversations: ConversationsTable;
 	messages: MessagesTable;
 	attachments: AttachmentsTable;
 	message_sources: MessageSourcesTable;
@@ -191,8 +500,125 @@ export interface DB {
 	moderation_results: ModerationResultsTable;
 	classification_results: ClassificationResultsTable;
 	message_labels: MessageLabelsTable;
+	message_secondary_results: MessageSecondaryResultsTable;
+	message_secondary_heads: MessageSecondaryHeadsTable;
+	registry_identities: RegistryIdentitiesTable;
+	registry_institutions: RegistryInstitutionsTable;
+	registry_financial_accounts: RegistryFinancialAccountsTable;
+	registry_sender_rules: RegistrySenderRulesTable;
+	registry_import_state: RegistryImportStateTable;
+	finance_event_candidates: FinanceEventCandidatesTable;
+	finance_document_candidates: FinanceDocumentCandidatesTable;
+	finance_event_evidence: FinanceEventEvidenceTable;
 	reviews: ReviewsTable;
 	overseer_profiles: OverseerProfilesTable;
+	classification_rule_sets: ClassificationRuleSetsTable;
+	classification_rules: ClassificationRulesTable;
+	message_category_assignments: MessageCategoryAssignmentsTable;
+	message_category_assignment_heads: MessageCategoryAssignmentHeadsTable;
+	finance_import_runs: FinanceImportRunsTable;
+	finance_import_documents: FinanceImportDocumentsTable;
+	finance_import_transactions: FinanceImportTransactionsTable;
+	registry_suggestions: RegistrySuggestionsTable;
+	finance_yearly_rollups: FinanceYearlyRollupsTable;
+	finance_yearly_subcategory_rollups: FinanceYearlySubcategoryRollupsTable;
+}
+
+const REQUIRED_BASELINE_TABLES = [
+	"accounts",
+	"account_sync_state",
+	"conversations",
+	"messages",
+	"attachments",
+	"message_sources",
+	"moderation_results",
+	"classification_results",
+	"message_labels",
+	"reviews",
+	"jobs",
+	"message_secondary_results",
+	"message_secondary_heads",
+	"registry_identities",
+	"registry_institutions",
+	"registry_financial_accounts",
+	"registry_sender_rules",
+	"registry_import_state",
+	"finance_event_candidates",
+	"finance_document_candidates",
+	"finance_event_evidence",
+	"classification_rule_sets",
+	"classification_rules",
+	"message_category_assignments",
+	"message_category_assignment_heads",
+	"finance_import_runs",
+	"finance_import_documents",
+	"finance_import_transactions",
+	"registry_suggestions",
+	"finance_yearly_rollups",
+	"finance_yearly_subcategory_rollups",
+] as const;
+
+const REQUIRED_EXISTING_BASELINE_TABLES = [
+	"accounts",
+	"account_sync_state",
+	"messages",
+	"attachments",
+	"message_sources",
+	"moderation_results",
+	"classification_results",
+	"message_labels",
+	"reviews",
+	"jobs",
+] as const;
+
+const REQUIRED_MESSAGE_COLUMNS = [
+	"ingested_at",
+	"conversation_id",
+	"body_text_primary",
+	"body_text_forwarded",
+	"body_extraction_strategy",
+	"parse_error_reason",
+] as const;
+
+export function buildSchemaResetRequiredMessage(input?: {
+	missingTables?: string[];
+	missingMessageColumns?: string[];
+}) {
+	const details = [
+		...(input?.missingTables?.length
+			? [`Missing tables: ${input.missingTables.join(", ")}`]
+			: []),
+		...(input?.missingMessageColumns?.length
+			? [`Missing messages columns: ${input.missingMessageColumns.join(", ")}`]
+			: []),
+	];
+	const detailBlock = details.length > 0 ? `\n\n${details.join("\n")}` : "";
+
+	return `This local database predates the rewritten zmail baseline and must be reset before continuing.
+
+Preferred recovery:
+1. pnpm db:reset:messages
+
+Full reset:
+1. pnpm db:reset
+2. pnpm db:migrate
+3. reconnect Gmail accounts if you used the full reset${detailBlock}`;
+}
+
+export class SchemaResetRequiredError extends Error {
+	readonly code = "SCHEMA_RESET_REQUIRED";
+	readonly missingTables: string[];
+	readonly missingMessageColumns: string[];
+
+	constructor(input: {
+		missingTables: string[];
+		missingMessageColumns: string[];
+	}) {
+		super(buildSchemaResetRequiredMessage(input));
+		this.name = "SchemaResetRequiredError";
+		this.missingTables = input.missingTables;
+		this.missingMessageColumns = input.missingMessageColumns;
+	}
 }
 
 declare global {
@@ -244,88 +670,6 @@ export async function resetDb() {
 	}
 }
 
-function getTableColumns(sqlite: Database.Database, tableName: string) {
-	return new Set(
-		(
-			sqlite.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{
-				name: string;
-			}>
-		).map((column) => column.name),
-	);
-}
-
-function hasTableColumns(
-	sqlite: Database.Database,
-	tableName: string,
-	requiredColumns: string[],
-) {
-	const columns = getTableColumns(sqlite, tableName);
-	return requiredColumns.every((column) => columns.has(column));
-}
-
-function lacksTableColumns(
-	sqlite: Database.Database,
-	tableName: string,
-	forbiddenColumns: string[],
-) {
-	const columns = getTableColumns(sqlite, tableName);
-	return forbiddenColumns.every((column) => !columns.has(column));
-}
-
-function isMigrationAlreadyReflected(sqlite: Database.Database, file: string) {
-	switch (file) {
-		case "002_jobs_live_cleanup.sql":
-			return (
-				hasTableColumns(sqlite, "jobs", [
-					"id",
-					"kind",
-					"scope_type",
-					"scope_id",
-					"status",
-					"model",
-					"prompt_version",
-					"request_count",
-					"success_count",
-					"error_count",
-					"claimed_at",
-					"lease_expires_at",
-					"attempts",
-					"last_error",
-					"created_at",
-					"started_at",
-					"finished_at",
-					"meta_json",
-				]) &&
-				lacksTableColumns(sqlite, "jobs", [
-					"batch_id",
-					"input_file_path",
-					"output_file_path",
-					"error_file_path",
-				])
-			);
-		case "003_account_sync_state_resumable_backfill.sql":
-			return (
-				hasTableColumns(sqlite, "account_sync_state", [
-					"latest_uid_cursor",
-					"earliest_uid_cursor",
-					"backfill_snapshot_uid",
-					"backfill_next_uid",
-					"last_bootstrap_started_at",
-					"last_bootstrap_completed_at",
-					"last_backfill_sync_at",
-					"backfill_completed_at",
-				]) &&
-				lacksTableColumns(sqlite, "account_sync_state", [
-					"last_seen_uid",
-					"last_full_sync_started_at",
-					"last_full_sync_completed_at",
-				])
-			);
-		default:
-			return false;
-	}
-}
-
 export function runMigrations() {
 	const sqlite = getSqlite();
 	sqlite.exec(`
@@ -348,20 +692,74 @@ export function runMigrations() {
 	const insertMigration = sqlite.prepare(
 		"INSERT INTO _migrations (name, applied_at) VALUES (?, ?)",
 	);
+	const currentTables = new Set(
+		sqlite
+			.prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+			.all()
+			.map((row) => String((row as { name: string }).name)),
+	);
+	const currentMessageColumns = new Set(
+		sqlite
+			.prepare("PRAGMA table_info(messages)")
+			.all()
+			.map((row) => String((row as { name: string }).name)),
+	);
+	if (applied.has("001_init.sql")) {
+		const missingExistingTables = REQUIRED_EXISTING_BASELINE_TABLES.filter(
+			(tableName) => !currentTables.has(tableName),
+		);
+		const missingExistingMessageColumns = REQUIRED_MESSAGE_COLUMNS.filter(
+			(columnName) => !currentMessageColumns.has(columnName),
+		);
+		if (
+			missingExistingTables.length > 0 ||
+			missingExistingMessageColumns.length > 0
+		) {
+			throw new SchemaResetRequiredError({
+				missingTables: [...missingExistingTables],
+				missingMessageColumns: [...missingExistingMessageColumns],
+			});
+		}
+	}
 
 	for (const file of files) {
 		if (applied.has(file)) {
-			continue;
-		}
-		if (isMigrationAlreadyReflected(sqlite, file)) {
-			insertMigration.run(file, nowIso());
-			applied.add(file);
 			continue;
 		}
 		const sql = readFileSync(resolve(MIGRATIONS_DIR, file), "utf8");
 		sqlite.exec(sql);
 		insertMigration.run(file, nowIso());
 		applied.add(file);
+	}
+
+	assertBaselineSchemaCompatibility(sqlite);
+}
+
+export function assertBaselineSchemaCompatibility(sqlite = getSqlite()) {
+	const tables = new Set(
+		sqlite
+			.prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+			.all()
+			.map((row) => String((row as { name: string }).name)),
+	);
+	const missingTables = REQUIRED_BASELINE_TABLES.filter(
+		(tableName) => !tables.has(tableName),
+	);
+	const messageColumns = new Set(
+		sqlite
+			.prepare("PRAGMA table_info(messages)")
+			.all()
+			.map((row) => String((row as { name: string }).name)),
+	);
+	const missingMessageColumns = REQUIRED_MESSAGE_COLUMNS.filter(
+		(columnName) => !messageColumns.has(columnName),
+	);
+
+	if (missingTables.length > 0 || missingMessageColumns.length > 0) {
+		throw new SchemaResetRequiredError({
+			missingTables: [...missingTables],
+			missingMessageColumns: [...missingMessageColumns],
+		});
 	}
 }
 

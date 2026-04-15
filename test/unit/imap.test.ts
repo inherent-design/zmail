@@ -115,15 +115,23 @@ describe("imap", () => {
 		);
 
 		const sha256 = "abc123def456";
-		const parsed = await mod.parseRawMessage(rawEmail, sha256);
+		const parsed = await mod.parseRawMessage(
+			rawEmail,
+			sha256,
+			"2026-01-01T00:00:00.000Z",
+		);
 
 		expect(parsed.parseStatus).toBe("parsed");
 		expect(parsed.messageId).toBe("<test@example.com>");
 		expect(parsed.subject).toBe("Test");
 		expect(parsed.senderAddress).toBe("sender@example.com");
+		expect(parsed.bodyTextPrimary).toContain("Hello world");
+		expect(parsed.bodyTextForwarded).toBe("");
 		expect(parsed.bodyTextNormalized).toContain("Hello world");
 		expect(parsed.snippet).toContain("Hello world");
-		expect(parsed.contentSha256).toBe(sha256);
+		expect(parsed.bodyExtractionStrategy).toBe("plain_text");
+		expect(parsed.parseErrorReason).toBeNull();
+		expect(parsed.contentSha256).not.toBe(sha256);
 		expect(parsed.attachmentCount).toBe(0);
 		expect(parsed.attachments).toEqual([]);
 		expect(parsed.hasHtml).toBe(1);
@@ -150,17 +158,64 @@ describe("imap", () => {
 		const mod =
 			await runtime.importFresh<typeof import("#/lib/imap")>("#/lib/imap");
 
-		const parsed = await mod.parseRawMessage(Buffer.from("garbage"), "sha-bad");
+		const parsed = await mod.parseRawMessage(
+			Buffer.from("garbage"),
+			"sha-bad",
+			"2026-01-03T00:00:00.000Z",
+		);
 
 		expect(parsed.parseStatus).toBe("error");
-		expect(parsed.contentSha256).toBe("sha-bad");
+		expect(parsed.receivedAt).toBe("2026-01-03T00:00:00.000Z");
+		expect(parsed.contentSha256).not.toBe("sha-bad");
+		expect(parsed.bodyTextPrimary).toBe("");
+		expect(parsed.bodyTextForwarded).toBe("");
 		expect(parsed.bodyTextNormalized).toBe("");
 		expect(parsed.snippet).toBe("");
+		expect(parsed.bodyExtractionStrategy).toBe("parse_error");
+		expect(parsed.parseErrorReason).toBe("parse failure");
 		expect(parsed.attachmentCount).toBe(0);
 		expect(parsed.senderAddress).toBeNull();
 		expect(parsed.subject).toBeNull();
 		expect(parsed.toJson).toBe("[]");
 		expect(parsed.ccJson).toBe("[]");
+	});
+
+	it("parseRawMessage stringifies non-Error parse failures", async () => {
+		const runtime = await createTestRuntime();
+		vi.resetModules();
+
+		vi.doMock("mailparser", () => ({
+			simpleParser: vi.fn().mockRejectedValue("parse failed as string"),
+		}));
+
+		const mod =
+			await runtime.importFresh<typeof import("#/lib/imap")>("#/lib/imap");
+
+		const parsed = await mod.parseRawMessage(
+			Buffer.from("garbage"),
+			"sha-bad",
+			"2026-01-04T00:00:00.000Z",
+		);
+
+		expect(parsed.parseStatus).toBe("error");
+		expect(parsed.parseErrorReason).toBe("parse failed as string");
+		expect(parsed.receivedAt).toBe("2026-01-04T00:00:00.000Z");
+	});
+
+	it("parseRawMessage leaves receivedAt null on parse errors without a fallback", async () => {
+		const runtime = await createTestRuntime();
+		vi.resetModules();
+
+		vi.doMock("mailparser", () => ({
+			simpleParser: vi.fn().mockRejectedValue(new Error("parse failure")),
+		}));
+
+		const mod =
+			await runtime.importFresh<typeof import("#/lib/imap")>("#/lib/imap");
+		const parsed = await mod.parseRawMessage(Buffer.from("garbage"), "sha-bad");
+
+		expect(parsed.parseStatus).toBe("error");
+		expect(parsed.receivedAt).toBeNull();
 	});
 
 	it("fetchMessageWindow uses a bounded range and skips empty source rows", async () => {
@@ -427,19 +482,55 @@ describe("imap", () => {
 
 		const mod =
 			await runtime.importFresh<typeof import("#/lib/imap")>("#/lib/imap");
-		const parsed = await mod.parseRawMessage(Buffer.from("raw"), "sha-sparse");
+		const parsed = await mod.parseRawMessage(
+			Buffer.from("raw"),
+			"sha-sparse",
+			"2026-01-12T00:00:00.000Z",
+		);
 
 		expect(parsed.parseStatus).toBe("parsed");
 		expect(parsed.messageId).toContain("@unknown>");
 		expect(parsed.inReplyTo).toBeNull();
+		expect(parsed.receivedAt).toBe("2026-01-12T00:00:00.000Z");
 		expect(parsed.senderName).toBeNull();
 		expect(parsed.senderAddress).toBeNull();
 		expect(parsed.toJson).toBe("[]");
 		expect(parsed.ccJson).toBe("[]");
 		expect(parsed.subject).toBeNull();
 		expect(parsed.hasHtml).toBe(0);
-		expect(parsed.contentSha256).toBe("sha-sparse");
+		expect(parsed.bodyTextPrimary).toBe("");
+		expect(parsed.bodyTextForwarded).toBe("");
+		expect(parsed.bodyExtractionStrategy).toBe("fallback_empty");
+		expect(parsed.parseErrorReason).toBeNull();
+		expect(parsed.contentSha256).not.toBe("sha-sparse");
 		expect(parsed.attachments).toEqual([]);
+	});
+
+	it("parseRawMessage leaves receivedAt null when no parsed date or fallback exists", async () => {
+		const runtime = await createTestRuntime();
+		vi.resetModules();
+
+		vi.doMock("mailparser", () => ({
+			simpleParser: vi.fn(async () => ({
+				messageId: undefined,
+				inReplyTo: undefined,
+				text: undefined,
+				html: undefined,
+				attachments: undefined,
+				from: undefined,
+				to: undefined,
+				cc: undefined,
+				subject: undefined,
+				date: undefined,
+			})),
+		}));
+
+		const mod =
+			await runtime.importFresh<typeof import("#/lib/imap")>("#/lib/imap");
+		const parsed = await mod.parseRawMessage(Buffer.from("raw"), "sha-sparse");
+
+		expect(parsed.parseStatus).toBe("parsed");
+		expect(parsed.receivedAt).toBeNull();
 	});
 
 	it("parseRawMessage preserves reply metadata and non-inline attachments", async () => {
@@ -494,11 +585,13 @@ describe("imap", () => {
 		const parsed = await mod.parseRawMessage(
 			Buffer.from("reply raw"),
 			"sha-reply",
+			"2026-01-11T00:00:00.000Z",
 		);
 
 		expect(parsed.messageId).toBe("<reply@example.com>");
 		expect(parsed.inReplyTo).toBe("<parent@example.com>");
 		expect(parsed.ccJson).toContain("cc@example.com");
+		expect(parsed.contentSha256).not.toBe("sha-reply");
 		expect(parsed.attachments).toEqual([
 			expect.objectContaining({
 				filename: "receipt.txt",
@@ -522,6 +615,76 @@ describe("imap", () => {
 				isInline: 0,
 			}),
 		]);
+	});
+
+	it("parseRawMessage changes content hash when classifier-visible attachment metadata changes", async () => {
+		const runtime = await createTestRuntime();
+		vi.resetModules();
+
+		const simpleParser = vi
+			.fn()
+			.mockResolvedValueOnce({
+				messageId: "<attachment-a@example.com>",
+				inReplyTo: undefined,
+				text: "Attachment body",
+				html: undefined,
+				attachments: [
+					{
+						filename: "receipt-a.pdf",
+						contentType: "application/pdf",
+						size: 12,
+						contentId: undefined,
+						contentDisposition: "attachment",
+					},
+				],
+				from: {
+					value: [{ name: "Sender", address: "sender@example.com" }],
+				},
+				to: { value: [] },
+				cc: { value: [] },
+				subject: "Attachment subject",
+				date: new Date("2026-01-11T00:00:00.000Z"),
+			})
+			.mockResolvedValueOnce({
+				messageId: "<attachment-a@example.com>",
+				inReplyTo: undefined,
+				text: "Attachment body",
+				html: undefined,
+				attachments: [
+					{
+						filename: "receipt-b.pdf",
+						contentType: "application/pdf",
+						size: 12,
+						contentId: undefined,
+						contentDisposition: "attachment",
+					},
+				],
+				from: {
+					value: [{ name: "Sender", address: "sender@example.com" }],
+				},
+				to: { value: [] },
+				cc: { value: [] },
+				subject: "Attachment subject",
+				date: new Date("2026-01-11T00:00:00.000Z"),
+			});
+		vi.doMock("mailparser", () => ({
+			simpleParser,
+		}));
+
+		const mod =
+			await runtime.importFresh<typeof import("#/lib/imap")>("#/lib/imap");
+		const first = await mod.parseRawMessage(
+			Buffer.from("attachment raw"),
+			"raw-sha",
+			"2026-01-11T00:00:00.000Z",
+		);
+		const second = await mod.parseRawMessage(
+			Buffer.from("attachment raw"),
+			"raw-sha",
+			"2026-01-11T00:00:00.000Z",
+		);
+
+		expect(first.contentSha256).not.toBe(second.contentSha256);
 	});
 
 	it("getMailboxStatus falls back to zero when status fields are missing", async () => {

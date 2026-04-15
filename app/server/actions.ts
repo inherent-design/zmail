@@ -6,6 +6,8 @@ import {
 	classifyOneInputSchema,
 	completeGoogleConnectInputSchema,
 	enqueueOverseerInputSchema,
+	financeArtifactImportInputSchema,
+	financeDataInputSchema,
 	resolveReviewInputSchema,
 } from "#/lib/schemas";
 
@@ -18,6 +20,7 @@ import {
 	loadAccountDetailData,
 	loadAccountNewData,
 	loadAccountsData,
+	loadFinanceData,
 	loadHomeData,
 	loadMessageDetailData,
 	loadMessagesData,
@@ -27,8 +30,16 @@ import {
 	pauseAccountSyncCommand,
 	queueAccountClassifyBacklogCommand,
 	queueAccountDeltaSyncCommand,
+	queueAccountFinanceBacklogCommand,
 	queueAccountFullSyncCommand,
 	queueAccountReconcileCommand,
+	queueImportFinanceArtifactCommand,
+	queueImportOperatorRegistryCommand,
+	queueRebuildFinanceKnowledgeCommand,
+	queueRebuildFinanceRollupsCommand,
+	queueReclassifyFinanceBacklogCommand,
+	queueReclassifyRootBacklogCommand,
+	queueReconcileRegistrySuggestionsCommand,
 	resolveReviewCommand,
 	resumeAccountSyncCommand,
 } from "./actions.server";
@@ -60,6 +71,10 @@ export const getProfileData = createServerFn({
 })
 	.inputValidator(enqueueOverseerInputSchema.pick({ accountId: true }))
 	.handler(async ({ data }) => loadProfileData(data));
+
+export const getFinanceData = createServerFn({ method: "GET" })
+	.inputValidator(financeDataInputSchema)
+	.handler(async ({ data }) => loadFinanceData(data));
 
 export const enqueueOverseer = createServerFn({
 	method: "POST",
@@ -128,6 +143,46 @@ export const queueAccountClassifyBacklog = createServerFn({
 })
 	.inputValidator(accountIdInputSchema)
 	.handler(async ({ data }) => queueAccountClassifyBacklogCommand(data));
+
+export const queueAccountFinanceBacklog = createServerFn({
+	method: "POST",
+})
+	.inputValidator(accountIdInputSchema)
+	.handler(async ({ data }) => queueAccountFinanceBacklogCommand(data));
+
+export const queueImportOperatorRegistry = createServerFn({
+	method: "POST",
+}).handler(queueImportOperatorRegistryCommand);
+
+export const queueRebuildFinanceKnowledge = createServerFn({
+	method: "POST",
+}).handler(queueRebuildFinanceKnowledgeCommand);
+
+export const queueRebuildFinanceRollups = createServerFn({
+	method: "POST",
+}).handler(queueRebuildFinanceRollupsCommand);
+
+export const queueReconcileRegistrySuggestions = createServerFn({
+	method: "POST",
+}).handler(queueReconcileRegistrySuggestionsCommand);
+
+export const queueImportFinanceArtifact = createServerFn({
+	method: "POST",
+})
+	.inputValidator(financeArtifactImportInputSchema)
+	.handler(async ({ data }) => queueImportFinanceArtifactCommand(data));
+
+export const queueReclassifyRootBacklog = createServerFn({
+	method: "POST",
+})
+	.inputValidator(accountIdInputSchema)
+	.handler(async ({ data }) => queueReclassifyRootBacklogCommand(data));
+
+export const queueReclassifyFinanceBacklog = createServerFn({
+	method: "POST",
+})
+	.inputValidator(accountIdInputSchema)
+	.handler(async ({ data }) => queueReclassifyFinanceBacklogCommand(data));
 
 export const pauseAccountSync = createServerFn({
 	method: "POST",

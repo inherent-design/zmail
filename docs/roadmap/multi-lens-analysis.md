@@ -1,55 +1,59 @@
-# Roadmap: Multi-Lens Analysis
+# Multi-Lens Analysis Architecture
 
-## Purpose
+## Summary
 
-The active runtime classifies mail with the `finance/social/risk/routing` contract. Broader analysis lenses are future work and must not be treated as current product contract.
+zmail keeps the root classifier and review
+contract. New lenses are added as secondary classifiers with independent
+freshness, storage, and promotion rules.
 
-## Candidate Lenses
+This means:
 
-- spam likelihood
-  - unsubscribe candidates
-  - sender fatigue
-  - template-heavy bulk mail
-- opportunity value
-  - missed leads
-  - unanswered asks
-  - time-sensitive follow-ups
+- the root classifier remains the primary mailbox-wide routing layer
+- new lenses are additive, not in-place mutations of the root contract
+- secondary outputs get independent freshness
+- promotion into operator-facing UI is explicit, not implicit
+
+## Active shape
+
+- root classifier
+  - `message-label.v2`
+  - mailbox-wide bucketing, review, and overseer inputs
+- secondary classifiers
+  - stored in `message_secondary_results`
+  - current heads stored in `message_secondary_heads`
+- knowledge layers
+  - domain-specific materialized outputs derived from secondary heads
+  - first domain: finance
+
+## Promotion rules
+
+Secondary outputs are not automatically promoted into the root classifier or the
+main mailbox list.
+
+Promotion is explicit:
+
+- root UI remains bucket-first unless a secondary surface is intentionally added
+- secondaries may get dedicated detail panels or dedicated pages
+- materialized knowledge tables are separate operator-facing surfaces
+- no secondary lens silently rewrites `message-label.v2`
+
+## Candidate future lenses
+
+- spam / fatigue
+- opportunity / follow-up
 - topical clustering
-  - recurring subject areas
-  - projects
-  - communities
 - relationship analysis
-  - personal vs professional ties
-  - reciprocity
-  - response patterns
-- temporal analysis
-  - recurring cycles
-  - spending or opportunity seasonality
-  - long-gap reconnect signals
+- temporal patterns
+- travel or logistics
+- legal / compliance
 
-## Preconditions
+## Constraints
 
-Before adding these lenses:
-
-- Gmail live sync must remain stable
-- message freshness by content hash must stay correct
-- review and override semantics must remain predictable
-- operator UI must have room for more than the current bucket-first model
-
-## Likely Implementation Shape
-
-- preserve `message-label.v1` as the current stable contract
-- add new prompt versions rather than mutating the existing contract in place
-- store new lens outputs as additive result versions first
-- promote new fields into the current label surface only after review and stability
-- once Message Model V2 lands, any conversation-aware analysis should key off
-  Gmail conversation identity rather than `thread_key`
-- content-hash freshness should remain the invalidation mechanism for lens
-  outputs
-
-## Non-Goals For This Document
-
-- final schemas
-- model choices
-- UI layouts
-- rollout timing
+- Gmail sync and message freshness must remain stable
+- root review semantics must remain predictable
+- secondaries must tolerate re-runs and stale invalidation cleanly
+- conversation-aware work should use Gmail conversation identity, not `thread_key`
+- new knowledge layers should remain domain-specific until a real shared shape
+  emerges
+- deterministic overlay layers should project categories from model outputs
+  rather than mutating model history

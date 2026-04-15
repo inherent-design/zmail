@@ -99,7 +99,58 @@ describe("route components", () => {
 
 		expect(screen.getByText("zmail")).toBeTruthy();
 		expect(screen.getByText("Accounts")).toBeTruthy();
+		expect(screen.getByText("Finance")).toBeTruthy();
 		expect(screen.getByTestId("outlet")).toBeTruthy();
+	});
+
+	it("renders a reset-required root error state", async () => {
+		mockRouteRuntime(null);
+		const route = await import("#/app/routes/__root");
+		const ErrorComponent = (
+			route.Route as unknown as {
+				errorComponent: (input: { error: Error }) => ReactNode;
+			}
+		).errorComponent;
+		const error = new Error(
+			"This local database predates the rewritten zmail baseline and must be reset before continuing.",
+		);
+		error.name = "SchemaResetRequiredError";
+
+		render(ErrorComponent({ error }));
+
+		expect(screen.getByText("Local DB reset required")).toBeTruthy();
+		expect(screen.getByText(/rewritten zmail baseline/)).toBeTruthy();
+		expect(screen.getByText("pnpm db:reset:messages")).toBeTruthy();
+		expect(screen.getByText("pnpm db:reset")).toBeTruthy();
+		expect(screen.getByText("pnpm db:migrate")).toBeTruthy();
+		expect(
+			screen.getByText("Reconnect Gmail accounts if you used the full reset."),
+		).toBeTruthy();
+	});
+
+	it("renders the generic root error state and falls back when the message is empty", async () => {
+		mockRouteRuntime(null);
+		const route = await import("#/app/routes/__root");
+		const ErrorComponent = (
+			route.Route as unknown as {
+				errorComponent: (input: { error: Error }) => ReactNode;
+			}
+		).errorComponent;
+
+		render(ErrorComponent({ error: new Error("Unexpected failure") }));
+		expect(screen.getByText("Application error")).toBeTruthy();
+		expect(screen.getByText("Unexpected failure")).toBeTruthy();
+
+		cleanup();
+		const emptyMessageError = new Error("");
+		render(ErrorComponent({ error: emptyMessageError }));
+		expect(
+			screen.getByText("The application could not complete this request."),
+		).toBeTruthy();
+
+		cleanup();
+		render(ErrorComponent({ error: "" as never }));
+		expect(screen.getByText("Application error")).toBeTruthy();
 	});
 
 	it("renders the home route", async () => {
@@ -110,6 +161,9 @@ describe("route components", () => {
 			accounts: 1,
 		};
 		mockRouteRuntime(loaderData);
+		vi.doMock("#/app/server/actions", () => ({
+			getHomeData: vi.fn(async () => loaderData),
+		}));
 		const route = await import("#/app/routes/index");
 		await (
 			route.Route as unknown as { loader: () => Promise<unknown> }
@@ -154,6 +208,9 @@ describe("route components", () => {
 		};
 
 		mockRouteRuntime(loaderData);
+		vi.doMock("#/app/server/actions", () => ({
+			getAccountsData: vi.fn(async () => loaderData),
+		}));
 		const route = await import("#/app/routes/accounts.index");
 		await (
 			route.Route as unknown as { loader: () => Promise<unknown> }
@@ -347,10 +404,19 @@ describe("route components", () => {
 	});
 
 	it("renders the messages route", async () => {
+		const getMessagesData = vi.fn(async () => []);
+		vi.doMock("#/app/server/actions", () => ({
+			getMessagesData,
+		}));
 		const loaderData = [
 			{
 				id: "message-1",
 				received_at: "2026-01-01",
+				conversation_id: "conversation-1",
+				remote_thread_id: "170000000000000001999",
+				body_extraction_strategy: "forwarded_split",
+				parse_status: "error",
+				has_forwarded: true,
 				account_label: "Primary Gmail",
 				sender_address: "billing@example.com",
 				subject: "Receipt",
@@ -358,28 +424,18 @@ describe("route components", () => {
 				nsfw: 1,
 				low_confidence: 1,
 			},
-		];
-		mockRouteRuntime(loaderData);
-		const route = await import("#/app/routes/messages.index");
-		await (
-			route.Route as unknown as { loader: () => Promise<unknown> }
-		).loader();
-		renderRouteComponent(route);
-
-		expect(screen.getByText("Receipt")).toBeTruthy();
-		expect(screen.getByText("NSFW")).toBeTruthy();
-		expect(screen.getByText("Low confidence")).toBeTruthy();
-	});
-
-	it("renders message list fallbacks when label data is missing", async () => {
-		const loaderData = [
 			{
-				id: "message-2",
-				received_at: null,
+				id: "message-1b",
+				received_at: "2026-01-02",
+				conversation_id: "conversation-short",
+				remote_thread_id: "thread-short",
+				body_extraction_strategy: "plain_text",
+				parse_status: "parsed",
+				has_forwarded: false,
 				account_label: "Primary Gmail",
-				sender_address: null,
-				subject: null,
-				primary_bucket: null,
+				sender_address: "friend@example.com",
+				subject: "Short thread",
+				primary_bucket: "social",
 				nsfw: 0,
 				low_confidence: 0,
 			},
@@ -391,9 +447,44 @@ describe("route components", () => {
 		).loader();
 		renderRouteComponent(route);
 
+		expect(getMessagesData).toHaveBeenCalled();
+		expect(screen.getByText("Receipt")).toBeTruthy();
+		expect(screen.getByText("1700000000...001999")).toBeTruthy();
+		expect(screen.getByText("thread-short")).toBeTruthy();
+		expect(screen.getByText("forwarded_split")).toBeTruthy();
+		expect(screen.getByText("Forwarded")).toBeTruthy();
+		expect(screen.getByText("Parse error")).toBeTruthy();
+		expect(screen.getByText("NSFW")).toBeTruthy();
+		expect(screen.getByText("Low confidence")).toBeTruthy();
+	});
+
+	it("renders message list fallbacks when label data is missing", async () => {
+		const loaderData = [
+			{
+				id: "message-2",
+				received_at: null,
+				conversation_id: null,
+				remote_thread_id: null,
+				body_extraction_strategy: "plain_text",
+				parse_status: "parsed",
+				has_forwarded: false,
+				account_label: "Primary Gmail",
+				sender_address: null,
+				subject: null,
+				primary_bucket: null,
+				nsfw: 0,
+				low_confidence: 0,
+			},
+		];
+		mockRouteRuntime(loaderData);
+		const route = await import("#/app/routes/messages.index");
+		renderRouteComponent(route);
+
 		expect(screen.getAllByText("unknown")).toHaveLength(2);
 		expect(screen.getByText("(no subject)")).toBeTruthy();
 		expect(screen.getByText("unlabeled")).toBeTruthy();
+		expect(screen.getByText("none")).toBeTruthy();
+		expect(screen.getByText("plain_text")).toBeTruthy();
 		expect(screen.queryByText("NSFW")).toBeNull();
 		expect(screen.queryByText("Low confidence")).toBeNull();
 	});
@@ -420,20 +511,91 @@ describe("route components", () => {
 				subject: "Receipt",
 				account_label: "Primary Gmail",
 				received_at: "2026-01-01",
+				ingested_at: "2026-01-02",
 				sender_address: "billing@example.com",
+				body_text_primary: "primary body",
+				body_text_forwarded: "forwarded body",
 				body_text_normalized: "body",
 				to: [],
 				cc: [],
 				in_reply_to: null,
 				thread_key: "thread-1",
+				conversation_id: "conversation-1",
+				remote_thread_id: "170000000000000001",
 				parse_status: "parsed",
+				body_extraction_strategy: "forwarded_split",
+				parse_error_reason: null,
 				token_estimate: 3,
+				content_sha256: "content-sha",
+				raw_rfc822_path: "/tmp/raw.eml",
+				raw_sha256: "raw-sha",
 			},
 			attachments: [],
 			moderation: { nsfw_flag: 0 },
 			classifications: [],
 			currentLabel: { label: null },
 			latestProfile: null,
+			financeIntel: {
+				head: {
+					status: "ready",
+					lowConfidence: 1,
+					contentSha256: "content-sha",
+					registrySha256: "registry-sha",
+					updatedAt: "2026-01-03",
+				},
+				current: {
+					id: "secondary-1",
+					schemaVersion: "finance-intel.v1",
+					model: "gpt-5.4-mini",
+					promptVersion: "finance-intel-v1",
+					source: "model",
+					createdAt: "2026-01-03",
+					result: {
+						messageKind: "receipt",
+					},
+					rawResponse: { assistantText: "{}" },
+					usage: { totalTokens: 10 },
+				},
+				history: [
+					{
+						id: "secondary-history-1",
+						schemaVersion: "finance-intel.v1",
+						model: "gpt-5.4-mini",
+						promptVersion: "finance-intel-v1",
+						source: "model",
+						createdAt: "2026-01-02",
+						result: { messageKind: "receipt" },
+						rawResponse: { assistantText: "{}" },
+						usage: { totalTokens: 8 },
+					},
+				],
+				evidence: [
+					{
+						id: "finance-evidence-1",
+						eventCandidateId: "event-1",
+						documentCandidateId: "document-1",
+						transactionIndex: 0,
+						documentIndex: 0,
+						eventCanonicalKey: "tx:1",
+						eventStatus: "candidate",
+						documentCanonicalKey: "doc:1",
+						documentStatus: "candidate",
+						evidenceJson: '{"type":"transaction"}',
+					},
+					{
+						id: "finance-evidence-2",
+						eventCandidateId: null,
+						documentCandidateId: null,
+						transactionIndex: null,
+						documentIndex: null,
+						eventCanonicalKey: null,
+						eventStatus: null,
+						documentCanonicalKey: null,
+						documentStatus: null,
+						evidenceJson: '{"type":"orphan"}',
+					},
+				],
+			},
 		};
 		const runtime = mockRouteRuntime(loaderData, {
 			serverFnMap: new Map<unknown, ReturnType<typeof vi.fn>>([
@@ -459,7 +621,13 @@ describe("route components", () => {
 			expect(classifyNow).toHaveBeenCalled();
 			expect(runtime.invalidate).toHaveBeenCalled();
 		});
-		expect(screen.getByText("Normalized body")).toBeTruthy();
+		expect(screen.getByText("Primary body")).toBeTruthy();
+		expect(screen.getByText("Forwarded body")).toBeTruthy();
+		expect(screen.getByText("Classifier/search body")).toBeTruthy();
+		expect(screen.getByText("Finance intel")).toBeTruthy();
+		expect(screen.getByText("Low confidence")).toBeTruthy();
+		expect(screen.getByText("Candidate links")).toBeTruthy();
+		expect(screen.getByText("Finance-intel history")).toBeTruthy();
 	});
 
 	it("renders message detail fallbacks and classification history", async () => {
@@ -469,14 +637,24 @@ describe("route components", () => {
 				subject: null,
 				account_label: "Primary Gmail",
 				received_at: null,
+				ingested_at: "2026-01-02",
 				sender_address: null,
-				body_text_normalized: "body",
+				body_text_primary: "",
+				body_text_forwarded: "",
+				body_text_normalized: "",
 				to: [],
 				cc: [],
 				in_reply_to: null,
 				thread_key: "thread-2",
+				conversation_id: null,
+				remote_thread_id: null,
 				parse_status: "partial",
+				body_extraction_strategy: "plain_text",
+				parse_error_reason: "parser warning",
 				token_estimate: 0,
+				content_sha256: "content-sha",
+				raw_rfc822_path: null,
+				raw_sha256: null,
 			},
 			attachments: [],
 			moderation: null,
@@ -501,6 +679,65 @@ describe("route components", () => {
 		expect(screen.getByText("unknown sender")).toBeTruthy();
 		expect(screen.getByText("Classification history")).toBeTruthy();
 		expect(screen.getByText("gpt-5.4-mini")).toBeTruthy();
+		expect(screen.getAllByText("(empty)").length).toBeGreaterThanOrEqual(2);
+		expect(screen.getByText("Metadata")).toBeTruthy();
+	});
+
+	it("renders a finance-intel head without a current result", async () => {
+		const loaderData = {
+			message: {
+				id: "message-3",
+				subject: "Statement",
+				account_label: "Primary Gmail",
+				received_at: "2026-01-04",
+				ingested_at: "2026-01-05",
+				sender_address: "alerts@example.com",
+				body_text_primary: "statement ready",
+				body_text_forwarded: "",
+				body_text_normalized: "statement ready",
+				to: [],
+				cc: [],
+				in_reply_to: null,
+				thread_key: "thread-3",
+				conversation_id: "conversation-3",
+				remote_thread_id: "thread-remote-3",
+				parse_status: "parsed",
+				body_extraction_strategy: "plain_text",
+				parse_error_reason: null,
+				token_estimate: 2,
+				content_sha256: "content-sha-3",
+				raw_rfc822_path: null,
+				raw_sha256: null,
+			},
+			attachments: [],
+			moderation: null,
+			classifications: [],
+			currentLabel: { label: null },
+			latestProfile: null,
+			financeIntel: {
+				head: {
+					status: "stale",
+					lowConfidence: 0,
+					contentSha256: "content-sha-3",
+					registrySha256: "registry-sha-3",
+					updatedAt: "2026-01-05",
+				},
+				current: null,
+				history: [],
+				evidence: [],
+			},
+		};
+		mockRouteRuntime(loaderData);
+		const route = await import("#/app/routes/messages.$messageId");
+		renderRouteComponent(route);
+
+		expect(
+			screen.getByText(
+				"No finance-intel result is stored for the current head.",
+			),
+		).toBeTruthy();
+		expect(screen.queryByText("Candidate links")).toBeNull();
+		expect(screen.queryByText("Finance-intel history")).toBeNull();
 	});
 
 	it("renders review route and accepts or overrides", async () => {
@@ -517,6 +754,10 @@ describe("route components", () => {
 				subject: "Receipt",
 				sender_address: "billing@example.com",
 				snippet: "snippet",
+				body_extraction_strategy: "forwarded_split",
+				has_forwarded: true,
+				parse_status: "error",
+				parse_error_reason: "parse failure",
 				result: { ok: true },
 			},
 		];
@@ -532,6 +773,9 @@ describe("route components", () => {
 		).loader();
 		renderRouteComponent(route);
 
+		expect(screen.getByText("forwarded_split")).toBeTruthy();
+		expect(screen.getByText("Forwarded")).toBeTruthy();
+		expect(screen.getByText("Parse error")).toBeTruthy();
 		fireEvent.click(screen.getByRole("button", { name: "Accept" }));
 		fireEvent.click(screen.getByRole("button", { name: "Override" }));
 
@@ -555,6 +799,10 @@ describe("route components", () => {
 				subject: null,
 				sender_address: null,
 				snippet: "snippet",
+				body_extraction_strategy: "plain_text",
+				has_forwarded: false,
+				parse_status: "parsed",
+				parse_error_reason: null,
 				result: undefined,
 			},
 		];
@@ -614,6 +862,10 @@ describe("route components", () => {
 				subject: "Receipt",
 				sender_address: "billing@example.com",
 				snippet: "snippet",
+				body_extraction_strategy: "plain_text",
+				has_forwarded: false,
+				parse_status: "parsed",
+				parse_error_reason: null,
 				result: { ok: true },
 			},
 		];
@@ -656,6 +908,10 @@ describe("route components", () => {
 				subject: "Receipt",
 				sender_address: "billing@example.com",
 				snippet: "snippet",
+				body_extraction_strategy: "plain_text",
+				has_forwarded: false,
+				parse_status: "parsed",
+				parse_error_reason: null,
 				result: { ok: true },
 			},
 		];
@@ -770,6 +1026,7 @@ describe("route components", () => {
 			queueAccountDeltaSync: Symbol("queueAccountDeltaSync"),
 			queueAccountReconcile: Symbol("queueAccountReconcile"),
 			queueAccountClassifyBacklog: Symbol("queueAccountClassifyBacklog"),
+			queueAccountFinanceBacklog: Symbol("queueAccountFinanceBacklog"),
 			pauseAccountSync: Symbol("pauseAccountSync"),
 			resumeAccountSync: Symbol("resumeAccountSync"),
 			disconnectAccount: Symbol("disconnectAccount"),
@@ -778,6 +1035,7 @@ describe("route components", () => {
 		const deltaSync = vi.fn(async () => undefined);
 		const reconcile = vi.fn(async () => undefined);
 		const classifyBacklog = vi.fn(async () => undefined);
+		const classifyFinanceBacklog = vi.fn(async () => undefined);
 		const pause = vi.fn(async () => undefined);
 		const resume = vi.fn(async () => undefined);
 		const disconnect = vi.fn(async () => undefined);
@@ -788,6 +1046,7 @@ describe("route components", () => {
 			queueAccountDeltaSync: actions.queueAccountDeltaSync,
 			queueAccountReconcile: actions.queueAccountReconcile,
 			queueAccountClassifyBacklog: actions.queueAccountClassifyBacklog,
+			queueAccountFinanceBacklog: actions.queueAccountFinanceBacklog,
 			pauseAccountSync: actions.pauseAccountSync,
 			resumeAccountSync: actions.resumeAccountSync,
 			disconnectAccount: actions.disconnectAccount,
@@ -834,6 +1093,16 @@ describe("route components", () => {
 			],
 			messageCount: 12,
 			tombstoneCount: 3,
+			financeCoverage: {
+				rootFinanceRelevantCount: 4,
+				totalHeads: 3,
+				readyCount: 2,
+				reviewCount: 1,
+				staleCount: 0,
+				blockedParseErrorCount: 0,
+				eventCandidateCount: 2,
+				documentCandidateCount: 1,
+			},
 		};
 		const runtime = mockRouteRuntime(loaderData, {
 			serverFnMap: new Map<unknown, ReturnType<typeof vi.fn>>([
@@ -841,6 +1110,7 @@ describe("route components", () => {
 				[actions.queueAccountDeltaSync, deltaSync],
 				[actions.queueAccountReconcile, reconcile],
 				[actions.queueAccountClassifyBacklog, classifyBacklog],
+				[actions.queueAccountFinanceBacklog, classifyFinanceBacklog],
 				[actions.pauseAccountSync, pause],
 				[actions.resumeAccountSync, resume],
 				[actions.disconnectAccount, disconnect],
@@ -864,6 +1134,7 @@ describe("route components", () => {
 			"Delta sync",
 			"Reconcile",
 			"Classify backlog",
+			"Classify finance backlog",
 			"Pause",
 			"Resume",
 			"Disconnect",
@@ -884,6 +1155,9 @@ describe("route components", () => {
 			expect(classifyBacklog).toHaveBeenCalledWith({
 				data: { accountId: "account-1" },
 			});
+			expect(classifyFinanceBacklog).toHaveBeenCalledWith({
+				data: { accountId: "account-1" },
+			});
 			expect(pause).toHaveBeenCalledWith({
 				data: { accountId: "account-1" },
 			});
@@ -893,7 +1167,7 @@ describe("route components", () => {
 			expect(disconnect).toHaveBeenCalledWith({
 				data: { accountId: "account-1" },
 			});
-			expect(runtime.invalidate).toHaveBeenCalledTimes(7);
+			expect(runtime.invalidate).toHaveBeenCalledTimes(8);
 		});
 
 		expect(
@@ -913,7 +1187,8 @@ describe("route components", () => {
 			),
 		).toBeTruthy();
 		expect(screen.getByText("12")).toBeTruthy();
-		expect(screen.getByText("3")).toBeTruthy();
+		expect(screen.getByText("Tombstones")).toBeTruthy();
+		expect(screen.getByText("Finance intel heads")).toBeTruthy();
 	});
 
 	it("renders account detail fallbacks without sync state or recent jobs", async () => {
@@ -922,6 +1197,7 @@ describe("route components", () => {
 			queueAccountDeltaSync: Symbol("queueAccountDeltaSync"),
 			queueAccountReconcile: Symbol("queueAccountReconcile"),
 			queueAccountClassifyBacklog: Symbol("queueAccountClassifyBacklog"),
+			queueAccountFinanceBacklog: Symbol("queueAccountFinanceBacklog"),
 			pauseAccountSync: Symbol("pauseAccountSync"),
 			resumeAccountSync: Symbol("resumeAccountSync"),
 			disconnectAccount: Symbol("disconnectAccount"),
@@ -933,6 +1209,7 @@ describe("route components", () => {
 			queueAccountDeltaSync: actions.queueAccountDeltaSync,
 			queueAccountReconcile: actions.queueAccountReconcile,
 			queueAccountClassifyBacklog: actions.queueAccountClassifyBacklog,
+			queueAccountFinanceBacklog: actions.queueAccountFinanceBacklog,
 			pauseAccountSync: actions.pauseAccountSync,
 			resumeAccountSync: actions.resumeAccountSync,
 			disconnectAccount: actions.disconnectAccount,
@@ -956,6 +1233,16 @@ describe("route components", () => {
 			recentJobs: [],
 			messageCount: 0,
 			tombstoneCount: 0,
+			financeCoverage: {
+				rootFinanceRelevantCount: 0,
+				totalHeads: 0,
+				readyCount: 0,
+				reviewCount: 0,
+				staleCount: 0,
+				blockedParseErrorCount: 0,
+				eventCandidateCount: 0,
+				documentCandidateCount: 0,
+			},
 		});
 
 		const route = await import("#/app/routes/accounts.$accountId");
@@ -974,6 +1261,7 @@ describe("route components", () => {
 			queueAccountDeltaSync: Symbol("queueAccountDeltaSync"),
 			queueAccountReconcile: Symbol("queueAccountReconcile"),
 			queueAccountClassifyBacklog: Symbol("queueAccountClassifyBacklog"),
+			queueAccountFinanceBacklog: Symbol("queueAccountFinanceBacklog"),
 			pauseAccountSync: Symbol("pauseAccountSync"),
 			resumeAccountSync: Symbol("resumeAccountSync"),
 			disconnectAccount: Symbol("disconnectAccount"),
@@ -985,6 +1273,7 @@ describe("route components", () => {
 			queueAccountDeltaSync: actions.queueAccountDeltaSync,
 			queueAccountReconcile: actions.queueAccountReconcile,
 			queueAccountClassifyBacklog: actions.queueAccountClassifyBacklog,
+			queueAccountFinanceBacklog: actions.queueAccountFinanceBacklog,
 			pauseAccountSync: actions.pauseAccountSync,
 			resumeAccountSync: actions.resumeAccountSync,
 			disconnectAccount: actions.disconnectAccount,
@@ -1023,6 +1312,16 @@ describe("route components", () => {
 			recentJobs: [],
 			messageCount: 0,
 			tombstoneCount: 0,
+			financeCoverage: {
+				rootFinanceRelevantCount: 0,
+				totalHeads: 0,
+				readyCount: 0,
+				reviewCount: 0,
+				staleCount: 0,
+				blockedParseErrorCount: 0,
+				eventCandidateCount: 0,
+				documentCandidateCount: 0,
+			},
 		});
 
 		const route = await import("#/app/routes/accounts.$accountId");
@@ -1081,6 +1380,9 @@ describe("route components", () => {
 			},
 		};
 		mockRouteRuntime(runsLoaderData);
+		vi.doMock("#/app/server/actions", () => ({
+			getRunsData: vi.fn(async () => runsLoaderData),
+		}));
 		const runsRoute = await import("#/app/routes/runs");
 		await (
 			runsRoute.Route as unknown as { loader: () => Promise<unknown> }
@@ -1104,6 +1406,16 @@ describe("route components", () => {
 				id: "acct-1",
 				label: "Personal Gmail",
 				email_address: "you@example.com",
+			},
+			financeCoverage: {
+				rootFinanceRelevantCount: 2,
+				totalHeads: 2,
+				readyCount: 1,
+				reviewCount: 1,
+				staleCount: 0,
+				blockedParseErrorCount: 0,
+				eventCandidateCount: 1,
+				documentCandidateCount: 1,
 			},
 			profiles: [
 				{
@@ -1162,6 +1474,16 @@ describe("route components", () => {
 				label: "Empty Gmail",
 				email_address: "empty@example.com",
 			},
+			financeCoverage: {
+				rootFinanceRelevantCount: 0,
+				totalHeads: 0,
+				readyCount: 0,
+				reviewCount: 0,
+				staleCount: 0,
+				blockedParseErrorCount: 0,
+				eventCandidateCount: 0,
+				documentCandidateCount: 0,
+			},
 			profiles: [],
 		});
 
@@ -1182,6 +1504,320 @@ describe("route components", () => {
 			screen.getByText(
 				"Queue a rebuild to generate the first profile for this account.",
 			),
+		).toBeTruthy();
+	});
+
+	it("renders the finance route and dispatches finance actions", async () => {
+		const queueImportOperatorRegistry = Symbol("queueImportOperatorRegistry");
+		const queueRebuildFinanceKnowledge = Symbol("queueRebuildFinanceKnowledge");
+		const queueRebuildFinanceRollups = Symbol("queueRebuildFinanceRollups");
+		const queueReconcileRegistrySuggestions = Symbol(
+			"queueReconcileRegistrySuggestions",
+		);
+		const importRegistry = vi.fn(async () => undefined);
+		const rebuildKnowledge = vi.fn(async () => undefined);
+		const rebuildRollups = vi.fn(async () => undefined);
+		const reconcileSuggestions = vi.fn(async () => undefined);
+
+		vi.doMock("#/app/server/actions", () => ({
+			getFinanceData: vi.fn(),
+			queueImportOperatorRegistry,
+			queueRebuildFinanceKnowledge,
+			queueRebuildFinanceRollups,
+			queueReconcileRegistrySuggestions,
+		}));
+
+		const runtime = mockRouteRuntime(
+			{
+				registry: {
+					sha256: "registry-sha",
+					importedAt: "2026-01-01",
+					sourceDir: "/tmp/registry",
+					counts: {
+						identities: 1,
+						institutions: 1,
+						financialAccounts: 1,
+						senderRules: 1,
+					},
+				},
+				coverage: {
+					rootFinanceRelevantCount: 3,
+					totalHeads: 2,
+					readyCount: 1,
+					reviewCount: 1,
+					staleCount: 0,
+					blockedParseErrorCount: 0,
+					eventCandidateCount: 1,
+					documentCandidateCount: 1,
+				},
+				eventCandidates: [
+					{
+						id: "event-1",
+						canonicalKey: "tx:1",
+						status: "candidate",
+						eventKind: "card_charge",
+						direction: "expense",
+						amountValue: "42.00",
+						currency: "USD",
+						occurredAt: "2026-01-09",
+						merchantOrCounterparty: "Acme Software",
+						ownerIdentityId: null,
+						financialAccountId: null,
+						institutionId: null,
+						categoryHint: "software",
+						taxRelevanceHint: "business expense",
+						evidenceCount: 1,
+						firstMessageReceivedAt: "2026-01-10",
+						lastMessageReceivedAt: "2026-01-10",
+						updatedAt: "2026-01-10",
+						evidence: [
+							{
+								id: "evidence-1",
+								messageId: "message-1",
+								accountLabel: "Work",
+								subject: "Receipt",
+								receivedAt: "2026-01-10",
+								transactionIndex: 0,
+								documentIndex: null,
+							},
+						],
+					},
+				],
+				documentCandidates: [
+					{
+						id: "document-1",
+						canonicalKey: "doc:1",
+						status: "candidate",
+						documentType: "receipt",
+						issuer: "Acme Software",
+						externalId: "receipt-123",
+						statementPeriodStart: null,
+						statementPeriodEnd: null,
+						dueAt: null,
+						taxYear: 2026,
+						ownerIdentityId: null,
+						financialAccountId: null,
+						institutionId: null,
+						evidenceCount: 1,
+						firstMessageReceivedAt: "2026-01-10",
+						lastMessageReceivedAt: "2026-01-10",
+						updatedAt: "2026-01-10",
+						evidence: [
+							{
+								id: "evidence-2",
+								messageId: "message-1",
+								accountLabel: "Work",
+								subject: "Receipt",
+								receivedAt: "2026-01-10",
+								transactionIndex: null,
+								documentIndex: 0,
+							},
+						],
+					},
+				],
+			},
+			{
+				serverFnMap: new Map<unknown, ReturnType<typeof vi.fn>>([
+					[queueImportOperatorRegistry, importRegistry],
+					[queueRebuildFinanceKnowledge, rebuildKnowledge],
+					[queueRebuildFinanceRollups, rebuildRollups],
+					[queueReconcileRegistrySuggestions, reconcileSuggestions],
+				]),
+			},
+		);
+
+		const route = await import("#/app/routes/finance");
+		await (
+			route.Route as unknown as { loader: () => Promise<unknown> }
+		).loader();
+		renderRouteComponent(route);
+
+		fireEvent.click(screen.getByRole("button", { name: "Import registry" }));
+		fireEvent.click(screen.getByRole("button", { name: "Rebuild knowledge" }));
+
+		await waitFor(() => {
+			expect(importRegistry).toHaveBeenCalled();
+			expect(rebuildKnowledge).toHaveBeenCalled();
+			expect(runtime.invalidate).toHaveBeenCalledTimes(2);
+		});
+
+		expect(screen.getByText("Finance knowledge")).toBeTruthy();
+		expect(screen.getAllByText("Acme Software").length).toBeGreaterThan(0);
+		expect(screen.getByText("card_charge")).toBeTruthy();
+		expect(screen.getByText("receipt")).toBeTruthy();
+	});
+
+	it("renders finance route empty states and event fallbacks", async () => {
+		const queueImportOperatorRegistry = Symbol("queueImportOperatorRegistry");
+		const queueRebuildFinanceKnowledge = Symbol("queueRebuildFinanceKnowledge");
+		const queueRebuildFinanceRollups = Symbol("queueRebuildFinanceRollups");
+		const queueReconcileRegistrySuggestions = Symbol(
+			"queueReconcileRegistrySuggestions",
+		);
+
+		vi.doMock("#/app/server/actions", () => ({
+			getFinanceData: vi.fn(),
+			queueImportOperatorRegistry,
+			queueRebuildFinanceKnowledge,
+			queueRebuildFinanceRollups,
+			queueReconcileRegistrySuggestions,
+		}));
+
+		mockRouteRuntime({
+			registry: {
+				sha256: null,
+				importedAt: null,
+				sourceDir: "/tmp/registry",
+				counts: {
+					identities: 0,
+					institutions: 0,
+					financialAccounts: 0,
+					senderRules: 0,
+				},
+			},
+			coverage: {
+				rootFinanceRelevantCount: 0,
+				totalHeads: 0,
+				readyCount: 0,
+				reviewCount: 0,
+				staleCount: 0,
+				blockedParseErrorCount: 0,
+				eventCandidateCount: 0,
+				documentCandidateCount: 0,
+			},
+			eventCandidates: [
+				{
+					id: "event-fallback",
+					canonicalKey: "tx:fallback",
+					status: "candidate",
+					eventKind: "bank_fee",
+					direction: null,
+					amountValue: null,
+					currency: null,
+					occurredAt: null,
+					merchantOrCounterparty: null,
+					ownerIdentityId: null,
+					financialAccountId: null,
+					institutionId: null,
+					categoryHint: null,
+					taxRelevanceHint: null,
+					evidenceCount: 1,
+					firstMessageReceivedAt: null,
+					lastMessageReceivedAt: null,
+					updatedAt: "2026-01-10",
+					evidence: [
+						{
+							id: "event-evidence-fallback",
+							messageId: "message-fallback",
+							accountLabel: "Work",
+							subject: null,
+							receivedAt: null,
+							transactionIndex: 0,
+							documentIndex: null,
+						},
+					],
+				},
+			],
+			documentCandidates: [
+				{
+					id: "document-fallback",
+					canonicalKey: "doc:fallback",
+					status: "candidate",
+					documentType: "statement",
+					issuer: null,
+					externalId: null,
+					statementPeriodStart: null,
+					statementPeriodEnd: null,
+					dueAt: null,
+					taxYear: null,
+					ownerIdentityId: null,
+					financialAccountId: null,
+					institutionId: null,
+					evidenceCount: 1,
+					firstMessageReceivedAt: null,
+					lastMessageReceivedAt: null,
+					updatedAt: "2026-01-10",
+					evidence: [
+						{
+							id: "document-evidence-fallback",
+							messageId: "message-fallback",
+							accountLabel: "Work",
+							subject: null,
+							receivedAt: null,
+							transactionIndex: null,
+							documentIndex: 0,
+						},
+					],
+				},
+			],
+		});
+
+		const route = await import("#/app/routes/finance");
+		renderRouteComponent(route);
+
+		expect(screen.getByText("registry imported: never")).toBeTruthy();
+		expect(screen.getByText("Registry sha: none")).toBeTruthy();
+		expect(screen.getByText("No yearly rollups yet.")).toBeTruthy();
+		expect(screen.getByText("No subcategory rollups yet.")).toBeTruthy();
+		expect(
+			screen.getByText("No ledger entries for this selection."),
+		).toBeTruthy();
+		expect(
+			screen.getByText("No imported documents for this year."),
+		).toBeTruthy();
+		expect(screen.getByText("unknown")).toBeTruthy();
+		expect(screen.getByText("unknown issuer")).toBeTruthy();
+		expect(screen.getByText("no external id")).toBeTruthy();
+	});
+
+	it("renders the finance route when no candidates exist yet", async () => {
+		const queueImportOperatorRegistry = Symbol("queueImportOperatorRegistry");
+		const queueRebuildFinanceKnowledge = Symbol("queueRebuildFinanceKnowledge");
+		const queueRebuildFinanceRollups = Symbol("queueRebuildFinanceRollups");
+		const queueReconcileRegistrySuggestions = Symbol(
+			"queueReconcileRegistrySuggestions",
+		);
+
+		vi.doMock("#/app/server/actions", () => ({
+			getFinanceData: vi.fn(),
+			queueImportOperatorRegistry,
+			queueRebuildFinanceKnowledge,
+			queueRebuildFinanceRollups,
+			queueReconcileRegistrySuggestions,
+		}));
+
+		mockRouteRuntime({
+			registry: {
+				sha256: null,
+				importedAt: null,
+				sourceDir: "/tmp/registry",
+				counts: {
+					identities: 0,
+					institutions: 0,
+					financialAccounts: 0,
+					senderRules: 0,
+				},
+			},
+			coverage: {
+				rootFinanceRelevantCount: 0,
+				totalHeads: 0,
+				readyCount: 0,
+				reviewCount: 0,
+				staleCount: 0,
+				blockedParseErrorCount: 0,
+				eventCandidateCount: 0,
+				documentCandidateCount: 0,
+			},
+			eventCandidates: [],
+			documentCandidates: [],
+		});
+
+		const route = await import("#/app/routes/finance");
+		renderRouteComponent(route);
+
+		expect(screen.getByText("No materialized event candidates.")).toBeTruthy();
+		expect(
+			screen.getByText("No materialized document candidates."),
 		).toBeTruthy();
 	});
 
@@ -1208,6 +1844,9 @@ describe("route components", () => {
 			},
 		};
 		mockRouteRuntime(loaderData);
+		vi.doMock("#/app/server/actions", () => ({
+			getRunsData: vi.fn(async () => loaderData),
+		}));
 		const route = await import("#/app/routes/runs");
 		await (
 			route.Route as unknown as { loader: () => Promise<unknown> }

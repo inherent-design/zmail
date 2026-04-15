@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 import type { FetchQueryObject } from "imapflow";
 import type { Kysely, Transaction } from "kysely";
@@ -20,18 +21,21 @@ import { type LogTrace, startTrace } from "#/lib/log";
 function parsedMessageValues(
 	parsed: Awaited<ReturnType<typeof parseRawMessage>>,
 	rawLength: number,
-	receivedAtFallback: string,
+	conversationId: string | null,
 ) {
 	return {
 		message_id: parsed.messageId,
 		thread_key: parsed.threadKey,
-		received_at: parsed.receivedAt ?? receivedAtFallback,
+		received_at: parsed.receivedAt,
+		conversation_id: conversationId,
 		sender_name: parsed.senderName,
 		sender_address: parsed.senderAddress,
 		to_json: parsed.toJson,
 		cc_json: parsed.ccJson,
 		subject: parsed.subject,
 		in_reply_to: parsed.inReplyTo,
+		body_text_primary: parsed.bodyTextPrimary,
+		body_text_forwarded: parsed.bodyTextForwarded,
 		body_text_normalized: parsed.bodyTextNormalized,
 		snippet: parsed.snippet,
 		attachment_count: parsed.attachmentCount,
@@ -39,17 +43,131 @@ function parsedMessageValues(
 		raw_byte_start: 0,
 		raw_byte_end: rawLength,
 		parse_status: parsed.parseStatus,
+		body_extraction_strategy: parsed.bodyExtractionStrategy,
+		parse_error_reason: parsed.parseErrorReason,
 		token_estimate: parsed.tokenEstimate,
 		content_sha256: parsed.contentSha256,
 	};
 }
 
 type SyncExecutor = Kysely<DB> | Transaction<DB>;
+type ParsedMessage = Awaited<ReturnType<typeof parseRawMessage>>;
+
+function sourceStatePriority(state: string) {
+	return state === "active" ? 0 : 1;
+}
+
+function selectPreferredSource<
+	T extends {
+		state: string;
+		updated_at: string;
+	},
+>(rows: T[]) {
+	return [...rows].sort((left, right) => {
+		const stateOrder =
+			sourceStatePriority(left.state) - sourceStatePriority(right.state);
+		if (stateOrder !== 0) {
+			return stateOrder;
+		}
+		return right.updated_at.localeCompare(left.updated_at);
+	})[0];
+}
+
+function buildRawRfc822Sha256(raw: Buffer) {
+	return createHash("sha256").update(raw).digest("hex");
+}
+
+async function ensureConversationId(
+	executor: SyncExecutor,
+	accountId: string,
+	gmailThreadId: string | null | undefined,
+	now: string,
+) {
+	const normalizedThreadId = gmailThreadId?.trim() ?? "";
+	if (!normalizedThreadId) {
+		return null;
+	}
+
+	const existing = await executor
+		.selectFrom("conversations")
+		.select("id")
+		.where("account_id", "=", accountId)
+		.where("gmail_thread_id", "=", normalizedThreadId)
+		.executeTakeFirst();
+	if (existing) {
+		return existing.id;
+	}
+
+	const id = randomUUID();
+	await executor
+		.insertInto("conversations")
+		.values({
+			id,
+			account_id: accountId,
+			gmail_thread_id: normalizedThreadId,
+			first_message_received_at: null,
+			last_message_received_at: null,
+			message_count: 0,
+			created_at: now,
+			updated_at: now,
+		})
+		.onConflict((oc) =>
+			oc.columns(["account_id", "gmail_thread_id"]).doNothing(),
+		)
+		.execute();
+
+	const row = await executor
+		.selectFrom("conversations")
+		.select("id")
+		.where("account_id", "=", accountId)
+		.where("gmail_thread_id", "=", normalizedThreadId)
+		.executeTakeFirstOrThrow();
+	return row.id;
+}
+
+async function refreshConversationRollup(
+	executor: SyncExecutor,
+	conversationId: string | null,
+	now: string,
+) {
+	if (!conversationId) {
+		return;
+	}
+
+	const rollup = await executor
+		.selectFrom("messages")
+		.select([
+			(eb) => eb.fn.countAll<number>().as("message_count"),
+			(eb) => eb.fn.min("received_at").as("first_message_received_at"),
+			(eb) => eb.fn.max("received_at").as("last_message_received_at"),
+		])
+		.where("conversation_id", "=", conversationId)
+		.executeTakeFirstOrThrow();
+
+	if (Number(rollup.message_count) === 0) {
+		await executor
+			.deleteFrom("conversations")
+			.where("id", "=", conversationId)
+			.execute();
+		return;
+	}
+
+	await executor
+		.updateTable("conversations")
+		.set({
+			message_count: Number(rollup.message_count),
+			first_message_received_at: rollup.first_message_received_at ?? null,
+			last_message_received_at: rollup.last_message_received_at ?? null,
+			updated_at: now,
+		})
+		.where("id", "=", conversationId)
+		.execute();
+}
 
 async function replaceAttachments(
 	executor: SyncExecutor,
 	messageId: string,
-	attachments: Awaited<ReturnType<typeof parseRawMessage>>["attachments"],
+	attachments: ParsedMessage["attachments"],
 ) {
 	await executor
 		.deleteFrom("attachments")
@@ -70,6 +188,143 @@ async function replaceAttachments(
 			})
 			.execute();
 	}
+}
+
+async function applyParsedMessageUpdate(input: {
+	executor: SyncExecutor;
+	messageId: string;
+	accountId: string;
+	previousConversationId: string | null;
+	remoteThreadId: string | null;
+	now: string;
+	rawLength: number;
+	parsed: ParsedMessage;
+	sourceId: string;
+	sourceUpdate: Partial<DB["message_sources"]> &
+		Pick<DB["message_sources"], "updated_at">;
+}) {
+	const conversationId = await ensureConversationId(
+		input.executor,
+		input.accountId,
+		input.remoteThreadId,
+		input.now,
+	);
+	await input.executor
+		.updateTable("messages")
+		.set(parsedMessageValues(input.parsed, input.rawLength, conversationId))
+		.where("id", "=", input.messageId)
+		.execute();
+	await replaceAttachments(
+		input.executor,
+		input.messageId,
+		input.parsed.attachments,
+	);
+	await input.executor
+		.updateTable("message_sources")
+		.set(input.sourceUpdate)
+		.where("id", "=", input.sourceId)
+		.execute();
+	for (const conversationToRefresh of new Set([
+		input.previousConversationId,
+		conversationId,
+	])) {
+		await refreshConversationRollup(
+			input.executor,
+			conversationToRefresh,
+			input.now,
+		);
+	}
+}
+
+export async function reextractStoredParseErrorMessage(input: {
+	messageId: string;
+}) {
+	const db = getDb();
+	const now = nowIso();
+	const message = await db
+		.selectFrom("messages")
+		.select([
+			"id",
+			"account_id",
+			"received_at",
+			"conversation_id",
+			"created_at",
+			"ingested_at",
+		])
+		.where("id", "=", input.messageId)
+		.executeTakeFirstOrThrow();
+	const sourceRows = await db
+		.selectFrom("message_sources")
+		.selectAll()
+		.where("message_id", "=", input.messageId)
+		.execute();
+	const source = selectPreferredSource(sourceRows);
+
+	if (!source?.raw_rfc822_path) {
+		return {
+			outcome: "missingRaw" as const,
+			accountId: message.account_id,
+			messageId: message.id,
+			createdAt: message.created_at,
+			ingestedAt: message.ingested_at,
+		};
+	}
+
+	let raw: Buffer;
+	try {
+		raw = readFileSync(source.raw_rfc822_path);
+	} catch (error) {
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+			return {
+				outcome: "missingRaw" as const,
+				accountId: message.account_id,
+				messageId: message.id,
+				createdAt: message.created_at,
+				ingestedAt: message.ingested_at,
+			};
+		}
+		throw error;
+	}
+
+	const rawSha256 = buildRawRfc822Sha256(raw);
+	const parsed = await parseRawMessage(raw, rawSha256, message.received_at);
+	if (parsed.parseStatus === "error") {
+		return {
+			outcome: "stillFailing" as const,
+			accountId: message.account_id,
+			messageId: message.id,
+			createdAt: message.created_at,
+			ingestedAt: message.ingested_at,
+			parseErrorReason: parsed.parseErrorReason,
+		};
+	}
+
+	await db.transaction().execute(async (trx) => {
+		await applyParsedMessageUpdate({
+			executor: trx,
+			messageId: message.id,
+			accountId: message.account_id,
+			previousConversationId: message.conversation_id,
+			remoteThreadId: source.remote_thread_id,
+			now,
+			rawLength: raw.length,
+			parsed,
+			sourceId: source.id,
+			sourceUpdate: {
+				raw_sha256:
+					source.raw_sha256 === rawSha256 ? source.raw_sha256 : rawSha256,
+				updated_at: now,
+			},
+		});
+	});
+
+	return {
+		outcome: "recovered" as const,
+		accountId: message.account_id,
+		messageId: message.id,
+		createdAt: message.created_at,
+		ingestedAt: message.ingested_at,
+	};
 }
 
 function activeSyncStatus(backfillNextUid: number | null) {
@@ -833,7 +1088,7 @@ export async function runBackfillSync(accountId: string, trace?: LogTrace) {
 					.where("account_id", "=", accountId)
 					.execute();
 
-				queuedMore = await queueBackfillIfNeeded(accountId, backfillNextUid);
+				queuedMore = backfillNextUid !== null;
 			} finally {
 				lock.release();
 			}
@@ -1065,34 +1320,87 @@ async function ingestMessage(
 	trace?: LogTrace,
 ) {
 	const db = getDb();
+	const remoteThreadId = msg.gmThrid.trim() || null;
+	const now = nowIso();
 
 	const existing = await db
 		.selectFrom("message_sources")
-		.select(["id", "message_id", "raw_sha256"])
-		.where("account_id", "=", accountId)
-		.where("remote_message_id", "=", msg.gmMsgId)
+		.innerJoin("messages", "messages.id", "message_sources.message_id")
+		.select([
+			"message_sources.id as source_id",
+			"message_sources.message_id",
+			"message_sources.raw_sha256",
+			"message_sources.remote_thread_id",
+			"messages.conversation_id",
+		])
+		.where("message_sources.account_id", "=", accountId)
+		.where("message_sources.remote_message_id", "=", msg.gmMsgId)
 		.executeTakeFirst();
 
 	if (existing) {
-		const now = nowIso();
 		if (existing.raw_sha256 === msg.sha256) {
-			await db
-				.updateTable("message_sources")
-				.set({
-					last_seen_at: now,
-					imap_uid: msg.uid,
-					uidvalidity,
-					state: "active",
-					tombstoned_at: null,
-					updated_at: now,
-				})
-				.where("id", "=", existing.id)
-				.execute();
+			if ((existing.remote_thread_id ?? null) === remoteThreadId) {
+				await db
+					.updateTable("message_sources")
+					.set({
+						remote_thread_id: remoteThreadId,
+						mailbox,
+						last_seen_at: now,
+						imap_uid: msg.uid,
+						uidvalidity,
+						state: "active",
+						tombstoned_at: null,
+						updated_at: now,
+					})
+					.where("id", "=", existing.source_id)
+					.execute();
+				return;
+			}
+
+			await db.transaction().execute(async (trx) => {
+				const conversationId = await ensureConversationId(
+					trx,
+					accountId,
+					remoteThreadId,
+					now,
+				);
+				await trx
+					.updateTable("message_sources")
+					.set({
+						remote_thread_id: remoteThreadId,
+						mailbox,
+						last_seen_at: now,
+						imap_uid: msg.uid,
+						uidvalidity,
+						state: "active",
+						tombstoned_at: null,
+						updated_at: now,
+					})
+					.where("id", "=", existing.source_id)
+					.execute();
+				await trx
+					.updateTable("messages")
+					.set({
+						conversation_id: conversationId,
+					})
+					.where("id", "=", existing.message_id)
+					.execute();
+				for (const conversationToRefresh of new Set([
+					existing.conversation_id,
+					conversationId,
+				])) {
+					await refreshConversationRollup(trx, conversationToRefresh, now);
+				}
+			});
 			return;
 		}
 
 		const rawPath = writeRawEml(accountId, msg.gmMsgId, msg.raw);
-		const parsed = await parseRawMessage(msg.raw, msg.sha256);
+		const parsed = await parseRawMessage(
+			msg.raw,
+			msg.sha256,
+			msg.internalDate.toISOString(),
+		);
 		if (parsed.parseStatus === "error") {
 			trace?.info("sync.message.parse_error", {
 				outcome: "parse_error",
@@ -1100,18 +1408,20 @@ async function ingestMessage(
 				uid: msg.uid,
 			});
 		}
-		const receivedAtFallback = msg.internalDate.toISOString();
 		await db.transaction().execute(async (trx) => {
-			await trx
-				.updateTable("messages")
-				.set(parsedMessageValues(parsed, msg.raw.length, receivedAtFallback))
-				.where("id", "=", existing.message_id)
-				.execute();
-			await replaceAttachments(trx, existing.message_id, parsed.attachments);
-
-			await trx
-				.updateTable("message_sources")
-				.set({
+			await applyParsedMessageUpdate({
+				executor: trx,
+				messageId: existing.message_id,
+				accountId,
+				previousConversationId: existing.conversation_id,
+				remoteThreadId,
+				now,
+				rawLength: msg.raw.length,
+				parsed,
+				sourceId: existing.source_id,
+				sourceUpdate: {
+					remote_thread_id: remoteThreadId,
+					mailbox,
 					last_seen_at: now,
 					imap_uid: msg.uid,
 					uidvalidity,
@@ -1120,15 +1430,18 @@ async function ingestMessage(
 					raw_rfc822_path: rawPath,
 					raw_sha256: msg.sha256,
 					updated_at: now,
-				})
-				.where("id", "=", existing.id)
-				.execute();
+				},
+			});
 		});
 		return;
 	}
 
 	const rawPath = writeRawEml(accountId, msg.gmMsgId, msg.raw);
-	const parsed = await parseRawMessage(msg.raw, msg.sha256);
+	const parsed = await parseRawMessage(
+		msg.raw,
+		msg.sha256,
+		msg.internalDate.toISOString(),
+	);
 	if (parsed.parseStatus === "error") {
 		trace?.info("sync.message.parse_error", {
 			outcome: "parse_error",
@@ -1136,16 +1449,21 @@ async function ingestMessage(
 			uid: msg.uid,
 		});
 	}
-	const now = nowIso();
-	const receivedAtFallback = msg.internalDate.toISOString();
 
 	await db.transaction().execute(async (trx) => {
+		const conversationId = await ensureConversationId(
+			trx,
+			accountId,
+			remoteThreadId,
+			now,
+		);
 		await trx
 			.insertInto("messages")
 			.values({
 				id: parsed.id,
 				account_id: accountId,
-				...parsedMessageValues(parsed, msg.raw.length, receivedAtFallback),
+				ingested_at: now,
+				...parsedMessageValues(parsed, msg.raw.length, conversationId),
 				created_at: now,
 			})
 			.execute();
@@ -1159,7 +1477,7 @@ async function ingestMessage(
 				message_id: parsed.id,
 				account_id: accountId,
 				remote_message_id: msg.gmMsgId,
-				remote_thread_id: msg.gmThrid,
+				remote_thread_id: remoteThreadId,
 				mailbox,
 				imap_uid: msg.uid,
 				uidvalidity,
@@ -1172,5 +1490,6 @@ async function ingestMessage(
 				updated_at: now,
 			})
 			.execute();
+		await refreshConversationRollup(trx, conversationId, now);
 	});
 }

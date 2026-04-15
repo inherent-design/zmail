@@ -35,6 +35,16 @@ For a destructive local reset, run:
 mise run db:reset && mise run db:migrate
 ```
 
+`pnpm db:reset:messages` preserves account rows and `data/accounts/<accountId>/google-oauth.json`, drops corpus state and raw `.eml` files, recreates the DB on the current schema, and queues fresh `sync_account_full` jobs for enabled accounts.
+
+`pnpm db:reset:jobs` clears only the `jobs` table.
+
+`pnpm db:migrate` repairs mixed local DBs that already have the V2 message model but are missing the additive secondary/registry/finance tables.
+
+If the runtime reports that the local DB predates the rewritten baseline, prefer `pnpm db:reset:messages`. Use `pnpm db:reset` plus `pnpm db:migrate` only when you also want to discard account storage and reconnect Gmail accounts.
+
+`pnpm reextract:parse-errors` is a supported recovery path only for fresh V2 DBs when a parser regression leaves messages stuck in `parse_status = 'error'`. It is not a rescue path for old pre-secondary local DBs.
+
 Install the Playwright browser only when you need the live browser suite:
 
 ```bash
@@ -84,6 +94,9 @@ pnpm test:e2e:live
 pnpm check:full
 pnpm db:migrate
 pnpm db:reset
+pnpm db:reset:messages
+pnpm db:reset:jobs
+pnpm reextract:parse-errors
 pnpm worker:drain
 pnpm pi:connect
 pnpm playwright:install

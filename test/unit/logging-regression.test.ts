@@ -4,7 +4,12 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const ROOT_DIR = process.cwd();
-const ALLOWED_CONSOLE_FILES = new Set(["scripts/pi-connect-subscription.ts"]);
+const ALLOWED_CONSOLE_FILES = new Set([
+	"scripts/pi-connect-subscription.ts",
+	"scripts/audit-corpus.ts",
+	"scripts/db-reset.ts",
+	"scripts/reextract-parse-errors.ts",
+]);
 const LOGGER_BOUNDARY_FILES = [
 	"app/server/actions.server.ts",
 	"lib/jobs.ts",
@@ -17,7 +22,9 @@ const LOGGER_BOUNDARY_FILES = [
 	"scripts/migrate.ts",
 	"scripts/worker-drain.ts",
 	"scripts/generate-route-tree.ts",
+	"scripts/db-reset.ts",
 	"scripts/pi-connect-subscription.ts",
+	"scripts/reextract-parse-errors.ts",
 ];
 
 function listSourceFiles(directory: string, root = directory): string[] {

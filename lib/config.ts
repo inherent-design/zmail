@@ -6,6 +6,14 @@ export const DATA_DIR = resolve(
 	process.env.ZMAIL_DATA_DIR ?? resolve(ROOT_DIR, "data"),
 );
 export const ACCOUNTS_DIR = resolve(DATA_DIR, "accounts");
+export const OPERATOR_DIR = resolve(DATA_DIR, "operator");
+export const REGISTRY_DIR = resolve(
+	process.env.ZMAIL_REGISTRY_DIR ?? resolve(OPERATOR_DIR, "registry"),
+);
+export const CLASSIFICATION_DIR = resolve(
+	process.env.ZMAIL_CLASSIFICATION_DIR ??
+		resolve(OPERATOR_DIR, "classification"),
+);
 export const TMP_DIR = resolve(DATA_DIR, "tmp");
 export const OAUTH_TMP_DIR = resolve(TMP_DIR, "oauth", "google");
 export const DB_PATH = resolve(DATA_DIR, "zmail.sqlite");
@@ -40,9 +48,11 @@ export function rawEmlPath(accountId: string, remoteMessageId: string) {
 	return resolve(accountRawDir(accountId), `${remoteMessageId}.eml`);
 }
 
-export const CLASSIFY_PROMPT_VERSION = "classify-email-v1";
+export const CLASSIFY_PROMPT_VERSION = "classify-email-v2";
 export const OVERSEER_PROMPT_VERSION = "overseer-profile-v1";
 export const MODERATION_PROMPT_VERSION = "moderate-email-v1";
+export const FINANCE_INTEL_PROMPT_VERSION = "finance-intel-v2";
+export const FINANCE_KNOWLEDGE_PROMPT_VERSION = "finance-knowledge-merge-v1";
 
 export const GOOGLE_OAUTH = {
 	clientId: process.env.GOOGLE_OAUTH_CLIENT_ID ?? "",
@@ -72,6 +82,8 @@ export const APP_CONFIG = {
 	jobLeaseMs: 10 * 60 * 1000,
 	liveHeartbeatMs: Number(process.env.ZMAIL_LIVE_HEARTBEAT_MS ?? "30000"),
 	runWorker: (process.env.RUN_WORKER ?? "true") === "true",
+	registryDir: REGISTRY_DIR,
+	classificationDir: CLASSIFICATION_DIR,
 	imapFetchWindow: Math.max(
 		1,
 		Number(process.env.ZMAIL_IMAP_FETCH_WINDOW ?? "250"),
@@ -82,7 +94,15 @@ export const APP_CONFIG = {
 } as const;
 
 export function ensureStorageDirs() {
-	for (const path of [DATA_DIR, ACCOUNTS_DIR, TMP_DIR, OAUTH_TMP_DIR]) {
+	for (const path of [
+		DATA_DIR,
+		ACCOUNTS_DIR,
+		OPERATOR_DIR,
+		REGISTRY_DIR,
+		CLASSIFICATION_DIR,
+		TMP_DIR,
+		OAUTH_TMP_DIR,
+	]) {
 		mkdirSync(path, { recursive: true });
 	}
 }

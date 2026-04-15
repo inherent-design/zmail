@@ -81,6 +81,69 @@ function mockPiModule() {
 				};
 			}
 
+			if (
+				input.userPrompt.includes("Current root label:") &&
+				input.userPrompt.includes("Matched operator registry context:")
+			) {
+				return {
+					backend: "openai-subscription",
+					modelId: "gpt-5.4-mini",
+					parsed: {
+						schemaVersion: "finance-intel.v1",
+						messageKind: "receipt",
+						actionability: "create_transaction_candidate",
+						transactionCandidates: [
+							{
+								kind: "card_charge",
+								direction: "expense",
+								amount: "42.00",
+								currency: "USD",
+								occurredAt: "2026-01-01",
+								merchantOrCounterparty: "billing@example.com",
+								ownerIdentityRef: null,
+								financialAccountRef: null,
+								institutionRef: null,
+								categoryHint: "client lunch",
+								taxRelevanceHint: "business expense",
+								evidence: "Expense receipt for client lunch",
+							},
+						],
+						documentCandidates: [
+							{
+								documentType: "receipt",
+								issuer: "billing@example.com",
+								externalId: null,
+								statementPeriodStart: null,
+								statementPeriodEnd: null,
+								dueAt: null,
+								taxYear: 2026,
+								attachmentRefs: ["receipt.pdf"],
+								evidence: "Receipt attachment present",
+							},
+						],
+						matchedRegistryRefs: {
+							identityIds: [],
+							institutionIds: [],
+							financialAccountIds: [],
+						},
+						unresolvedEntityHints: {
+							identityHints: [],
+							institutionHints: [],
+							financialAccountHints: [],
+						},
+						confidence: {
+							overall: 0.95,
+							messageKind: 0.95,
+							transactionExtraction: 0.95,
+							registryMatching: 0.95,
+						},
+						explanation: "Finance intel.",
+					},
+					rawText: "{}",
+					usage: { totalTokens: 9 },
+				};
+			}
+
 			return {
 				backend: "openai-subscription",
 				modelId: "gpt-5-mini",
@@ -210,18 +273,19 @@ describe("worker and server actions", () => {
 		expect(reviews).toHaveLength(1);
 
 		const home = await actions.loadHomeData();
-		expect(home).toEqual({
-			messages: 2,
-			openReviews: 1,
-			jobs: 1,
-			accounts: 1,
-		});
+		expect(home.messages).toBe(2);
+		expect(home.openReviews).toBe(1);
+		expect(home.accounts).toBe(1);
+		expect(home.jobs).toBeGreaterThanOrEqual(1);
 
 		const runs = await actions.loadRunsData();
 		expect(runs.runtime.resolvedBackend).toBe("openai-subscription");
 		expect(runs.jobs.every((job) => !job.kind.includes("import"))).toBe(true);
 		expect(
 			runs.jobs.some((job) => job.kind === "classify_account_backlog"),
+		).toBe(true);
+		expect(
+			runs.jobs.some((job) => job.kind === "classify_finance_backlog"),
 		).toBe(true);
 
 		const messagesData = await actions.loadMessagesData();
@@ -247,10 +311,20 @@ describe("worker and server actions", () => {
 		await worker.drainWorkerUntilIdle();
 		const profileData = await actions.loadProfileData({ accountId: "acct-1" });
 		expect(profileData.profiles.length).toBeGreaterThan(0);
+		expect(
+			profileData.financeCoverage.rootFinanceRelevantCount,
+		).toBeGreaterThan(0);
 		const detailAfterProfile = await actions.loadMessageDetailData({
 			messageId: receiptMessageId,
 		});
 		expect(detailAfterProfile.latestProfile).toBeTruthy();
+
+		await actions.queueAccountFinanceBacklogCommand({ accountId: "acct-1" });
+		await worker.drainWorkerUntilIdle();
+		const financeData = await actions.loadFinanceData();
+		expect(financeData.coverage).toBeTruthy();
+		expect(Array.isArray(financeData.eventCandidates)).toBe(true);
+		expect(Array.isArray(financeData.documentCandidates)).toBe(true);
 
 		const classifyNow = await actions.classifyOneNowCommand({
 			messageId: receiptMessageId,
@@ -261,7 +335,7 @@ describe("worker and server actions", () => {
 			.select(["label_json"])
 			.where("message_id", "=", receiptMessageId)
 			.executeTakeFirstOrThrow();
-		expect(classifyNowLabel.label_json).toContain("message-label.v1");
+		expect(classifyNowLabel.label_json).toContain("message-label.v2");
 
 		const accepted = await actions.resolveReviewCommand({
 			reviewId: reviewData[0].id,

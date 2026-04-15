@@ -20,7 +20,9 @@ zmail runs one ingest model: Gmail OAuth with IMAP live sync. Users connect a Gm
 
 ## Classification Contract
 
-The active message label contract is `message-label.v1`:
+### Root classifier
+
+The active mailbox-wide root message label contract is `message-label.v2`:
 
 - `nsfw: boolean`
 - `finance`
@@ -29,25 +31,124 @@ The active message label contract is `message-label.v1`:
   - `owner`
   - `accountHint`
   - `purpose`
-- `social`
+- `people`
   - `personal`
   - `private`
-  - `social`
+  - `networking`
+  - `community`
+  - `recruiting`
   - `business`
+- `commerce`
+  - `transactional`
+  - `shopping`
+  - `subscription`
+  - `travel`
+  - `legal`
+- `knowledge`
+  - `course`
+  - `resource`
+  - `documentation`
+  - `newsletter`
+  - `research`
+- `assets`
+  - `license`
+  - `credential`
+  - `account`
+  - `document`
+- `entertainment`
+  - `gaming`
+  - `media`
+  - `fandom`
 - `risk`
   - `businessSensitive`
   - `leakRisk`
 - `routing`
   - `primaryBucket`
+  - `secondaryBuckets`
   - `tags`
 - `confidence`
   - `overall`
   - `finance`
-  - `social`
+  - `people`
+  - `commerce`
+  - `knowledge`
+  - `assets`
+  - `entertainment`
   - `risk`
 - `explanation`
 
-The active analysis scope is `finance/social/risk/routing`. Broader lenses such as spam, opportunity, topic, relationship, and temporal analysis are roadmap work.
+This root classifier remains the stable review and bucket contract for:
+
+- mailbox-wide bucketing
+- low-confidence review
+- current message list, message detail, and review surfaces
+- overseer profile generation
+
+The active root analysis scope is broader than the legacy v1
+`finance/social/risk/routing` shape and is intended to support dynamic
+reclassification through deterministic overlays.
+
+### Secondary classifiers
+
+Secondary classifiers are additive, namespaced analyses that do not overwrite
+`message-label.v2`.
+
+Current secondary framework:
+
+- `message_secondary_results`
+  - append-only per-run result history
+- `message_secondary_heads`
+  - current per-message head by classifier key
+  - freshness is tracked independently from the root label head
+
+Current active secondary classifier:
+
+- `finance_intel`
+  - schema version: `finance-intel.v2`
+  - trigger: root label exists, `rootLabel.finance.relevant === true`, and
+    `messages.parse_status = 'parsed'`
+  - freshness inputs:
+    - `messages.content_sha256`
+    - operator registry `registry_sha256`
+
+Current operator-controlled deterministic overlay:
+
+- taxonomy and rules loaded from `data/operator/classification`
+- projected results stored in:
+  - `message_category_assignments`
+  - `message_category_assignment_heads`
+
+Secondary classifiers may expose:
+
+- `ready`
+- `review`
+- `stale`
+- `blocked_parse_error`
+
+### Finance knowledge
+
+Finance knowledge is downstream of per-message finance classification.
+
+Current finance knowledge pass:
+
+- reads current `finance_intel` heads
+- combines email-derived finance intelligence with imported finance artifacts
+- materializes:
+  - `finance_event_candidates`
+  - `finance_document_candidates`
+  - `finance_event_evidence`
+  - `finance_yearly_rollups`
+  - `finance_yearly_subcategory_rollups`
+
+Current import path for non-email finance artifacts:
+
+- CLI import of `finance-source-import.v1`
+- HTTP `POST /api/finance/imports`
+- registry suggestions stored separately and reconciled before canonical
+  registry writes
+
+This keeps the root classifier stable while allowing narrower tax-oriented
+finance semantics to evolve independently.
 
 ## Inference Backends
 

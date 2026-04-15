@@ -9,22 +9,31 @@ import {
 	PROMPTS_DIR,
 } from "#/lib/config";
 import { getDb, jsonText } from "#/lib/db";
+import { normalizeClassifierVisibleAttachments } from "#/lib/normalize";
 import { piJson } from "#/lib/pi";
 import {
-	type MessageLabelV1,
+	type MessageLabelV2,
 	messageLabelNoNsfwJsonSchema,
-	messageLabelSchema,
 	messageLabelWithoutNsfwSchema,
+	messageLabelWithoutNsfwV1Schema,
+	normalizeMessageLabel,
 } from "#/lib/schemas";
+import { markSecondaryHeadStale } from "#/lib/secondary";
 
 function readPrompt(name: string) {
 	return readFileSync(resolve(PROMPTS_DIR, name), "utf8");
 }
 
 function loadBaseTags() {
-	return JSON.parse(
-		readFileSync(resolve(PROMPTS_DIR, "tags-v1.json"), "utf8"),
-	) as string[];
+	try {
+		return JSON.parse(
+			readFileSync(resolve(PROMPTS_DIR, "tags-v2.json"), "utf8"),
+		) as string[];
+	} catch {
+		return JSON.parse(
+			readFileSync(resolve(PROMPTS_DIR, "tags-v1.json"), "utf8"),
+		) as string[];
+	}
 }
 
 export function buildAttachmentSummary(
@@ -33,7 +42,7 @@ export function buildAttachmentSummary(
 	if (attachments.length === 0) {
 		return "No attachments";
 	}
-	return attachments
+	return normalizeClassifierVisibleAttachments(attachments)
 		.map(
 			(attachment) =>
 				`${attachment.filename ?? "(unnamed)"} [${attachment.mime_type ?? "unknown"}]`,
@@ -86,7 +95,7 @@ export async function persistClassification(input: {
 	source: string;
 	rawResponse: unknown;
 	usage: unknown;
-	label: MessageLabelV1;
+	label: MessageLabelV2;
 }) {
 	const db = getDb();
 	const classificationId = randomUUID();
@@ -94,7 +103,7 @@ export async function persistClassification(input: {
 		input.label.confidence.overall < APP_CONFIG.lowConfidenceThreshold;
 	const message = await db
 		.selectFrom("messages")
-		.select(["content_sha256"])
+		.select(["content_sha256", "parse_status"])
 		.where("id", "=", input.messageId)
 		.executeTakeFirstOrThrow();
 	const inputContentSha256 = message.content_sha256;
@@ -105,6 +114,7 @@ export async function persistClassification(input: {
 			id: classificationId,
 			job_id: input.jobId,
 			message_id: input.messageId,
+			schema_version: input.label.schemaVersion,
 			model: input.model,
 			prompt_version: input.promptVersion,
 			source: input.source,
@@ -134,6 +144,7 @@ export async function persistClassification(input: {
 			.values({
 				message_id: input.messageId,
 				classification_result_id: classificationId,
+				schema_version: input.label.schemaVersion,
 				source: input.source,
 				label_json: jsonText(input.label),
 				primary_bucket: input.label.routing.primaryBucket,
@@ -145,6 +156,7 @@ export async function persistClassification(input: {
 			.onConflict((oc) =>
 				oc.column("message_id").doUpdateSet({
 					classification_result_id: classificationId,
+					schema_version: input.label.schemaVersion,
 					source: input.source,
 					label_json: jsonText(input.label),
 					primary_bucket: input.label.routing.primaryBucket,
@@ -155,9 +167,24 @@ export async function persistClassification(input: {
 				}),
 			)
 			.execute();
+
+		await markSecondaryHeadStale({
+			messageId: input.messageId,
+			classifierKey: "finance_intel",
+		});
+
+		const { projectMessageCategoryAssignment } = await import(
+			"#/lib/category-rules"
+		);
+		await projectMessageCategoryAssignment(input.messageId);
 	}
 
-	if (input.source === "model" && lowConfidence && !manualWins) {
+	if (
+		input.source === "model" &&
+		lowConfidence &&
+		!manualWins &&
+		message.parse_status !== "error"
+	) {
 		const existingOpenReview = await db
 			.selectFrom("reviews")
 			.select("id")
@@ -199,7 +226,7 @@ export async function classifyMessageNow(input: {
 	promptPreamble: string | null;
 	allowedTags?: string[];
 }) {
-	const prompt = readPrompt("classify-email-v1.md");
+	const prompt = readPrompt("classify-email-v2.md");
 	const result = await piJson({
 		schema: messageLabelWithoutNsfwSchema,
 		systemPrompt: prompt,
@@ -215,15 +242,25 @@ Return one JSON object only.
 - Do not use markdown fences.
 - Do not omit required keys.
 - Do not rename keys.
-- Keep confidence as an object with overall, finance, social, and risk scores.
-- Keep routing as an object with primaryBucket and tags.`,
+- Keep confidence as an object with overall, finance, people, commerce, knowledge, assets, entertainment, and risk scores.
+- Keep routing as an object with primaryBucket, secondaryBuckets, and tags.`,
 	});
 
-	const label = messageLabelSchema.parse({
-		...result.parsed,
-		schemaVersion: "message-label.v1",
-		nsfw: input.moderationFlag,
-	});
+	const parsedV2 = messageLabelWithoutNsfwSchema.safeParse(result.parsed);
+	const label = parsedV2.success
+		? normalizeMessageLabel({
+				...parsedV2.data,
+				schemaVersion: "message-label.v2",
+				nsfw: input.moderationFlag,
+			})
+		: normalizeMessageLabel({
+				...messageLabelWithoutNsfwV1Schema.parse(result.parsed),
+				schemaVersion: "message-label.v1",
+				nsfw: input.moderationFlag,
+			});
+	if (!label) {
+		throw new Error("Classifier returned an invalid message label");
+	}
 
 	await persistClassification({
 		jobId: input.jobId ?? null,
@@ -249,9 +286,10 @@ export async function writeManualOverride(input: {
 	reviewId: string;
 	messageId: string;
 	note: string | null;
-	label: MessageLabelV1;
+	label: unknown;
 }) {
 	const db = getDb();
+	const label = normalizeManualOverrideLabel(input.label);
 	const classificationId = randomUUID();
 	const message = await db
 		.selectFrom("messages")
@@ -265,10 +303,11 @@ export async function writeManualOverride(input: {
 			id: classificationId,
 			job_id: null,
 			message_id: input.messageId,
+			schema_version: label.schemaVersion,
 			model: "manual",
 			prompt_version: CLASSIFY_PROMPT_VERSION,
 			source: "manual",
-			result_json: jsonText(input.label),
+			result_json: jsonText(label),
 			raw_response_json: jsonText({ reviewId: input.reviewId }),
 			usage_json: null,
 			low_confidence: 0,
@@ -282,38 +321,58 @@ export async function writeManualOverride(input: {
 		.values({
 			message_id: input.messageId,
 			classification_result_id: classificationId,
+			schema_version: label.schemaVersion,
 			source: "manual",
-			label_json: jsonText(input.label),
-			primary_bucket: input.label.routing.primaryBucket,
+			label_json: jsonText(label),
+			primary_bucket: label.routing.primaryBucket,
 			low_confidence: 0,
-			nsfw: input.label.nsfw ? 1 : 0,
+			nsfw: label.nsfw ? 1 : 0,
 			content_sha256: inputContentSha256,
 			updated_at: nowIso(),
 		})
 		.onConflict((oc) =>
 			oc.column("message_id").doUpdateSet({
 				classification_result_id: classificationId,
+				schema_version: label.schemaVersion,
 				source: "manual",
-				label_json: jsonText(input.label),
-				primary_bucket: input.label.routing.primaryBucket,
+				label_json: jsonText(label),
+				primary_bucket: label.routing.primaryBucket,
 				low_confidence: 0,
-				nsfw: input.label.nsfw ? 1 : 0,
+				nsfw: label.nsfw ? 1 : 0,
 				content_sha256: inputContentSha256,
 				updated_at: nowIso(),
 			}),
 		)
 		.execute();
 
+	await markSecondaryHeadStale({
+		messageId: input.messageId,
+		classifierKey: "finance_intel",
+	});
+
+	const { projectMessageCategoryAssignment } = await import(
+		"#/lib/category-rules"
+	);
+	await projectMessageCategoryAssignment(input.messageId);
+
 	await db
 		.updateTable("reviews")
 		.set({
 			status: "resolved",
 			reviewer_note: input.note,
-			override_label_json: jsonText(input.label),
+			override_label_json: jsonText(label),
 			resolved_at: nowIso(),
 		})
 		.where("id", "=", input.reviewId)
 		.execute();
 
 	return classificationId;
+}
+
+export function normalizeManualOverrideLabel(input: unknown) {
+	const normalized = normalizeMessageLabel(input);
+	if (!normalized) {
+		throw new Error("Override must match message-label.v2.");
+	}
+	return normalized;
 }

@@ -24,7 +24,13 @@
     "check": "pnpm lint && pnpm typecheck && pnpm coverage",
     "check:full": "pnpm check && pnpm test:e2e:live",
     "db:migrate": "tsx scripts/migrate.ts",
-    "db:reset": "rm -f data/zmail.sqlite data/zmail.sqlite-wal data/zmail.sqlite-shm && rm -rf data/accounts data/imports data/tmp/oauth",
+    "db:reset": "pnpm db:reset:all",
+    "db:reset:all": "tsx scripts/db-reset.ts all",
+    "db:reset:messages": "tsx scripts/db-reset.ts messages",
+    "db:reset:jobs": "tsx scripts/db-reset.ts jobs",
+    "audit:corpus": "tsx scripts/audit-corpus.ts",
+    "reextract:parse-errors": "tsx scripts/reextract-parse-errors.ts",
+    "finance:import": "tsx scripts/import-finance-artifact.ts",
     "pi:connect": "tsx scripts/pi-connect-subscription.ts",
     "worker:drain": "tsx scripts/worker-drain.ts"
   },
@@ -49,6 +55,7 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "tailwindcss": "^4.1.18",
+    "yaml": "^2.8.3",
     "zod": "^4.3.6"
   },
   "devDependencies": {

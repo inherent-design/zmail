@@ -2,7 +2,14 @@ import { existsSync, readFileSync } from "node:fs";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { bootDb, seedTestAccount } from "#/test/helpers/db";
+import {
+	bootDb,
+	insertConversationRow,
+	insertMessageLabelRow,
+	insertMessageRow,
+	seedLegacyPreSecondarySchema,
+	seedTestAccount,
+} from "#/test/helpers/db";
 import { setEnv } from "#/test/helpers/env";
 import { createMockLogModule } from "#/test/helpers/log";
 import { createTestRuntime } from "#/test/helpers/runtime";
@@ -22,6 +29,26 @@ describe("new server actions", () => {
 		const result = await actions.loadAccountsData();
 
 		expect(result.accounts).toEqual([]);
+	});
+
+	it("fails with a reset-required error before loaders touch old-schema tables", async () => {
+		const runtime = await createTestRuntime();
+		await seedLegacyPreSecondarySchema();
+
+		vi.doMock("#/lib/worker", () => ({
+			ensureWorkerStarted: vi.fn(),
+		}));
+
+		const actions = await runtime.importFresh<
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
+
+		await expect(actions.loadAccountsData()).rejects.toMatchObject({
+			name: "SchemaResetRequiredError",
+		});
+		await expect(actions.loadAccountsData()).rejects.toThrow(
+			/This local database predates the rewritten zmail baseline/,
+		);
 	});
 
 	it("loadAccountsData includes message and tombstone counts from seeded data", async () => {
@@ -68,10 +95,60 @@ describe("new server actions", () => {
 		expect(account?.tombstone_count).toBe(1);
 	});
 
+	it("queues finance registry and knowledge jobs through server commands", async () => {
+		const runtime = await createTestRuntime();
+		await bootDb({ seedDefaultAccount: true });
+
+		vi.doMock("#/lib/worker", () => ({
+			ensureWorkerStarted: vi.fn(),
+		}));
+
+		const actions = await runtime.importFresh<
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
+		const dbModule =
+			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
+
+		const financeBacklog = await actions.queueAccountFinanceBacklogCommand({
+			accountId: "acct-1",
+		});
+		const importRegistry = await actions.queueImportOperatorRegistryCommand();
+		const rebuildKnowledge =
+			await actions.queueRebuildFinanceKnowledgeCommand();
+
+		const jobs = await dbModule
+			.getDb()
+			.selectFrom("jobs")
+			.select(["id", "kind", "scope_type", "scope_id"])
+			.where("id", "in", [financeBacklog, importRegistry, rebuildKnowledge])
+			.orderBy("kind")
+			.execute();
+
+		expect(jobs).toEqual([
+			{
+				id: financeBacklog,
+				kind: "classify_finance_backlog",
+				scope_type: "account",
+				scope_id: "acct-1",
+			},
+			{
+				id: importRegistry,
+				kind: "import_operator_registry",
+				scope_type: "system",
+				scope_id: "operator_registry",
+			},
+			{
+				id: rebuildKnowledge,
+				kind: "rebuild_finance_knowledge",
+				scope_type: "system",
+				scope_id: "finance",
+			},
+		]);
+	});
+
 	it("loadAccountsData defaults grouped counts to zero for accounts without rows", async () => {
 		const runtime = await createTestRuntime();
 		const { db } = await bootDb();
-		const { insertMessageRow } = await import("#/test/helpers/db");
 		await seedTestAccount(db, {
 			id: "acct-1",
 			label: "Account One",
@@ -128,6 +205,677 @@ describe("new server actions", () => {
 				tombstone_count: 0,
 			}),
 		]);
+	});
+
+	it("queues finance follow-up jobs when reviews are accepted or overridden", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		const financeMessageId = await insertMessageRow(db, {
+			id: "msg-review-finance",
+			accountId: "acct-1",
+			contentSha256: "content-review-finance",
+		});
+		const nonFinanceMessageId = await insertMessageRow(db, {
+			id: "msg-review-nonfinance",
+			accountId: "acct-1",
+			contentSha256: "content-review-nonfinance",
+		});
+		const overrideFinanceMessageId = await insertMessageRow(db, {
+			id: "msg-review-override-finance",
+			accountId: "acct-1",
+			contentSha256: "content-review-override-finance",
+		});
+		await insertMessageLabelRow(db, {
+			messageId: financeMessageId,
+			primaryBucket: "finance",
+			contentSha256: "content-review-finance",
+			label: {
+				schemaVersion: "message-label.v1",
+				nsfw: false,
+				finance: {
+					relevant: true,
+					direction: "expense",
+					owner: "business",
+					accountHint: "amex",
+					purpose: "software",
+				},
+				social: {
+					personal: false,
+					private: false,
+					social: false,
+					business: true,
+				},
+				risk: {
+					businessSensitive: false,
+					leakRisk: false,
+				},
+				routing: {
+					primaryBucket: "finance",
+					tags: ["receipt"],
+				},
+				confidence: {
+					overall: 0.95,
+					finance: 0.95,
+					social: 0.95,
+					risk: 0.95,
+				},
+				explanation: "finance",
+			},
+		});
+		await insertMessageLabelRow(db, {
+			messageId: nonFinanceMessageId,
+			contentSha256: "content-review-nonfinance",
+		});
+		await insertMessageLabelRow(db, {
+			messageId: overrideFinanceMessageId,
+			primaryBucket: "finance",
+			contentSha256: "content-review-override-finance",
+			label: {
+				schemaVersion: "message-label.v1",
+				nsfw: false,
+				finance: {
+					relevant: true,
+					direction: "expense",
+					owner: "business",
+					accountHint: "amex",
+					purpose: "software",
+				},
+				social: {
+					personal: false,
+					private: false,
+					social: false,
+					business: true,
+				},
+				risk: {
+					businessSensitive: false,
+					leakRisk: false,
+				},
+				routing: {
+					primaryBucket: "finance",
+					tags: ["receipt"],
+				},
+				confidence: {
+					overall: 0.95,
+					finance: 0.95,
+					social: 0.95,
+					risk: 0.95,
+				},
+				explanation: "finance",
+			},
+		});
+		await db
+			.insertInto("reviews")
+			.values([
+				{
+					id: "review-finance",
+					message_id: financeMessageId,
+					source_classification_result_id: "classification-msg-review-finance",
+					status: "open",
+					reviewer_note: null,
+					override_label_json: null,
+					resolved_at: null,
+					created_at: "2026-01-10T00:00:00.000Z",
+				},
+				{
+					id: "review-nonfinance",
+					message_id: nonFinanceMessageId,
+					source_classification_result_id:
+						"classification-msg-review-nonfinance",
+					status: "open",
+					reviewer_note: null,
+					override_label_json: null,
+					resolved_at: null,
+					created_at: "2026-01-10T00:00:00.000Z",
+				},
+				{
+					id: "review-override-finance",
+					message_id: overrideFinanceMessageId,
+					source_classification_result_id:
+						"classification-msg-review-override-finance",
+					status: "open",
+					reviewer_note: null,
+					override_label_json: null,
+					resolved_at: null,
+					created_at: "2026-01-10T00:00:00.000Z",
+				},
+			])
+			.execute();
+
+		const writeManualOverride = vi.fn(async () => undefined);
+		vi.doMock("#/lib/worker", () => ({
+			ensureWorkerStarted: vi.fn(),
+		}));
+		vi.doMock("#/lib/classify", async () => {
+			const actual =
+				await vi.importActual<typeof import("#/lib/classify")>(
+					"#/lib/classify",
+				);
+			return {
+				...actual,
+				writeManualOverride,
+			};
+		});
+
+		const actions = await runtime.importFresh<
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
+		const accepted = await actions.resolveReviewCommand({
+			reviewId: "review-finance",
+			action: "accept",
+		});
+		const overridden = await actions.resolveReviewCommand({
+			reviewId: "review-nonfinance",
+			action: "override",
+			override: {
+				schemaVersion: "message-label.v1",
+				nsfw: false,
+				finance: {
+					relevant: false,
+					direction: "unknown",
+					owner: "unknown",
+					accountHint: null,
+					purpose: null,
+				},
+				social: {
+					personal: true,
+					private: true,
+					social: true,
+					business: false,
+				},
+				risk: {
+					businessSensitive: false,
+					leakRisk: false,
+				},
+				routing: {
+					primaryBucket: "personal",
+					tags: ["social"],
+				},
+				confidence: {
+					overall: 1,
+					finance: 1,
+					social: 1,
+					risk: 1,
+				},
+				explanation: "manual override",
+			},
+		});
+		const overriddenFinance = await actions.resolveReviewCommand({
+			reviewId: "review-override-finance",
+			action: "override",
+			override: {
+				schemaVersion: "message-label.v1",
+				nsfw: false,
+				finance: {
+					relevant: true,
+					direction: "expense",
+					owner: "business",
+					accountHint: "amex",
+					purpose: "software",
+				},
+				social: {
+					personal: false,
+					private: false,
+					social: false,
+					business: true,
+				},
+				risk: {
+					businessSensitive: false,
+					leakRisk: false,
+				},
+				routing: {
+					primaryBucket: "finance",
+					tags: ["receipt"],
+				},
+				confidence: {
+					overall: 0.95,
+					finance: 0.95,
+					social: 0.95,
+					risk: 0.95,
+				},
+				explanation: "manual override finance",
+			},
+		});
+
+		const jobs = await db
+			.selectFrom("jobs")
+			.select(["kind", "scope_type", "scope_id"])
+			.orderBy("kind")
+			.execute();
+
+		expect(accepted.status).toBe("accepted");
+		expect(overridden.status).toBe("overridden");
+		expect(overriddenFinance.status).toBe("overridden");
+		expect(writeManualOverride).toHaveBeenCalledTimes(2);
+		expect(jobs).toEqual([
+			{
+				kind: "classify_finance_backlog",
+				scope_type: "account",
+				scope_id: "acct-1",
+			},
+			{
+				kind: "rebuild_finance_knowledge",
+				scope_type: "system",
+				scope_id: "finance",
+			},
+		]);
+	});
+
+	it("loadMessagesData returns an empty array on a fresh database", async () => {
+		const runtime = await createTestRuntime();
+		await bootDb();
+
+		vi.doMock("#/lib/worker", () => ({
+			ensureWorkerStarted: vi.fn(),
+		}));
+
+		const actions = await runtime.importFresh<
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
+
+		expect(await actions.loadMessagesData()).toEqual([]);
+	});
+
+	it("loadMessageDetailData prefers the newest source row when states tie", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db);
+		const conversationId = await insertConversationRow(db, {
+			id: "conv-detail-source",
+			accountId: "acct-1",
+			gmailThreadId: "thr-detail-source",
+			messageCount: 1,
+			firstMessageReceivedAt: "2026-01-01T00:00:00.000Z",
+			lastMessageReceivedAt: "2026-01-01T00:00:00.000Z",
+		});
+		const messageId = await insertMessageRow(db, {
+			id: "msg-detail-source",
+			accountId: "acct-1",
+			conversationId,
+			contentSha256: "content-detail-source",
+		});
+		await db
+			.insertInto("message_sources")
+			.values([
+				{
+					id: "source-detail-old",
+					message_id: messageId,
+					account_id: "acct-1",
+					remote_message_id: "gm-detail-old",
+					remote_thread_id: "thr-detail-old",
+					mailbox: "[Gmail]/All Mail",
+					imap_uid: 10,
+					uidvalidity: 1,
+					raw_rfc822_path: "/tmp/detail-old.eml",
+					raw_sha256: "raw-old",
+					state: "tombstoned",
+					first_seen_at: "2026-01-01T00:00:00.000Z",
+					last_seen_at: "2026-01-01T00:00:00.000Z",
+					tombstoned_at: "2026-01-02T00:00:00.000Z",
+					updated_at: "2026-01-02T00:00:00.000Z",
+				},
+				{
+					id: "source-detail-new",
+					message_id: messageId,
+					account_id: "acct-1",
+					remote_message_id: "gm-detail-new",
+					remote_thread_id: "thr-detail-new",
+					mailbox: "[Gmail]/All Mail",
+					imap_uid: 11,
+					uidvalidity: 1,
+					raw_rfc822_path: "/tmp/detail-new.eml",
+					raw_sha256: "raw-new",
+					state: "tombstoned",
+					first_seen_at: "2026-01-01T00:00:00.000Z",
+					last_seen_at: "2026-01-03T00:00:00.000Z",
+					tombstoned_at: "2026-01-03T00:00:00.000Z",
+					updated_at: "2026-01-03T00:00:00.000Z",
+				},
+			])
+			.execute();
+
+		vi.doMock("#/lib/worker", () => ({
+			ensureWorkerStarted: vi.fn(),
+		}));
+
+		const actions = await runtime.importFresh<
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
+		const detail = await actions.loadMessageDetailData({ messageId });
+
+		expect(detail.message.remote_thread_id).toBe("thr-detail-new");
+		expect(detail.message.raw_rfc822_path).toBe("/tmp/detail-new.eml");
+		expect(detail.message.raw_sha256).toBe("raw-new");
+	});
+
+	it("loadMessageDetailData returns finance-intel current data, history, and evidence", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db);
+		const messageId = await insertMessageRow(db, {
+			id: "msg-detail-finance-intel",
+			accountId: "acct-1",
+			contentSha256: "content-detail-finance-intel",
+		});
+		await db
+			.insertInto("message_secondary_results")
+			.values([
+				{
+					id: "secondary-finance-history",
+					message_id: messageId,
+					classifier_key: "finance_intel",
+					schema_version: "finance-intel.v1",
+					job_id: null,
+					model: "gpt-5.4-mini",
+					prompt_version: "finance-intel-v1",
+					source: "model",
+					result_json: '{"history":true}',
+					raw_response_json: '{"raw":"history"}',
+					usage_json: '{"totalTokens":4}',
+					input_content_sha256: "content-detail-finance-intel",
+					input_registry_sha256: "registry-detail-finance-intel",
+					created_at: "2026-01-01T00:00:00.000Z",
+				},
+				{
+					id: "secondary-finance-current",
+					message_id: messageId,
+					classifier_key: "finance_intel",
+					schema_version: "finance-intel.v1",
+					job_id: null,
+					model: "gpt-5.4-mini",
+					prompt_version: "finance-intel-v1",
+					source: "model",
+					result_json: '{"current":true}',
+					raw_response_json: '{"raw":"current"}',
+					usage_json: '{"totalTokens":8}',
+					input_content_sha256: "content-detail-finance-intel",
+					input_registry_sha256: "registry-detail-finance-intel",
+					created_at: "2026-01-02T00:00:00.000Z",
+				},
+			])
+			.execute();
+		await db
+			.insertInto("message_secondary_heads")
+			.values({
+				message_id: messageId,
+				classifier_key: "finance_intel",
+				secondary_result_id: "secondary-finance-current",
+				status: "review",
+				low_confidence: 1,
+				content_sha256: "content-detail-finance-intel",
+				registry_sha256: "registry-detail-finance-intel",
+				updated_at: "2026-01-03T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("finance_event_candidates")
+			.values({
+				id: "finance-event-detail",
+				canonical_key: "tx:detail",
+				status: "review",
+				event_kind: "card_charge",
+				direction: "expense",
+				amount_value: "42.00",
+				currency: "USD",
+				occurred_at: "2026-01-01",
+				merchant_or_counterparty: "Acme",
+				owner_identity_id: null,
+				financial_account_id: null,
+				institution_id: null,
+				category_hint: null,
+				tax_relevance_hint: null,
+				evidence_count: 1,
+				first_message_received_at: "2026-01-01T00:00:00.000Z",
+				last_message_received_at: "2026-01-01T00:00:00.000Z",
+				created_at: "2026-01-01T00:00:00.000Z",
+				updated_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("finance_document_candidates")
+			.values({
+				id: "finance-document-detail",
+				canonical_key: "doc:detail",
+				status: "candidate",
+				document_type: "receipt",
+				issuer: "Acme",
+				external_id: null,
+				statement_period_start: null,
+				statement_period_end: null,
+				due_at: null,
+				tax_year: null,
+				owner_identity_id: null,
+				financial_account_id: null,
+				institution_id: null,
+				evidence_count: 1,
+				first_message_received_at: "2026-01-01T00:00:00.000Z",
+				last_message_received_at: "2026-01-01T00:00:00.000Z",
+				created_at: "2026-01-01T00:00:00.000Z",
+				updated_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("finance_event_evidence")
+			.values({
+				id: "finance-evidence-detail",
+				event_candidate_id: "finance-event-detail",
+				document_candidate_id: "finance-document-detail",
+				message_id: messageId,
+				secondary_result_id: "secondary-finance-current",
+				transaction_index: 0,
+				document_index: 0,
+				evidence_json: '{"detail":true}',
+				created_at: "2026-01-03T00:00:00.000Z",
+			})
+			.execute();
+
+		vi.doMock("#/lib/worker", () => ({
+			ensureWorkerStarted: vi.fn(),
+		}));
+
+		const actions = await runtime.importFresh<
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
+		const detail = await actions.loadMessageDetailData({ messageId });
+
+		expect(detail.financeIntel).toEqual({
+			head: {
+				status: "review",
+				lowConfidence: 1,
+				contentSha256: "content-detail-finance-intel",
+				registrySha256: "registry-detail-finance-intel",
+				updatedAt: "2026-01-03T00:00:00.000Z",
+			},
+			current: {
+				id: "secondary-finance-current",
+				schemaVersion: "finance-intel.v1",
+				model: "gpt-5.4-mini",
+				promptVersion: "finance-intel-v1",
+				source: "model",
+				createdAt: "2026-01-02T00:00:00.000Z",
+				result: { current: true },
+				rawResponse: { raw: "current" },
+				usage: { totalTokens: 8 },
+			},
+			history: [
+				{
+					id: "secondary-finance-current",
+					schemaVersion: "finance-intel.v1",
+					model: "gpt-5.4-mini",
+					promptVersion: "finance-intel-v1",
+					source: "model",
+					createdAt: "2026-01-02T00:00:00.000Z",
+					result: { current: true },
+					rawResponse: { raw: "current" },
+					usage: { totalTokens: 8 },
+				},
+				{
+					id: "secondary-finance-history",
+					schemaVersion: "finance-intel.v1",
+					model: "gpt-5.4-mini",
+					promptVersion: "finance-intel-v1",
+					source: "model",
+					createdAt: "2026-01-01T00:00:00.000Z",
+					result: { history: true },
+					rawResponse: { raw: "history" },
+					usage: { totalTokens: 4 },
+				},
+			],
+			evidence: [
+				{
+					id: "finance-evidence-detail",
+					eventCandidateId: "finance-event-detail",
+					documentCandidateId: "finance-document-detail",
+					transactionIndex: 0,
+					documentIndex: 0,
+					eventCanonicalKey: "tx:detail",
+					eventStatus: "review",
+					documentCanonicalKey: "doc:detail",
+					documentStatus: "candidate",
+					evidenceJson: '{"detail":true}',
+				},
+			],
+		});
+	});
+
+	it("loadMessageDetailData returns a finance head without a current result", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db);
+		const messageId = await insertMessageRow(db, {
+			id: "msg-detail-finance-head-only",
+			accountId: "acct-1",
+			contentSha256: "content-detail-finance-head-only",
+		});
+		await db
+			.insertInto("message_secondary_heads")
+			.values({
+				message_id: messageId,
+				classifier_key: "finance_intel",
+				secondary_result_id: null,
+				status: "blocked_parse_error",
+				low_confidence: 0,
+				content_sha256: "content-detail-finance-head-only",
+				registry_sha256: "registry-detail-finance-head-only",
+				updated_at: "2026-01-03T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("message_secondary_results")
+			.values({
+				id: "secondary-finance-head-only-history",
+				message_id: messageId,
+				classifier_key: "finance_intel",
+				schema_version: "finance-intel.v1",
+				job_id: null,
+				model: "gpt-5.4-mini",
+				prompt_version: "finance-intel-v1",
+				source: "model",
+				result_json: '{"history":true}',
+				raw_response_json: "{}",
+				usage_json: null,
+				input_content_sha256: "content-detail-finance-head-only",
+				input_registry_sha256: "registry-detail-finance-head-only",
+				created_at: "2026-01-02T00:00:00.000Z",
+			})
+			.execute();
+
+		vi.doMock("#/lib/worker", () => ({
+			ensureWorkerStarted: vi.fn(),
+		}));
+
+		const actions = await runtime.importFresh<
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
+		const detail = await actions.loadMessageDetailData({ messageId });
+
+		expect(detail.financeIntel).toEqual({
+			head: {
+				status: "blocked_parse_error",
+				lowConfidence: 0,
+				contentSha256: "content-detail-finance-head-only",
+				registrySha256: "registry-detail-finance-head-only",
+				updatedAt: "2026-01-03T00:00:00.000Z",
+			},
+			current: null,
+			history: [
+				{
+					id: "secondary-finance-head-only-history",
+					schemaVersion: "finance-intel.v1",
+					model: "gpt-5.4-mini",
+					promptVersion: "finance-intel-v1",
+					source: "model",
+					createdAt: "2026-01-02T00:00:00.000Z",
+					result: { history: true },
+					rawResponse: {},
+					usage: null,
+				},
+			],
+			evidence: [],
+		});
+	});
+
+	it("loadMessageDetailData returns a current finance result with null usage", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db);
+		const messageId = await insertMessageRow(db, {
+			id: "msg-detail-finance-current-null-usage",
+			accountId: "acct-1",
+			contentSha256: "content-detail-finance-current-null-usage",
+		});
+		await db
+			.insertInto("message_secondary_results")
+			.values({
+				id: "secondary-finance-current-null-usage",
+				message_id: messageId,
+				classifier_key: "finance_intel",
+				schema_version: "finance-intel.v1",
+				job_id: null,
+				model: "gpt-5.4-mini",
+				prompt_version: "finance-intel-v1",
+				source: "model",
+				result_json: '{"current":true}',
+				raw_response_json: '{"raw":"current"}',
+				usage_json: null,
+				input_content_sha256: "content-detail-finance-current-null-usage",
+				input_registry_sha256: "registry-detail-finance-current-null-usage",
+				created_at: "2026-01-02T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("message_secondary_heads")
+			.values({
+				message_id: messageId,
+				classifier_key: "finance_intel",
+				secondary_result_id: "secondary-finance-current-null-usage",
+				status: "ready",
+				low_confidence: 0,
+				content_sha256: "content-detail-finance-current-null-usage",
+				registry_sha256: "registry-detail-finance-current-null-usage",
+				updated_at: "2026-01-03T00:00:00.000Z",
+			})
+			.execute();
+
+		vi.doMock("#/lib/worker", () => ({
+			ensureWorkerStarted: vi.fn(),
+		}));
+
+		const actions = await runtime.importFresh<
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
+		const detail = await actions.loadMessageDetailData({ messageId });
+
+		expect(detail.financeIntel?.current).toEqual({
+			id: "secondary-finance-current-null-usage",
+			schemaVersion: "finance-intel.v1",
+			model: "gpt-5.4-mini",
+			promptVersion: "finance-intel-v1",
+			source: "model",
+			createdAt: "2026-01-02T00:00:00.000Z",
+			result: { current: true },
+			rawResponse: { raw: "current" },
+			usage: null,
+		});
 	});
 
 	it("loadAccountNewData returns oauth readiness (false without env vars)", async () => {
@@ -199,6 +947,686 @@ describe("new server actions", () => {
 		expect(result.recentJobs).toEqual([]);
 		expect(result.messageCount).toBe(0);
 		expect(result.tombstoneCount).toBe(0);
+	});
+
+	it("loadFinanceData returns registry state and materialized candidate evidence", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db);
+		const conversationId = await insertConversationRow(db, {
+			id: "conv-finance-data",
+			accountId: "acct-1",
+			gmailThreadId: "thr-finance-data",
+			messageCount: 1,
+			firstMessageReceivedAt: "2026-01-10T00:00:00.000Z",
+			lastMessageReceivedAt: "2026-01-10T00:00:00.000Z",
+		});
+		const messageId = await insertMessageRow(db, {
+			id: "msg-finance-data",
+			accountId: "acct-1",
+			conversationId,
+			subject: "Receipt",
+			contentSha256: "content-finance-data",
+		});
+		const mysteryMessageId = await insertMessageRow(db, {
+			id: "msg-finance-data-mystery",
+			accountId: "acct-1",
+			contentSha256: "content-finance-data-mystery",
+		});
+		await db
+			.insertInto("message_secondary_results")
+			.values({
+				id: "secondary-finance-data",
+				message_id: messageId,
+				classifier_key: "finance_intel",
+				schema_version: "finance-intel.v1",
+				job_id: null,
+				model: "gpt-5.4-mini",
+				prompt_version: "finance-intel-v1",
+				source: "model",
+				result_json: JSON.stringify({ ok: true }),
+				raw_response_json: "{}",
+				usage_json: null,
+				input_content_sha256: "content-finance-data",
+				input_registry_sha256: "registry-finance-data",
+				created_at: "2026-01-10T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("message_secondary_heads")
+			.values({
+				message_id: messageId,
+				classifier_key: "finance_intel",
+				secondary_result_id: "secondary-finance-data",
+				status: "ready",
+				low_confidence: 0,
+				content_sha256: "content-finance-data",
+				registry_sha256: "registry-finance-data",
+				updated_at: "2026-01-10T00:00:00.000Z",
+			})
+			.execute();
+		await insertMessageLabelRow(db, {
+			messageId,
+			primaryBucket: "finance",
+			contentSha256: "content-finance-data",
+			label: {
+				schemaVersion: "message-label.v1",
+				nsfw: false,
+				finance: {
+					relevant: true,
+					direction: "expense",
+					owner: "business",
+					accountHint: "amex",
+					purpose: "software",
+				},
+				social: {
+					personal: false,
+					private: false,
+					social: false,
+					business: true,
+				},
+				risk: {
+					businessSensitive: false,
+					leakRisk: false,
+				},
+				routing: {
+					primaryBucket: "finance",
+					tags: ["receipt"],
+				},
+				confidence: {
+					overall: 0.95,
+					finance: 0.95,
+					social: 0.95,
+					risk: 0.95,
+				},
+				explanation: "finance",
+			},
+		});
+		await insertMessageLabelRow(db, {
+			messageId: mysteryMessageId,
+			primaryBucket: "finance",
+			contentSha256: "content-finance-data-mystery",
+			label: {
+				schemaVersion: "message-label.v1",
+				nsfw: false,
+				finance: {
+					relevant: true,
+					direction: "expense",
+					owner: "business",
+					accountHint: "amex",
+					purpose: "software",
+				},
+				social: {
+					personal: false,
+					private: false,
+					social: false,
+					business: true,
+				},
+				risk: {
+					businessSensitive: false,
+					leakRisk: false,
+				},
+				routing: {
+					primaryBucket: "finance",
+					tags: ["receipt"],
+				},
+				confidence: {
+					overall: 0.95,
+					finance: 0.95,
+					social: 0.95,
+					risk: 0.95,
+				},
+				explanation: "finance",
+			},
+		});
+		await db
+			.insertInto("message_secondary_heads")
+			.values({
+				message_id: mysteryMessageId,
+				classifier_key: "finance_intel",
+				secondary_result_id: null,
+				status: "mystery",
+				low_confidence: 0,
+				content_sha256: "content-finance-data-mystery",
+				registry_sha256: "registry-finance-data",
+				updated_at: "2026-01-10T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("finance_event_candidates")
+			.values([
+				{
+					id: "finance-event-1",
+					canonical_key: "tx:finance-event-1",
+					status: "candidate",
+					event_kind: "card_charge",
+					direction: "expense",
+					amount_value: "42.00",
+					currency: "USD",
+					occurred_at: "2026-01-10",
+					merchant_or_counterparty: "Acme",
+					owner_identity_id: null,
+					financial_account_id: null,
+					institution_id: null,
+					category_hint: "software",
+					tax_relevance_hint: "business expense",
+					evidence_count: 1,
+					first_message_received_at: "2026-01-10T00:00:00.000Z",
+					last_message_received_at: "2026-01-10T00:00:00.000Z",
+					created_at: "2026-01-10T00:00:00.000Z",
+					updated_at: "2026-01-10T00:00:00.000Z",
+				},
+				{
+					id: "finance-event-2",
+					canonical_key: "tx:finance-event-2",
+					status: "candidate",
+					event_kind: "card_charge",
+					direction: "expense",
+					amount_value: null,
+					currency: null,
+					occurred_at: null,
+					merchant_or_counterparty: null,
+					owner_identity_id: null,
+					financial_account_id: null,
+					institution_id: null,
+					category_hint: null,
+					tax_relevance_hint: null,
+					evidence_count: 0,
+					first_message_received_at: null,
+					last_message_received_at: null,
+					created_at: "2026-01-10T00:00:00.000Z",
+					updated_at: "2026-01-10T00:00:00.000Z",
+				},
+			])
+			.execute();
+		await db
+			.insertInto("finance_document_candidates")
+			.values([
+				{
+					id: "finance-document-1",
+					canonical_key: "doc:finance-document-1",
+					status: "candidate",
+					document_type: "receipt",
+					issuer: "Acme",
+					external_id: "receipt-1",
+					statement_period_start: null,
+					statement_period_end: null,
+					due_at: null,
+					tax_year: 2026,
+					owner_identity_id: null,
+					financial_account_id: null,
+					institution_id: null,
+					evidence_count: 1,
+					first_message_received_at: "2026-01-10T00:00:00.000Z",
+					last_message_received_at: "2026-01-10T00:00:00.000Z",
+					created_at: "2026-01-10T00:00:00.000Z",
+					updated_at: "2026-01-10T00:00:00.000Z",
+				},
+				{
+					id: "finance-document-2",
+					canonical_key: "doc:finance-document-2",
+					status: "candidate",
+					document_type: "receipt",
+					issuer: null,
+					external_id: null,
+					statement_period_start: null,
+					statement_period_end: null,
+					due_at: null,
+					tax_year: null,
+					owner_identity_id: null,
+					financial_account_id: null,
+					institution_id: null,
+					evidence_count: 0,
+					first_message_received_at: null,
+					last_message_received_at: null,
+					created_at: "2026-01-10T00:00:00.000Z",
+					updated_at: "2026-01-10T00:00:00.000Z",
+				},
+			])
+			.execute();
+		await db
+			.insertInto("finance_event_evidence")
+			.values([
+				{
+					id: "finance-evidence-event-1",
+					event_candidate_id: "finance-event-1",
+					document_candidate_id: null,
+					message_id: messageId,
+					secondary_result_id: "secondary-finance-data",
+					transaction_index: 0,
+					document_index: null,
+					evidence_json: '{"kind":"event"}',
+					created_at: "2026-01-10T00:00:00.000Z",
+				},
+				{
+					id: "finance-evidence-document-1",
+					event_candidate_id: null,
+					document_candidate_id: "finance-document-1",
+					message_id: messageId,
+					secondary_result_id: "secondary-finance-data",
+					transaction_index: null,
+					document_index: 0,
+					evidence_json: '{"kind":"document"}',
+					created_at: "2026-01-10T00:00:00.000Z",
+				},
+				{
+					id: "finance-evidence-orphan-1",
+					event_candidate_id: null,
+					document_candidate_id: null,
+					message_id: messageId,
+					secondary_result_id: "secondary-finance-data",
+					transaction_index: null,
+					document_index: null,
+					evidence_json: '{"kind":"orphan"}',
+					created_at: "2026-01-10T00:00:00.000Z",
+				},
+			])
+			.execute();
+		await db
+			.insertInto("registry_import_state")
+			.values({
+				key: "operator_registry",
+				combined_sha256: "registry-finance-data",
+				source_dir: "/tmp/registry",
+				counts_json: JSON.stringify({
+					identities: 1,
+					institutions: 1,
+					financialAccounts: 1,
+					senderRules: 1,
+				}),
+				imported_at: "2026-01-10T00:00:00.000Z",
+			})
+			.execute();
+
+		vi.doMock("#/lib/worker", () => ({
+			ensureWorkerStarted: vi.fn(),
+		}));
+
+		const actions = await runtime.importFresh<
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
+		const result = await actions.loadFinanceData();
+
+		expect(result.registry.sha256).toBe("registry-finance-data");
+		expect(result.coverage.rootFinanceRelevantCount).toBe(2);
+		expect(result.eventCandidates[0]).toMatchObject({
+			id: "finance-event-1",
+			evidence: [
+				expect.objectContaining({
+					messageId,
+					accountLabel: "Test Account",
+				}),
+			],
+		});
+		expect(result.documentCandidates[0]).toMatchObject({
+			id: "finance-document-1",
+			evidence: [
+				expect.objectContaining({
+					messageId,
+					accountLabel: "Test Account",
+				}),
+			],
+		});
+		expect(result.eventCandidates[1]).toMatchObject({
+			id: "finance-event-2",
+			evidence: [],
+		});
+		expect(result.documentCandidates[1]).toMatchObject({
+			id: "finance-document-2",
+			evidence: [],
+		});
+	});
+
+	it("loadFinanceData counts finance head statuses across all finance-intel states", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db);
+		for (const [suffix, status] of [
+			["ready", "ready"],
+			["review", "review"],
+			["stale", "stale"],
+			["blocked", "blocked_parse_error"],
+			["mystery", "mystery"],
+		] as const) {
+			const messageId = await insertMessageRow(db, {
+				id: `msg-finance-status-${suffix}`,
+				accountId: "acct-1",
+				contentSha256: `content-finance-status-${suffix}`,
+			});
+			await insertMessageLabelRow(db, {
+				messageId,
+				primaryBucket: "finance",
+				contentSha256: `content-finance-status-${suffix}`,
+				label: {
+					schemaVersion: "message-label.v1",
+					nsfw: false,
+					finance: {
+						relevant: true,
+						direction: "expense",
+						owner: "business",
+						accountHint: "amex",
+						purpose: "software",
+					},
+					social: {
+						personal: false,
+						private: false,
+						social: false,
+						business: true,
+					},
+					risk: {
+						businessSensitive: false,
+						leakRisk: false,
+					},
+					routing: {
+						primaryBucket: "finance",
+						tags: ["receipt"],
+					},
+					confidence: {
+						overall: 0.95,
+						finance: 0.95,
+						social: 0.95,
+						risk: 0.95,
+					},
+					explanation: "finance",
+				},
+			});
+			await db
+				.insertInto("message_secondary_heads")
+				.values({
+					message_id: messageId,
+					classifier_key: "finance_intel",
+					secondary_result_id: null,
+					status,
+					low_confidence: 0,
+					content_sha256: `content-finance-status-${suffix}`,
+					registry_sha256: "registry-finance-statuses",
+					updated_at: "2026-01-10T00:00:00.000Z",
+				})
+				.execute();
+		}
+		const nonFinanceMessageId = await insertMessageRow(db, {
+			id: "msg-finance-status-non-finance",
+			accountId: "acct-1",
+			contentSha256: "content-finance-status-non-finance",
+		});
+		await insertMessageLabelRow(db, {
+			messageId: nonFinanceMessageId,
+			primaryBucket: "other",
+			contentSha256: "content-finance-status-non-finance",
+			label: {
+				schemaVersion: "message-label.v1",
+				nsfw: false,
+				finance: {
+					relevant: false,
+					direction: null,
+					owner: null,
+					accountHint: null,
+					purpose: null,
+				},
+				social: {
+					personal: false,
+					private: false,
+					social: false,
+					business: true,
+				},
+				risk: {
+					businessSensitive: false,
+					leakRisk: false,
+				},
+				routing: {
+					primaryBucket: "other",
+					tags: [],
+				},
+				confidence: {
+					overall: 0.95,
+					finance: 0.95,
+					social: 0.95,
+					risk: 0.95,
+				},
+				explanation: "not finance",
+			},
+		});
+
+		vi.doMock("#/lib/worker", () => ({
+			ensureWorkerStarted: vi.fn(),
+		}));
+
+		const actions = await runtime.importFresh<
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
+		const result = await actions.loadFinanceData();
+
+		expect(result.coverage).toMatchObject({
+			rootFinanceRelevantCount: 5,
+			totalHeads: 5,
+			readyCount: 1,
+			reviewCount: 1,
+			staleCount: 1,
+			blockedParseErrorCount: 1,
+			eventCandidateCount: 0,
+			documentCandidateCount: 0,
+		});
+	});
+
+	it("loadAccountDetailData scopes finance coverage to one account", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db);
+		await db
+			.insertInto("accounts")
+			.values({
+				id: "acct-2",
+				label: "Other Account",
+				email_address: "acct-2@example.com",
+				provider_kind: "gmail",
+				sync_enabled: 1,
+				sync_status: "idle",
+				source_truth: "corpus_mirror",
+				selected_mailbox: "[Gmail]/All Mail",
+				last_synced_at: null,
+				last_error: null,
+				created_at: "2026-01-10T00:00:00.000Z",
+				updated_at: "2026-01-10T00:00:00.000Z",
+			})
+			.execute();
+
+		const primaryMessageId = await insertMessageRow(db, {
+			id: "msg-account-finance-primary",
+			accountId: "acct-1",
+			contentSha256: "content-account-finance-primary",
+		});
+		const otherMessageId = await insertMessageRow(db, {
+			id: "msg-account-finance-other",
+			accountId: "acct-2",
+			contentSha256: "content-account-finance-other",
+		});
+		for (const [messageId, accountId, contentSha256] of [
+			[primaryMessageId, "acct-1", "content-account-finance-primary"],
+			[otherMessageId, "acct-2", "content-account-finance-other"],
+		] as const) {
+			await insertMessageLabelRow(db, {
+				messageId,
+				primaryBucket: "finance",
+				contentSha256,
+				label: {
+					schemaVersion: "message-label.v1",
+					nsfw: false,
+					finance: {
+						relevant: true,
+						direction: "expense",
+						owner: "business",
+						accountHint: accountId,
+						purpose: "software",
+					},
+					social: {
+						personal: false,
+						private: false,
+						social: false,
+						business: true,
+					},
+					risk: {
+						businessSensitive: false,
+						leakRisk: false,
+					},
+					routing: {
+						primaryBucket: "finance",
+						tags: ["receipt"],
+					},
+					confidence: {
+						overall: 0.95,
+						finance: 0.95,
+						social: 0.95,
+						risk: 0.95,
+					},
+					explanation: "finance",
+				},
+			});
+			await db
+				.insertInto("message_secondary_heads")
+				.values({
+					message_id: messageId,
+					classifier_key: "finance_intel",
+					secondary_result_id: null,
+					status: "ready",
+					low_confidence: 0,
+					content_sha256: contentSha256,
+					registry_sha256: "registry-account-finance",
+					updated_at: "2026-01-10T00:00:00.000Z",
+				})
+				.execute();
+		}
+		await db
+			.insertInto("message_secondary_results")
+			.values({
+				id: "secondary-account-finance-primary",
+				message_id: primaryMessageId,
+				classifier_key: "finance_intel",
+				schema_version: "finance-intel.v1",
+				job_id: null,
+				model: "gpt-5.4-mini",
+				prompt_version: "finance-intel-v1",
+				source: "model",
+				result_json: '{"ok":true}',
+				raw_response_json: "{}",
+				usage_json: null,
+				input_content_sha256: "content-account-finance-primary",
+				input_registry_sha256: "registry-account-finance",
+				created_at: "2026-01-10T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("finance_event_candidates")
+			.values({
+				id: "finance-event-account-finance",
+				canonical_key: "tx:account-finance",
+				status: "candidate",
+				event_kind: "card_charge",
+				direction: "expense",
+				amount_value: "42.00",
+				currency: "USD",
+				occurred_at: "2026-01-10",
+				merchant_or_counterparty: "Acme",
+				owner_identity_id: null,
+				financial_account_id: null,
+				institution_id: null,
+				category_hint: null,
+				tax_relevance_hint: null,
+				evidence_count: 1,
+				first_message_received_at: "2026-01-10T00:00:00.000Z",
+				last_message_received_at: "2026-01-10T00:00:00.000Z",
+				created_at: "2026-01-10T00:00:00.000Z",
+				updated_at: "2026-01-10T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("finance_document_candidates")
+			.values([
+				{
+					id: "finance-document-account-finance",
+					canonical_key: "doc:account-finance",
+					status: "candidate",
+					document_type: "receipt",
+					issuer: "Acme",
+					external_id: null,
+					statement_period_start: null,
+					statement_period_end: null,
+					due_at: null,
+					tax_year: 2026,
+					owner_identity_id: null,
+					financial_account_id: null,
+					institution_id: null,
+					evidence_count: 1,
+					first_message_received_at: "2026-01-10T00:00:00.000Z",
+					last_message_received_at: "2026-01-10T00:00:00.000Z",
+					created_at: "2026-01-10T00:00:00.000Z",
+					updated_at: "2026-01-10T00:00:00.000Z",
+				},
+				{
+					id: "finance-document-account-finance-empty",
+					canonical_key: "doc:account-finance-empty",
+					status: "candidate",
+					document_type: "receipt",
+					issuer: "Acme",
+					external_id: null,
+					statement_period_start: null,
+					statement_period_end: null,
+					due_at: null,
+					tax_year: 2026,
+					owner_identity_id: null,
+					financial_account_id: null,
+					institution_id: null,
+					evidence_count: 0,
+					first_message_received_at: null,
+					last_message_received_at: null,
+					created_at: "2026-01-10T00:00:00.000Z",
+					updated_at: "2026-01-10T00:00:00.000Z",
+				},
+			])
+			.execute();
+		await db
+			.insertInto("finance_event_evidence")
+			.values([
+				{
+					id: "finance-evidence-account-finance-event",
+					event_candidate_id: "finance-event-account-finance",
+					document_candidate_id: null,
+					message_id: primaryMessageId,
+					secondary_result_id: "secondary-account-finance-primary",
+					transaction_index: 0,
+					document_index: null,
+					evidence_json: '{"kind":"event"}',
+					created_at: "2026-01-10T00:00:00.000Z",
+				},
+				{
+					id: "finance-evidence-account-finance-document",
+					event_candidate_id: null,
+					document_candidate_id: "finance-document-account-finance",
+					message_id: primaryMessageId,
+					secondary_result_id: "secondary-account-finance-primary",
+					transaction_index: null,
+					document_index: 0,
+					evidence_json: '{"kind":"document"}',
+					created_at: "2026-01-10T00:00:00.000Z",
+				},
+			])
+			.execute();
+
+		vi.doMock("#/lib/worker", () => ({
+			ensureWorkerStarted: vi.fn(),
+		}));
+
+		const actions = await runtime.importFresh<
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
+		const result = await actions.loadAccountDetailData({ accountId: "acct-1" });
+
+		expect(result.financeCoverage).toMatchObject({
+			rootFinanceRelevantCount: 1,
+			totalHeads: 1,
+			readyCount: 1,
+			eventCandidateCount: 1,
+			documentCandidateCount: 1,
+		});
 	});
 
 	it("loadAccountDetailData throws for unknown account", async () => {
@@ -735,7 +2163,7 @@ describe("new server actions", () => {
 			scopeType: "account",
 			scopeId: "acct-1",
 			model: "gpt-5.4-mini",
-			promptVersion: "classify-email-v1",
+			promptVersion: "classify-email-v2",
 		});
 	});
 
@@ -790,7 +2218,7 @@ describe("new server actions", () => {
 			scopeType: "account",
 			scopeId: "acct-paused",
 			model: "gpt-5.4-mini",
-			promptVersion: "classify-email-v1",
+			promptVersion: "classify-email-v2",
 		});
 	});
 
@@ -1320,7 +2748,40 @@ describe("new server actions", () => {
 				sexual: 0,
 			},
 		}));
-		const classifyMessageNow = vi.fn(async () => undefined);
+		const classifyMessageNow = vi.fn(async () => ({
+			label: {
+				schemaVersion: "message-label.v1",
+				nsfw: false,
+				finance: {
+					relevant: false,
+					direction: "unknown",
+					owner: "unknown",
+					accountHint: null,
+					purpose: null,
+				},
+				social: {
+					personal: false,
+					private: false,
+					social: false,
+					business: false,
+				},
+				risk: {
+					businessSensitive: false,
+					leakRisk: false,
+				},
+				routing: {
+					primaryBucket: "other",
+					tags: [],
+				},
+				confidence: {
+					overall: 1,
+					finance: 1,
+					social: 1,
+					risk: 1,
+				},
+				explanation: "ok",
+			},
+		}));
 
 		vi.doMock("#/lib/log", () => log.module);
 		vi.doMock("#/lib/worker", () => ({
