@@ -688,6 +688,137 @@ describe("scripts", () => {
 		logSpy.mockRestore();
 	});
 
+	it("repairs bad parsed bodies and queues root reclassification", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		const rawDir = join(runtime.dataDir, "accounts", "acct-1", "raw");
+		const rawPath = join(rawDir, "gm-script-bad-body.eml");
+		mkdirSync(rawDir, { recursive: true });
+		writeFileSync(rawPath, "bad body raw");
+
+		const messageId = await insertMessageRow(db, {
+			id: "msg-script-bad-body",
+			accountId: "acct-1",
+			parseStatus: "parsed",
+			bodyExtractionStrategy: "plain_text",
+			parseErrorReason: null,
+			bodyTextPrimary: "Plain text version not available",
+			bodyTextNormalized: "Plain text version not available",
+			snippet: "undefined",
+			contentSha256: "bad-body-content-sha",
+			ingestedAt: "2026-01-02T00:00:00.000Z",
+		});
+		await db
+			.insertInto("message_sources")
+			.values({
+				id: "src-script-bad-body",
+				message_id: messageId,
+				account_id: "acct-1",
+				remote_message_id: "gm-script-bad-body",
+				remote_thread_id: "thr-script-bad-body",
+				mailbox: "[Gmail]/All Mail",
+				imap_uid: 1,
+				uidvalidity: 100,
+				raw_rfc822_path: rawPath,
+				raw_sha256: "bad-body-raw-sha",
+				state: "active",
+				first_seen_at: "2026-01-01T00:00:00.000Z",
+				last_seen_at: "2026-01-01T00:00:00.000Z",
+				tombstoned_at: null,
+				updated_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+		const before = await db
+			.selectFrom("messages")
+			.select(["created_at", "ingested_at"])
+			.where("id", "=", messageId)
+			.executeTakeFirstOrThrow();
+
+		vi.doMock("#/lib/imap", async () => {
+			const actual =
+				await vi.importActual<typeof import("#/lib/imap")>("#/lib/imap");
+			return {
+				...actual,
+				parseRawMessage: vi.fn(async () => ({
+					id: "msg-script-bad-body-new",
+					messageId: "<msg-script-bad-body-new@example.com>",
+					threadKey: "thread-script-bad-body",
+					receivedAt: "2026-01-01T00:00:00.000Z",
+					senderName: null,
+					senderAddress: null,
+					toJson: "[]",
+					ccJson: "[]",
+					subject: "Recovered",
+					inReplyTo: null,
+					bodyTextPrimary: "Recovered body text",
+					bodyTextForwarded: "",
+					bodyTextNormalized: "Recovered body text",
+					snippet: "Recovered body text",
+					attachmentCount: 0,
+					hasHtml: 1,
+					parseStatus: "parsed",
+					bodyExtractionStrategy: "html_to_text",
+					parseErrorReason: null,
+					tokenEstimate: 12,
+					contentSha256: "recovered-bad-body-sha",
+					attachments: [],
+				})),
+			};
+		});
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+		const script = await runtime.importFresh<
+			typeof import("#/scripts/reextract-bad-bodies")
+		>("#/scripts/reextract-bad-bodies");
+		await script.main();
+
+		const summary = JSON.parse(String(logSpy.mock.calls[0]?.[0] ?? "{}"));
+		expect(summary).toEqual({
+			targeted: 1,
+			recovered: 1,
+			stillFailing: 0,
+			missingRaw: 0,
+			queuedAccounts: 1,
+		});
+
+		const message = await db
+			.selectFrom("messages")
+			.select([
+				"body_text_primary",
+				"body_text_normalized",
+				"snippet",
+				"body_extraction_strategy",
+				"content_sha256",
+				"created_at",
+				"ingested_at",
+			])
+			.where("id", "=", messageId)
+			.executeTakeFirstOrThrow();
+		expect(message).toEqual({
+			body_text_primary: "Recovered body text",
+			body_text_normalized: "Recovered body text",
+			snippet: "Recovered body text",
+			body_extraction_strategy: "html_to_text",
+			content_sha256: "recovered-bad-body-sha",
+			created_at: before.created_at,
+			ingested_at: before.ingested_at,
+		});
+
+		const jobs = await db
+			.selectFrom("jobs")
+			.select(["kind", "scope_type", "scope_id"])
+			.execute();
+		expect(jobs).toEqual([
+			{
+				kind: "classify_account_backlog",
+				scope_type: "account",
+				scope_id: "acct-1",
+			},
+		]);
+
+		logSpy.mockRestore();
+	});
+
 	it("drains the worker script", async () => {
 		const runtime = await createTestRuntime();
 		const { bootDb } = await import("#/test/helpers/db");
@@ -749,6 +880,7 @@ describe("scripts", () => {
 		expect(report).toMatchObject({
 			sourceInvariants: expect.any(Object),
 			rootClassification: expect.any(Object),
+			moderation: expect.any(Object),
 			parseErrors: expect.any(Object),
 			conversations: expect.any(Object),
 			secondaryFinance: expect.any(Object),
@@ -760,6 +892,8 @@ describe("scripts", () => {
 
 	it("prints populated corpus audit details", async () => {
 		const runtime = await createTestRuntime();
+		const config =
+			await runtime.importFresh<typeof import("#/lib/config")>("#/lib/config");
 		const { db } = await bootDb({ seedDefaultAccount: true });
 		const conversationId = await insertConversationRow(db, {
 			id: "conv-audit-script",
@@ -946,6 +1080,50 @@ describe("scripts", () => {
 				imported_at: "2026-01-10T00:00:00.000Z",
 			})
 			.execute();
+		await db
+			.insertInto("moderation_results")
+			.values([
+				{
+					id: "moderation-audit-current",
+					job_id: null,
+					message_id: messageId,
+					model: "gpt-5.4-mini",
+					categories_json: "{}",
+					category_scores_json: "{}",
+					raw_response_json: JSON.stringify({
+						promptVersion: config.MODERATION_PROMPT_VERSION,
+					}),
+					nsfw_flag: 0,
+					created_at: "2026-01-10T00:00:00.000Z",
+				},
+				{
+					id: "moderation-audit-stale",
+					job_id: null,
+					message_id: laterMessageId,
+					model: "gpt-5.4-mini",
+					categories_json: "{}",
+					category_scores_json: "{}",
+					raw_response_json: JSON.stringify({
+						promptVersion: "moderate-email-v1",
+					}),
+					nsfw_flag: 0,
+					created_at: "2026-01-12T00:00:00.000Z",
+				},
+				{
+					id: "moderation-audit-missing",
+					job_id: null,
+					message_id: lastMismatchMessageId,
+					model: "gpt-5.4-mini",
+					categories_json: "{}",
+					category_scores_json: "{}",
+					raw_response_json: JSON.stringify({
+						rawResponse: { assistantText: "{}" },
+					}),
+					nsfw_flag: 0,
+					created_at: "2026-01-11T00:00:00.000Z",
+				},
+			])
+			.execute();
 
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
 		const script = await runtime.importFresh<
@@ -969,6 +1147,12 @@ describe("scripts", () => {
 				},
 			]),
 		);
+		expect(report.moderation).toEqual({
+			currentPromptVersion: config.MODERATION_PROMPT_VERSION,
+			rowsWithCurrentPromptVersion: 1,
+			rowsWithStalePromptVersion: 1,
+			rowsMissingPromptVersion: 1,
+		});
 		expect(report.secondaryFinance).toMatchObject({
 			rootFinanceRelevantMessages: 1,
 			totalHeads: 1,

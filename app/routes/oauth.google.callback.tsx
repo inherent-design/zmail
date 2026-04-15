@@ -12,6 +12,9 @@ function CallbackError({ error }: { error: Error }) {
 					{error.message || "The OAuth callback could not be completed."}
 				</p>
 				<div className="actions">
+					<Link className="button secondary" to="/accounts">
+						Back to Accounts
+					</Link>
 					<Link className="button" to="/accounts/new">
 						Back to Connect Gmail
 					</Link>

@@ -1,6 +1,7 @@
 import { useServerFn } from "@tanstack/react-start";
 import { useState } from "react";
 
+import { OAuthReadinessCard } from "#/app/components/oauth-readiness-card";
 import { beginGoogleConnect } from "#/app/server/actions";
 
 interface AccountNewPageData {
@@ -23,28 +24,11 @@ export function AccountNewPage({ data }: { data: AccountNewPageData }) {
 				</p>
 			</section>
 
-			<section className="card stack">
-				<h2>Environment readiness</h2>
-				<p className="muted">Expected callback: {data.redirectUrl}</p>
-				{data.oauthReady ? (
-					<p className="pill">OAuth credentials configured</p>
-				) : (
-					<div className="stack">
-						<p className="muted">Missing environment variables:</p>
-						<ul>
-							{data.missingVars.map((v) => (
-								<li key={v}>{v}</li>
-							))}
-						</ul>
-						<p className="muted">
-							Start the app with <code>mise run dev</code> to load the
-							repo-managed encrypted secrets, or export{" "}
-							<code>GOOGLE_OAUTH_CLIENT_ID</code> and{" "}
-							<code>GOOGLE_OAUTH_CLIENT_SECRET</code> manually.
-						</p>
-					</div>
-				)}
-			</section>
+			<OAuthReadinessCard
+				oauthReady={data.oauthReady}
+				missingVars={data.missingVars}
+				redirectUrl={data.redirectUrl}
+			/>
 
 			<section className="card stack">
 				<h2>Connect</h2>

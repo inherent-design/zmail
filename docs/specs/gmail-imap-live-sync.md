@@ -221,15 +221,23 @@ Scopes requested:
 
 Flow:
 
-1. `buildAuthUrl(label)` generates PKCE state and writes a temporary state file under `data/tmp/oauth/google/<state>.json`.
+1. `buildAuthUrl({ label, flow, accountId? })` generates PKCE state and writes a temporary state file under `data/tmp/oauth/google/<state>.json`.
 2. `/accounts/new` calls `beginGoogleConnectCommand` and redirects the browser to Google.
-3. `/oauth/google/callback` loads and deletes the temporary state, exchanges `code + codeVerifier` for tokens, fetches the Gmail identity, normalizes the email address, and upserts the account by normalized email.
-4. The callback writes `data/accounts/<accountId>/google-oauth.json`, upserts `account_sync_state`, and queues `sync_account_full`.
-5. The callback does not start the watcher directly.
-6. After the first successful bootstrap window, the worker starts the watcher for that account when live sync is enabled.
-7. If the worker loop exits because of an unhandled fatal error, the single-start latch is cleared, the crash is logged, and a later request can restart the worker in the same process.
+3. `/accounts/$accountId/reconnect` calls `beginGoogleReconnectCommand` and redirects the browser to Google with reconnect-specific state that pins the OAuth callback to the requested account.
+4. `/oauth/google/callback` loads and deletes the temporary state, exchanges `code + codeVerifier` for tokens, fetches the Gmail identity, normalizes the email address, and then:
+   - for `flow = "connect"` upserts the account by normalized email
+   - for `flow = "reconnect"` requires the chosen Gmail identity to match the existing account email before updating that same row in place
+5. The callback writes `data/accounts/<accountId>/google-oauth.json`, upserts `account_sync_state`, and queues `sync_account_full`.
+6. The callback does not start the watcher directly.
+7. After the first successful bootstrap window, the worker starts the watcher for that account when live sync is enabled.
+8. If the worker loop exits because of an unhandled fatal error, the single-start latch is cleared, the crash is logged, and a later request can restart the worker in the same process.
 
-Reconnect identity is the normalized Gmail email address. Reconnecting the same Gmail account reuses the same account row.
+Reconnect identity is the normalized Gmail email address. Reconnecting the same Gmail account reuses the same account row and fails closed if the operator chooses the wrong Gmail identity during reconnect.
+
+Disconnect and delete are distinct operator actions:
+
+- `Disconnect Gmail` deletes `data/accounts/<accountId>/google-oauth.json`, disables remote sync, and preserves the local corpus for later reconnect.
+- `Delete local account` is local-only, requires typed email confirmation, deletes account-scoped local storage plus mailbox-local DB state, and then queues finance materialization rebuilds because those shared tables are not account-owned.
 
 ## IMAP Sync Model
 

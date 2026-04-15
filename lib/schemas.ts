@@ -1,6 +1,15 @@
 import { z } from "zod";
 
 export const providerKindSchema = z.enum(["gmail"]);
+export const accountConnectionStateSchema = z.enum([
+	"connected",
+	"paused",
+	"needs_reconnect",
+	"disconnected",
+]);
+export type AccountConnectionState = z.infer<
+	typeof accountConnectionStateSchema
+>;
 export const syncStatusSchema = z.enum([
 	"idle",
 	"syncing",
@@ -959,6 +968,11 @@ export const beginGoogleConnectInputSchema = z.object({
 	label: z.string().min(1),
 });
 
+export const beginGoogleReconnectInputSchema = z.object({
+	accountId: z.string().min(1),
+	label: z.string().min(1),
+});
+
 export const completeGoogleConnectInputSchema = z.object({
 	code: z.string().min(1),
 	state: z.string().min(1),
@@ -966,6 +980,11 @@ export const completeGoogleConnectInputSchema = z.object({
 
 export const accountIdInputSchema = z.object({
 	accountId: z.string().min(1),
+});
+
+export const purgeAccountInputSchema = z.object({
+	accountId: z.string().min(1),
+	confirmationEmail: z.string().min(1),
 });
 
 export const messageLabelNoNsfwJsonSchema = {

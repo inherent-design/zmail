@@ -50,3 +50,24 @@ The finance page should surface:
 - imported document coverage
 - registry suggestion state
 
+## Filter model
+
+- The unfiltered year view uses `finance_yearly_rollups` and
+  `finance_yearly_subcategory_rollups` as the fast baseline.
+- When any granular filter is active beyond `year`:
+  - `accountId`
+  - `institutionId`
+  - `ownerIdentityId`
+  - `sourceKind`
+  the loader derives summary, primary rollups, and subcategory rollups from the
+  filtered combined ledger in memory.
+- Ledger preview and imported documents are always filtered directly from the
+  underlying rows.
+- Registry suggestions are currently filtered only by `sourceKind`.
+
+## Current identifier semantics
+
+- `institutionId` and `ownerIdentityId` filter values are currently string
+  refs or hints surfaced from email-derived finance intel and imported finance
+  artifacts.
+- They are not guaranteed to be canonical registry ids in this implementation.

@@ -29,6 +29,7 @@
     "db:reset:messages": "tsx scripts/db-reset.ts messages",
     "db:reset:jobs": "tsx scripts/db-reset.ts jobs",
     "audit:corpus": "tsx scripts/audit-corpus.ts",
+    "reextract:bad-bodies": "tsx scripts/reextract-bad-bodies.ts",
     "reextract:parse-errors": "tsx scripts/reextract-parse-errors.ts",
     "finance:import": "tsx scripts/import-finance-artifact.ts",
     "pi:connect": "tsx scripts/pi-connect-subscription.ts",

@@ -47,6 +47,14 @@ Expected runtime logs in the dev terminal:
 - `server.action.start` and `server.action.complete` with `operation: "completeGoogleConnectCommand"`
 - `job.queued` for the initial `sync_account_full`
 
+## Reconnect Gmail
+
+1. Open `/accounts/$accountId/reconnect`
+2. Confirm the label is editable and the expected Gmail email is read-only
+3. Click `Reconnect Gmail`
+4. Complete Google consent with the same Gmail identity
+5. Confirm the callback returns to the same `/accounts/$accountId`
+
 ## First Sync Checks
 
 On `/accounts/$accountId` confirm:
@@ -96,9 +104,33 @@ Expected runtime logs in the dev terminal:
 
 ## Reconnect Check
 
-1. Visit `/accounts/new` again
-2. Connect the same Gmail account
-3. Confirm the existing account row is reused rather than duplicated
+1. From `/accounts/$accountId`, click `Disconnect Gmail`
+2. Confirm the account detail page shows the disconnected state while local counts remain intact
+3. Visit `/accounts/$accountId/reconnect`
+4. Reconnect the same Gmail account
+5. Confirm the existing account row is reused rather than duplicated
+
+## Delete Local Account
+
+1. Open `/accounts/$accountId/delete`
+2. Confirm the page lists what will and will not be deleted
+3. Type the exact Gmail email address
+4. Click `Delete local account`
+5. Confirm the UI returns to `/accounts` and the deleted row is gone
+
+## Finance Filter Smoke
+
+1. Open `/finance`
+2. Confirm the year selector and the account / institution / identity / source
+   filters are visible
+3. If seeded or real finance data exists, click each of:
+   - one account filter
+   - one institution filter
+   - one identity filter
+   - one source filter
+4. Confirm summary cards, rollups, ledger preview, and imported documents all
+   change consistently for the selected filter
+5. Use `Clear filters` and confirm the unfiltered year view returns
 
 ## Reconcile Check
 

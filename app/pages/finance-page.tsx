@@ -8,6 +8,8 @@ import {
 	queueReconcileRegistrySuggestions,
 } from "#/app/server/actions";
 
+type FinanceSourceKind = "email" | "pdf" | "statement" | "csv" | "ofx";
+
 interface FinancePageData {
 	year: number;
 	availableYears: number[];
@@ -15,8 +17,11 @@ interface FinancePageData {
 		accountId: string | null;
 		institutionId: string | null;
 		ownerIdentityId: string | null;
-		sourceKind: string | null;
+		sourceKind: FinanceSourceKind | null;
 		accounts: Array<{ id: string; label: string }>;
+		institutions: Array<{ id: string; label: string }>;
+		ownerIdentities: Array<{ id: string; label: string }>;
+		sourceKinds: string[];
 	};
 	registry: {
 		sha256: string | null;
@@ -32,12 +37,21 @@ interface FinancePageData {
 	coverage: {
 		rootFinanceRelevantCount: number;
 		totalHeads: number;
+		financeV2HeadCount?: number;
 		readyCount: number;
 		reviewCount: number;
 		staleCount: number;
 		blockedParseErrorCount: number;
 		eventCandidateCount: number;
 		documentCandidateCount: number;
+	};
+	pipelineStatus: {
+		rootFinanceRelevantCount: number;
+		financeHeadCount: number;
+		financeV2HeadCount: number;
+		knowledgeMaterialized: boolean;
+		registryImportedAt: string | null;
+		jobs: Record<string, { queued: number; running: number }>;
 	};
 	summary: {
 		inflowMinor: number;
@@ -158,6 +172,9 @@ export function FinancePage({ data }: { data: FinancePageData }) {
 			ownerIdentityId: null,
 			sourceKind: null,
 			accounts: [],
+			institutions: [],
+			ownerIdentities: [],
+			sourceKinds: [],
 		},
 		registry: {
 			sha256: null,
@@ -173,12 +190,25 @@ export function FinancePage({ data }: { data: FinancePageData }) {
 		coverage: {
 			rootFinanceRelevantCount: 0,
 			totalHeads: 0,
+			financeV2HeadCount: 0,
 			readyCount: 0,
 			reviewCount: 0,
 			staleCount: 0,
 			blockedParseErrorCount: 0,
 			eventCandidateCount: 0,
 			documentCandidateCount: 0,
+		},
+		pipelineStatus: {
+			rootFinanceRelevantCount: 0,
+			financeHeadCount: 0,
+			financeV2HeadCount: 0,
+			knowledgeMaterialized: false,
+			registryImportedAt: null,
+			jobs: {
+				classify_finance_backlog: { queued: 0, running: 0 },
+				rebuild_finance_knowledge: { queued: 0, running: 0 },
+				rebuild_finance_rollups: { queued: 0, running: 0 },
+			},
 		},
 		summary: {
 			inflowMinor: 0,
@@ -213,11 +243,46 @@ export function FinancePage({ data }: { data: FinancePageData }) {
 			...defaults.coverage,
 			...(data.coverage ?? {}),
 		},
+		pipelineStatus: {
+			...defaults.pipelineStatus,
+			...(data.pipelineStatus ?? {}),
+			jobs: {
+				...defaults.pipelineStatus.jobs,
+				...(data.pipelineStatus?.jobs ?? {}),
+			},
+		},
 		summary: {
 			...defaults.summary,
 			...(data.summary ?? {}),
 		},
 	}) as FinancePageData;
+	const warnings: string[] = [];
+	if (!view.registry.importedAt) {
+		warnings.push("Registry has not been imported yet.");
+	}
+	if (
+		view.pipelineStatus.financeHeadCount <
+			view.pipelineStatus.rootFinanceRelevantCount ||
+		view.pipelineStatus.financeV2HeadCount <
+			view.pipelineStatus.financeHeadCount
+	) {
+		warnings.push(
+			"Finance classifier coverage is incomplete or still contains non-v2 heads.",
+		);
+	}
+	if (
+		!view.pipelineStatus.knowledgeMaterialized &&
+		view.pipelineStatus.financeV2HeadCount > 0
+	) {
+		warnings.push("Finance knowledge tables are still empty.");
+	}
+	const resetFiltersSearch = { year: view.year };
+	const hasActiveNonYearFilters = Boolean(
+		view.filters.accountId ||
+			view.filters.institutionId ||
+			view.filters.ownerIdentityId ||
+			view.filters.sourceKind,
+	);
 
 	return (
 		<div className="page">
@@ -291,6 +356,35 @@ export function FinancePage({ data }: { data: FinancePageData }) {
 					<span>Registry dir: {view.registry.sourceDir}</span>
 					<span>Suggestions: {view.registrySuggestions.length}</span>
 				</div>
+				<div className="row">
+					<span className="pill">
+						finance v2 heads: {view.pipelineStatus.financeV2HeadCount}
+					</span>
+					<span className="pill">
+						finance backlog q/r:{" "}
+						{view.pipelineStatus.jobs.classify_finance_backlog?.queued ?? 0}/
+						{view.pipelineStatus.jobs.classify_finance_backlog?.running ?? 0}
+					</span>
+					<span className="pill">
+						knowledge q/r:{" "}
+						{view.pipelineStatus.jobs.rebuild_finance_knowledge?.queued ?? 0}/
+						{view.pipelineStatus.jobs.rebuild_finance_knowledge?.running ?? 0}
+					</span>
+					<span className="pill">
+						rollups q/r:{" "}
+						{view.pipelineStatus.jobs.rebuild_finance_rollups?.queued ?? 0}/
+						{view.pipelineStatus.jobs.rebuild_finance_rollups?.running ?? 0}
+					</span>
+				</div>
+				{warnings.length > 0 ? (
+					<div className="stack">
+						{warnings.map((warning) => (
+							<p key={warning} className="muted">
+								Warning: {warning}
+							</p>
+						))}
+					</div>
+				) : null}
 			</section>
 
 			<section className="card stack">
@@ -314,7 +408,7 @@ export function FinancePage({ data }: { data: FinancePageData }) {
 				</div>
 				<div className="row">
 					<span className="muted">Account filter</span>
-					<Link to="/finance" search={{ year: view.year }} className="pill">
+					<Link to="/finance" search={resetFiltersSearch} className="pill">
 						All
 					</Link>
 					{view.filters.accounts.map((account) => (
@@ -330,6 +424,85 @@ export function FinancePage({ data }: { data: FinancePageData }) {
 						</Link>
 					))}
 				</div>
+				<div className="row">
+					<span className="muted">Institution filter</span>
+					<Link to="/finance" search={resetFiltersSearch} className="pill">
+						All
+					</Link>
+					{view.filters.institutions.map((institution) => (
+						<Link
+							key={institution.id}
+							to="/finance"
+							search={{
+								year: view.year,
+								accountId: view.filters.accountId ?? undefined,
+								institutionId: institution.id,
+								ownerIdentityId: view.filters.ownerIdentityId ?? undefined,
+								sourceKind: view.filters.sourceKind ?? undefined,
+							}}
+							className={
+								view.filters.institutionId === institution.id ? "pill" : "muted"
+							}
+						>
+							{institution.label}
+						</Link>
+					))}
+				</div>
+				<div className="row">
+					<span className="muted">Identity filter</span>
+					<Link to="/finance" search={resetFiltersSearch} className="pill">
+						All
+					</Link>
+					{view.filters.ownerIdentities.map((identity) => (
+						<Link
+							key={identity.id}
+							to="/finance"
+							search={{
+								year: view.year,
+								accountId: view.filters.accountId ?? undefined,
+								institutionId: view.filters.institutionId ?? undefined,
+								ownerIdentityId: identity.id,
+								sourceKind: view.filters.sourceKind ?? undefined,
+							}}
+							className={
+								view.filters.ownerIdentityId === identity.id ? "pill" : "muted"
+							}
+						>
+							{identity.label}
+						</Link>
+					))}
+				</div>
+				<div className="row">
+					<span className="muted">Source filter</span>
+					<Link to="/finance" search={resetFiltersSearch} className="pill">
+						All
+					</Link>
+					{view.filters.sourceKinds.map((sourceKind) => (
+						<Link
+							key={sourceKind}
+							to="/finance"
+							search={{
+								year: view.year,
+								accountId: view.filters.accountId ?? undefined,
+								institutionId: view.filters.institutionId ?? undefined,
+								ownerIdentityId: view.filters.ownerIdentityId ?? undefined,
+								sourceKind: sourceKind as FinanceSourceKind,
+							}}
+							className={
+								view.filters.sourceKind === sourceKind ? "pill" : "muted"
+							}
+						>
+							{sourceKind}
+						</Link>
+					))}
+				</div>
+				{hasActiveNonYearFilters ? (
+					<div className="row">
+						<Link to="/finance" search={resetFiltersSearch} className="button secondary">
+							Clear filters
+						</Link>
+					</div>
+				) : null}
 			</section>
 
 			<section className="grid-3">

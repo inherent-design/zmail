@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { bootDb, insertMessageRow } from "#/test/helpers/db";
+import {
+	bootDb,
+	insertMessageLabelRow,
+	insertMessageRow,
+} from "#/test/helpers/db";
 import { setEnv } from "#/test/helpers/env";
 import { createMockLogModule } from "#/test/helpers/log";
 import { createTestRuntime } from "#/test/helpers/runtime";
@@ -589,6 +593,137 @@ describe("worker edge cases", () => {
 			},
 		]);
 		vi.doUnmock("#/lib/sync");
+	});
+
+	it("queues root backlog when only moderation prompt freshness is stale", async () => {
+		const runtime = await createTestRuntime();
+		vi.resetModules();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		const { MODERATION_PROMPT_VERSION, nowIso } =
+			await runtime.importFresh<typeof import("#/lib/config")>(
+				"#/lib/config",
+			);
+		const messageId = await insertMessageRow(db, {
+			id: "msg-stale-moderation-only",
+			accountId: "acct-1",
+			contentSha256: "sha-stale-moderation-only",
+		});
+		await insertMessageLabelRow(db, {
+			messageId,
+			contentSha256: "sha-stale-moderation-only",
+		});
+		await db
+			.insertInto("moderation_results")
+			.values({
+				id: "moderation-stale-only",
+				job_id: null,
+				message_id: messageId,
+				model: "gpt-5.4-mini",
+				categories_json: JSON.stringify({
+					explicitSexual: false,
+					suggestiveSexual: false,
+					nudity: false,
+					sexualMinors: false,
+					adultCommercial: false,
+				}),
+				category_scores_json: JSON.stringify({
+					explicitSexual: 0,
+					suggestiveSexual: 0,
+					nudity: 0,
+					sexualMinors: 0,
+					adultCommercial: 0,
+					overall: 0,
+				}),
+				raw_response_json: JSON.stringify({
+					promptVersion: "moderate-email-v1",
+					rawResponse: { assistantText: "{}" },
+				}),
+				nsfw_flag: 0,
+				created_at: nowIso(),
+			})
+			.execute();
+
+		const ensureModerationForMessage = vi.fn(
+			async ({ messageId: currentId }: { messageId: string }) => {
+				await db
+					.updateTable("moderation_results")
+					.set({
+						raw_response_json: JSON.stringify({
+							promptVersion: MODERATION_PROMPT_VERSION,
+							rawResponse: { assistantText: "{}" },
+						}),
+						category_scores_json: JSON.stringify({}),
+						nsfw_flag: 0,
+						created_at: nowIso(),
+					})
+					.where("message_id", "=", currentId)
+					.execute();
+				return {
+					nsfwFlag: false,
+					scores: {},
+				};
+			},
+		);
+		const classifyMessageNow = vi.fn(async () => undefined);
+
+		vi.doMock("#/lib/classify", () => ({
+			buildAttachmentSummary: vi.fn(() => "No attachments"),
+			classifyMessageNow,
+			mergeAllowedTags: vi.fn((tags: string[]) => tags),
+		}));
+		vi.doMock("#/lib/moderation", () => ({
+			ensureModerationForMessage,
+			topModerationScores: vi.fn(() => []),
+		}));
+		vi.doMock("#/lib/overseer", () => ({
+			buildOverseerProfile: vi.fn(),
+			loadLatestOverseerContext: vi.fn(async () => ({
+				promptPreamble: null,
+				promotedTags: [],
+				profile: null,
+			})),
+			maybeQueueOverseerForAccount: vi.fn(async () => false),
+		}));
+		vi.doMock("#/lib/category-rules", () => ({
+			listPendingMessageCategoryAssignmentIds: vi.fn(async () => []),
+			projectMessageCategoryAssignment: vi.fn(async () => undefined),
+		}));
+
+		const worker =
+			await runtime.importFresh<typeof import("#/lib/worker")>("#/lib/worker");
+		await worker.drainWorkerUntilIdle();
+
+		expect(ensureModerationForMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				jobId: expect.any(String),
+				messageId,
+			}),
+		);
+		expect(classifyMessageNow).toHaveBeenCalledWith(
+			expect.objectContaining({
+				messageId,
+				moderationFlag: false,
+			}),
+		);
+
+		const jobs = await db
+			.selectFrom("jobs")
+			.select(["kind", "status", "scope_id"])
+			.where("kind", "=", "classify_account_backlog")
+			.execute();
+		expect(jobs).toEqual(
+			expect.arrayContaining([
+				{
+					kind: "classify_account_backlog",
+					status: "complete",
+					scope_id: "acct-1",
+				},
+			]),
+		);
+		vi.doUnmock("#/lib/category-rules");
+		vi.doUnmock("#/lib/classify");
+		vi.doUnmock("#/lib/moderation");
+		vi.doUnmock("#/lib/overseer");
 	});
 
 	it("emits backlog progress and worker completion events", async () => {

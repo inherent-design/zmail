@@ -1,5 +1,5 @@
 {
-	"schemaVersion": "message-label.v1",
+	"schemaVersion": "message-label.v2",
 	"nsfw": false,
 	"finance": {
 		"relevant": true,
@@ -8,11 +8,38 @@
 		"accountHint": "amex",
 		"purpose": "client lunch"
 	},
-	"social": {
+	"people": {
 		"personal": false,
 		"private": false,
-		"social": false,
+		"networking": false,
+		"community": false,
+		"recruiting": false,
 		"business": true
+	},
+	"commerce": {
+		"transactional": true,
+		"shopping": false,
+		"subscription": false,
+		"travel": false,
+		"legal": false
+	},
+	"knowledge": {
+		"course": false,
+		"resource": false,
+		"documentation": false,
+		"newsletter": false,
+		"research": false
+	},
+	"assets": {
+		"license": false,
+		"credential": false,
+		"account": false,
+		"document": false
+	},
+	"entertainment": {
+		"gaming": false,
+		"media": false,
+		"fandom": false
 	},
 	"risk": {
 		"businessSensitive": false,
@@ -20,12 +47,17 @@
 	},
 	"routing": {
 		"primaryBucket": "finance",
+		"secondaryBuckets": ["receipt", "shopping"],
 		"tags": ["receipt", "meals"]
 	},
 	"confidence": {
 		"overall": 1,
 		"finance": 1,
-		"social": 1,
+		"people": 1,
+		"commerce": 1,
+		"knowledge": 1,
+		"assets": 1,
+		"entertainment": 1,
 		"risk": 1
 	},
 	"explanation": "Manual override for review coverage."

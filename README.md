@@ -35,11 +35,23 @@ Open `http://localhost:3000/accounts/new` to connect the first Gmail account.
 
 A fresh local database starts empty. The OAuth callback completes at `/oauth/google/callback`, reuses the same account row when the same Gmail address reconnects, queues the initial bootstrap sync, ingests the newest mailbox window first, and lets the worker start the watcher after that bootstrap window succeeds. Older history then continues in the background through resumable backfill jobs.
 
-`/accounts/$accountId` is the main sync-control page. It exposes `Full sync`,
-`Delta sync`, `Reconcile`, `Classify backlog`, `Pause`, `Resume`, and
-`Disconnect`. `Full sync` is an idempotent bootstrap or resume control, not a
-destructive reset. `/messages/$messageId` exposes `Classify now`, and
-`/profiles/$accountId` exposes manual overseer rebuilds.
+`/accounts/$accountId` is the main sync-control page. It exposes explicit
+reconnect and disconnect behavior:
+
+- `Disconnect Gmail` removes local OAuth credentials and disables remote sync
+  while preserving the local corpus.
+- `Reconnect Gmail` is account-specific, starts from
+  `/accounts/$accountId/reconnect`, and refuses to silently rebind a different
+  Gmail identity.
+- `Delete local account` lives at `/accounts/$accountId/delete`, requires typed
+  email confirmation, removes mailbox-local account state, and leaves global
+  registry/taxonomy/import data intact.
+
+The same detail page also exposes `Full sync`, `Delta sync`, `Reconcile`,
+`Classify backlog`, `Classify finance backlog`, `Pause`, and `Resume` when the
+current connection state allows them. `Full sync` is an idempotent bootstrap or
+resume control, not a destructive reset. `/messages/$messageId` exposes
+`Classify now`, and `/profiles/$accountId` exposes manual overseer rebuilds.
 
 For a clean local reset, run:
 
@@ -69,6 +81,26 @@ pnpm db:migrate
 ```
 
 `pnpm reextract:parse-errors` is a supported recovery path only for fresh V2 DBs when a parser regression leaves messages in `parse_status = 'error'`. It is not a rescue path for old pre-secondary local DBs.
+
+`pnpm reextract:bad-bodies` repairs already-parsed rows whose stored primary
+body or snippet collapsed into placeholder values like `undefined`, `null`,
+`Plain text version not available`, or literal HTML. It preserves row identity
+and queues normal root reclassification for affected accounts.
+
+Operator-owned classification and registry config lives on disk under:
+
+- `data/operator/classification/root-taxonomy.yaml`
+- `data/operator/classification/finance-taxonomy.yaml`
+- `data/operator/classification/rules.yaml`
+- `data/operator/registry/identities.yaml`
+- `data/operator/registry/institutions.yaml`
+- `data/operator/registry/financial-accounts.yaml`
+- `data/operator/registry/sender-rules.yaml`
+
+Those YAML files are the operator source of truth. SQLite stores imported
+runtime caches. Missing files are auto-written with defaults or empty
+schema-valid documents on first runtime boot or config load, and existing files
+are never overwritten automatically.
 
 ## Secrets
 
@@ -136,6 +168,7 @@ pnpm db:reset
 pnpm db:reset:messages
 pnpm db:reset:jobs
 pnpm reextract:parse-errors
+pnpm reextract:bad-bodies
 pnpm test:unit
 pnpm coverage
 pnpm check

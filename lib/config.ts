@@ -50,7 +50,7 @@ export function rawEmlPath(accountId: string, remoteMessageId: string) {
 
 export const CLASSIFY_PROMPT_VERSION = "classify-email-v2";
 export const OVERSEER_PROMPT_VERSION = "overseer-profile-v1";
-export const MODERATION_PROMPT_VERSION = "moderate-email-v1";
+export const MODERATION_PROMPT_VERSION = "moderate-email-v2";
 export const FINANCE_INTEL_PROMPT_VERSION = "finance-intel-v2";
 export const FINANCE_KNOWLEDGE_PROMPT_VERSION = "finance-knowledge-merge-v1";
 

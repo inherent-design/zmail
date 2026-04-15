@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -91,6 +91,8 @@ describe("new server actions", () => {
 
 		expect(account).toBeTruthy();
 		expect(account?.label).toBe("Test Account");
+		expect(account?.has_oauth_token).toBe(false);
+		expect(account?.connection_state).toBe("disconnected");
 		expect(account?.message_count).toBe(1);
 		expect(account?.tombstone_count).toBe(1);
 	});
@@ -943,6 +945,10 @@ describe("new server actions", () => {
 		expect(result.account).toBeTruthy();
 		expect(result.account.id).toBe("acct-1");
 		expect(result.account.label).toBe("Test Account");
+		expect(result.account.has_oauth_token).toBe(false);
+		expect(result.account.connection_state).toBe("disconnected");
+		expect(result.has_oauth_token).toBe(false);
+		expect(result.connection_state).toBe("disconnected");
 		expect(result.syncState).toBeNull();
 		expect(result.recentJobs).toEqual([]);
 		expect(result.messageCount).toBe(0);
@@ -1645,6 +1651,125 @@ describe("new server actions", () => {
 		).rejects.toThrow();
 	});
 
+	it("loadAccountReconnectData returns account connection state and oauth readiness", async () => {
+		const runtime = await createTestRuntime();
+		process.env.GOOGLE_OAUTH_CLIENT_ID = "client-id";
+		process.env.GOOGLE_OAUTH_CLIENT_SECRET = "client-secret";
+		vi.resetModules();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-reconnect",
+			label: "Reconnect Me",
+			emailAddress: "reconnect@example.com",
+			syncEnabled: 0,
+			syncStatus: "needs_reconnect",
+		});
+
+		vi.doMock("#/lib/worker", () => ({
+			ensureWorkerStarted: vi.fn(),
+		}));
+
+		const actions = await runtime.importFresh<
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
+		const result = await actions.loadAccountReconnectData({
+			accountId: "acct-reconnect",
+		});
+
+		expect(result.account).toMatchObject({
+			id: "acct-reconnect",
+			label: "Reconnect Me",
+			email_address: "reconnect@example.com",
+			connection_state: "needs_reconnect",
+			has_oauth_token: false,
+		});
+		expect(result.oauthReady).toBe(true);
+		expect(result.connection_state).toBe("needs_reconnect");
+		expect(result.has_oauth_token).toBe(false);
+	});
+
+	it("loadAccountDeleteData returns counts and running account-scoped jobs", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-delete-loader",
+			label: "Delete Me",
+			emailAddress: "delete@example.com",
+		});
+		const messageId = await insertMessageRow(db, {
+			id: "msg-delete-loader",
+			accountId: "acct-delete-loader",
+		});
+		await db
+			.insertInto("message_sources")
+			.values({
+				id: "source-delete-loader",
+				message_id: messageId,
+				account_id: "acct-delete-loader",
+				remote_message_id: null,
+				remote_thread_id: null,
+				mailbox: null,
+				imap_uid: null,
+				uidvalidity: null,
+				raw_rfc822_path: null,
+				raw_sha256: null,
+				state: "tombstoned",
+				first_seen_at: "2026-01-01T00:00:00.000Z",
+				last_seen_at: "2026-01-01T00:00:00.000Z",
+				tombstoned_at: "2026-01-02T00:00:00.000Z",
+				updated_at: "2026-01-02T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("jobs")
+			.values({
+				id: "job-delete-loader",
+				kind: "sync_account_full",
+				scope_type: "account",
+				scope_id: "acct-delete-loader",
+				status: "running",
+				model: null,
+				prompt_version: null,
+				request_count: 0,
+				success_count: 0,
+				error_count: 0,
+				claimed_at: null,
+				lease_expires_at: null,
+				attempts: 1,
+				last_error: null,
+				created_at: "2026-01-03T00:00:00.000Z",
+				started_at: null,
+				finished_at: null,
+				meta_json: "{}",
+			})
+			.execute();
+
+		vi.doMock("#/lib/worker", () => ({
+			ensureWorkerStarted: vi.fn(),
+		}));
+
+		const actions = await runtime.importFresh<
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
+		const result = await actions.loadAccountDeleteData({
+			accountId: "acct-delete-loader",
+		});
+
+		expect(result.account).toMatchObject({
+			id: "acct-delete-loader",
+			email_address: "delete@example.com",
+		});
+		expect(result.messageCount).toBe(1);
+		expect(result.tombstoneCount).toBe(1);
+		expect(result.runningJobs).toEqual([
+			expect.objectContaining({
+				id: "job-delete-loader",
+				kind: "sync_account_full",
+				status: "running",
+			}),
+		]);
+	});
+
 	it("completeGoogleConnectCommand creates a new account, token file, sync state, and full sync job", async () => {
 		const runtime = await createTestRuntime();
 		await bootDb();
@@ -1981,8 +2106,10 @@ describe("new server actions", () => {
 				);
 			return {
 				...actual,
-				buildAuthUrl: vi.fn((label: string) => ({
-					url: `https://accounts.google.com/?label=${encodeURIComponent(label)}`,
+				buildAuthUrl: vi.fn((input: string | { label: string }) => ({
+					url: `https://accounts.google.com/?label=${encodeURIComponent(
+						typeof input === "string" ? input : input.label,
+					)}`,
 					state: "oauth-state",
 				})),
 			};
@@ -2005,9 +2132,11 @@ describe("new server actions", () => {
 		const runtime = await createTestRuntime();
 		const runMigrations = vi.fn();
 		const ensureWorkerStarted = vi.fn();
-		const buildAuthUrl = vi.fn((label: string) => ({
-			url: `https://accounts.google.com/?label=${encodeURIComponent(label)}`,
-			state: `state-${label}`,
+		const buildAuthUrl = vi.fn((input: string | { label: string }) => ({
+			url: `https://accounts.google.com/?label=${encodeURIComponent(
+				typeof input === "string" ? input : input.label,
+			)}`,
+			state: `state-${typeof input === "string" ? input : input.label}`,
 		}));
 
 		vi.doMock("#/lib/db", async () => {
@@ -2042,8 +2171,14 @@ describe("new server actions", () => {
 
 			expect(runMigrations).toHaveBeenCalledTimes(1);
 			expect(ensureWorkerStarted).toHaveBeenCalledTimes(1);
-			expect(buildAuthUrl).toHaveBeenNthCalledWith(1, "One");
-			expect(buildAuthUrl).toHaveBeenNthCalledWith(2, "Two");
+			expect(buildAuthUrl).toHaveBeenNthCalledWith(1, {
+				label: "One",
+				flow: "connect",
+			});
+			expect(buildAuthUrl).toHaveBeenNthCalledWith(2, {
+				label: "Two",
+				flow: "connect",
+			});
 		} finally {
 			vi.doUnmock("#/lib/db");
 			vi.doUnmock("#/lib/worker");
@@ -2060,8 +2195,10 @@ describe("new server actions", () => {
 			})
 			.mockImplementation(() => undefined);
 		const ensureWorkerStarted = vi.fn();
-		const buildAuthUrl = vi.fn((label: string) => ({
-			url: `https://accounts.google.com/?label=${encodeURIComponent(label)}`,
+		const buildAuthUrl = vi.fn((input: string | { label: string }) => ({
+			url: `https://accounts.google.com/?label=${encodeURIComponent(
+				typeof input === "string" ? input : input.label,
+			)}`,
 			state: "oauth-state",
 		}));
 
@@ -2111,6 +2248,171 @@ describe("new server actions", () => {
 			vi.doUnmock("#/lib/worker");
 			vi.doUnmock("#/lib/google-oauth");
 		}
+	});
+
+	it("beginGoogleReconnectCommand writes reconnect flow metadata for the target account", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-reconnect",
+			label: "Reconnect Me",
+			emailAddress: "reconnect@example.com",
+		});
+
+		vi.doMock("#/lib/worker", () => ({
+			ensureWorkerStarted: vi.fn(),
+		}));
+		vi.doMock("#/lib/google-oauth", async () => {
+			const actual =
+				await vi.importActual<typeof import("#/lib/google-oauth")>(
+					"#/lib/google-oauth",
+				);
+			return {
+				...actual,
+				buildAuthUrl: vi.fn((input: {
+					label: string;
+					flow?: "connect" | "reconnect";
+					accountId?: string;
+				}) => ({
+					url: `https://accounts.google.com/?label=${encodeURIComponent(input.label)}`,
+					state: "oauth-state",
+				})),
+			};
+		});
+
+		const actions = await runtime.importFresh<
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
+		const result = await actions.beginGoogleReconnectCommand({
+			accountId: "acct-reconnect",
+			label: "Renamed Gmail",
+		});
+
+		expect(result).toEqual({
+			url: "https://accounts.google.com/?label=Renamed%20Gmail",
+			state: "oauth-state",
+		});
+	});
+
+	it("completeGoogleConnectCommand reconnect flow updates the requested account in place", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-reconnect-flow",
+			label: "Old Label",
+			emailAddress: "reconnect@example.com",
+			syncEnabled: 0,
+			syncStatus: "needs_reconnect",
+		});
+
+		vi.doMock("#/lib/worker", () => ({
+			ensureWorkerStarted: vi.fn(),
+		}));
+		vi.doMock("#/lib/google-oauth", async () => {
+			const actual =
+				await vi.importActual<typeof import("#/lib/google-oauth")>(
+					"#/lib/google-oauth",
+				);
+			return {
+				...actual,
+				loadOAuthState: vi.fn(() => ({
+					state: "oauth-state",
+					codeVerifier: "code-verifier",
+					label: "Renamed Gmail",
+					flow: "reconnect" as const,
+					accountId: "acct-reconnect-flow",
+				})),
+				exchangeCode: vi.fn(async () => ({
+					access_token: "access-token",
+					refresh_token: "refresh-token",
+					expires_in: 3600,
+					token_type: "Bearer",
+					scope: "openid email https://mail.google.com/",
+				})),
+				fetchEmailIdentity: vi.fn(async () => "Reconnect@Example.com"),
+			};
+		});
+
+		const actions = await runtime.importFresh<
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
+		const result = await actions.completeGoogleConnectCommand({
+			code: "auth-code",
+			state: "oauth-state",
+		});
+
+		const rows = await db.selectFrom("accounts").selectAll().execute();
+		expect(rows).toHaveLength(1);
+		expect(result.accountId).toBe("acct-reconnect-flow");
+		expect(rows[0]).toMatchObject({
+			id: "acct-reconnect-flow",
+			label: "Renamed Gmail",
+			email_address: "reconnect@example.com",
+			sync_enabled: 1,
+			sync_status: "idle",
+		});
+	});
+
+	it("completeGoogleConnectCommand reconnect flow rejects the wrong Gmail identity without mutating the account", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-reconnect-mismatch",
+			label: "Old Label",
+			emailAddress: "expected@example.com",
+			syncEnabled: 0,
+			syncStatus: "needs_reconnect",
+		});
+
+		vi.doMock("#/lib/worker", () => ({
+			ensureWorkerStarted: vi.fn(),
+		}));
+		vi.doMock("#/lib/google-oauth", async () => {
+			const actual =
+				await vi.importActual<typeof import("#/lib/google-oauth")>(
+					"#/lib/google-oauth",
+				);
+			return {
+				...actual,
+				loadOAuthState: vi.fn(() => ({
+					state: "oauth-state",
+					codeVerifier: "code-verifier",
+					label: "Wrong Gmail",
+					flow: "reconnect" as const,
+					accountId: "acct-reconnect-mismatch",
+				})),
+				exchangeCode: vi.fn(async () => ({
+					access_token: "access-token",
+					refresh_token: "refresh-token",
+					expires_in: 3600,
+					token_type: "Bearer",
+					scope: "openid email https://mail.google.com/",
+				})),
+				fetchEmailIdentity: vi.fn(async () => "wrong@example.com"),
+			};
+		});
+
+		const actions = await runtime.importFresh<
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
+
+		await expect(
+			actions.completeGoogleConnectCommand({
+				code: "auth-code",
+				state: "oauth-state",
+			}),
+		).rejects.toThrow(/wrong Gmail identity/);
+
+		const account = await db
+			.selectFrom("accounts")
+			.select(["label", "sync_enabled", "sync_status"])
+			.where("id", "=", "acct-reconnect-mismatch")
+			.executeTakeFirstOrThrow();
+		expect(account).toEqual({
+			label: "Old Label",
+			sync_enabled: 0,
+			sync_status: "needs_reconnect",
+		});
 	});
 
 	it("queues account jobs idempotently with the expected kinds and metadata", async () => {
@@ -2362,6 +2664,254 @@ describe("new server actions", () => {
 		expect(deleteOAuthToken).toHaveBeenCalledWith("acct-1");
 	});
 
+	it("purgeAccountCommand blocks while account-scoped jobs are running", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-purge-blocked",
+			emailAddress: "blocked@example.com",
+		});
+		await db
+			.insertInto("jobs")
+			.values({
+				id: "job-purge-blocked",
+				kind: "sync_account_full",
+				scope_type: "account",
+				scope_id: "acct-purge-blocked",
+				status: "running",
+				model: null,
+				prompt_version: null,
+				request_count: 0,
+				success_count: 0,
+				error_count: 0,
+				claimed_at: null,
+				lease_expires_at: null,
+				attempts: 1,
+				last_error: null,
+				created_at: "2026-01-03T00:00:00.000Z",
+				started_at: null,
+				finished_at: null,
+				meta_json: "{}",
+			})
+			.execute();
+
+		vi.doMock("#/lib/worker", () => ({
+			ensureWorkerStarted: vi.fn(),
+		}));
+
+		const actions = await runtime.importFresh<
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
+
+		await expect(
+			actions.purgeAccountCommand({
+				accountId: "acct-purge-blocked",
+				confirmationEmail: "blocked@example.com",
+			}),
+		).rejects.toThrow(/blocked while jobs are running/);
+	});
+
+	it("purgeAccountCommand deletes the local account, storage, and account-scoped jobs, then queues finance rebuilds", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-purge",
+			emailAddress: "purge@example.com",
+		});
+		const messageId = await insertMessageRow(db, {
+			id: "msg-purge",
+			accountId: "acct-purge",
+		});
+		await db
+			.insertInto("message_sources")
+			.values({
+				id: "source-purge",
+				message_id: messageId,
+				account_id: "acct-purge",
+				remote_message_id: "remote-purge",
+				remote_thread_id: "thread-purge",
+				mailbox: "[Gmail]/All Mail",
+				imap_uid: 42,
+				uidvalidity: 99,
+				raw_rfc822_path: "data/accounts/acct-purge/raw/remote-purge.eml",
+				raw_sha256: "raw-purge",
+				state: "active",
+				first_seen_at: "2026-01-01T00:00:00.000Z",
+				last_seen_at: "2026-01-01T00:00:00.000Z",
+				tombstoned_at: null,
+				updated_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("account_sync_state")
+			.values({
+				account_id: "acct-purge",
+				uidvalidity: null,
+				latest_uid_cursor: null,
+				earliest_uid_cursor: null,
+				backfill_snapshot_uid: null,
+				backfill_next_uid: null,
+				last_bootstrap_started_at: null,
+				last_bootstrap_completed_at: null,
+				last_delta_sync_at: null,
+				last_reconcile_at: null,
+				last_backfill_sync_at: null,
+				backfill_completed_at: null,
+				last_idle_started_at: null,
+				last_idle_heartbeat_at: null,
+				watcher_status: "stopped",
+				consecutive_failures: 0,
+				backoff_until: null,
+				created_at: "2026-01-01T00:00:00.000Z",
+				updated_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("jobs")
+			.values([
+				{
+					id: "job-purge-queued",
+					kind: "sync_account_delta",
+					scope_type: "account",
+					scope_id: "acct-purge",
+					status: "queued",
+					model: null,
+					prompt_version: null,
+					request_count: 0,
+					success_count: 0,
+					error_count: 0,
+					claimed_at: null,
+					lease_expires_at: null,
+					attempts: 0,
+					last_error: null,
+					created_at: "2026-01-02T00:00:00.000Z",
+					started_at: null,
+					finished_at: null,
+					meta_json: "{}",
+				},
+				{
+					id: "job-unrelated",
+					kind: "sync_account_full",
+					scope_type: "account",
+					scope_id: "acct-other",
+					status: "queued",
+					model: null,
+					prompt_version: null,
+					request_count: 0,
+					success_count: 0,
+					error_count: 0,
+					claimed_at: null,
+					lease_expires_at: null,
+					attempts: 0,
+					last_error: null,
+					created_at: "2026-01-02T00:00:00.000Z",
+					started_at: null,
+					finished_at: null,
+					meta_json: "{}",
+				},
+			])
+			.execute();
+
+		const config =
+			await runtime.importFresh<typeof import("#/lib/config")>("#/lib/config");
+		mkdirSync(config.accountRawDir("acct-purge"), { recursive: true });
+		writeFileSync(
+			config.accountOAuthPath("acct-purge"),
+			JSON.stringify({
+				version: 1,
+				provider: "google",
+				emailAddress: "purge@example.com",
+				accessToken: "access-token",
+				refreshToken: "refresh-token",
+				expiresAt: "2099-01-01T00:00:00.000Z",
+				scope: ["openid", "email"],
+				tokenType: "Bearer",
+				updatedAt: "2026-01-01T00:00:00.000Z",
+			}),
+		);
+		writeFileSync(
+			`${config.accountRawDir("acct-purge")}/remote-purge.eml`,
+			"raw message",
+		);
+
+		const stopWatcher = vi.fn(async () => undefined);
+
+		vi.doMock("#/lib/worker", () => ({
+			ensureWorkerStarted: vi.fn(),
+		}));
+		vi.doMock("#/lib/watchers", () => ({
+			stopWatcher,
+			startWatcher: vi.fn(),
+		}));
+
+		const actions = await runtime.importFresh<
+			typeof import("#/app/server/actions.server")
+		>("#/app/server/actions.server");
+
+		await expect(
+			actions.purgeAccountCommand({
+				accountId: "acct-purge",
+				confirmationEmail: "PURGE@example.com",
+			}),
+		).resolves.toEqual({ status: "deleted" });
+
+		expect(stopWatcher).toHaveBeenCalledWith("acct-purge");
+		expect(existsSync(config.accountDir("acct-purge"))).toBe(false);
+		expect(
+			await db
+				.selectFrom("accounts")
+				.select(["id"])
+				.where("id", "=", "acct-purge")
+				.executeTakeFirst(),
+		).toBeUndefined();
+		expect(
+			await db
+				.selectFrom("messages")
+				.select(["id"])
+				.where("account_id", "=", "acct-purge")
+				.execute(),
+		).toEqual([]);
+		expect(
+			await db
+				.selectFrom("jobs")
+				.select(["id"])
+				.where("scope_id", "=", "acct-purge")
+				.execute(),
+		).toEqual([]);
+		expect(
+			await db
+				.selectFrom("jobs")
+				.select(["id"])
+				.where("id", "=", "job-unrelated")
+				.executeTakeFirst(),
+		).toEqual({ id: "job-unrelated" });
+		expect(
+			await db
+				.selectFrom("jobs")
+				.select(["kind", "scope_type", "scope_id", "status"])
+				.where("scope_type", "=", "system")
+				.where("kind", "in", [
+					"rebuild_finance_knowledge",
+					"rebuild_finance_rollups",
+				])
+				.orderBy("kind", "asc")
+				.execute(),
+		).toEqual([
+			{
+				kind: "rebuild_finance_knowledge",
+				scope_type: "system",
+				scope_id: "finance",
+				status: "queued",
+			},
+			{
+				kind: "rebuild_finance_rollups",
+				scope_type: "system",
+				scope_id: "finance_rollups",
+				status: "queued",
+			},
+		]);
+	});
+
 	it("resume restores backfilling state and requeues pending historical work", async () => {
 		const runtime = await createTestRuntime();
 		const { db } = await bootDb();
@@ -2570,8 +3120,10 @@ describe("new server actions", () => {
 				);
 			return {
 				...actual,
-				buildAuthUrl: vi.fn((label: string) => ({
-					url: `https://accounts.google.com/?label=${encodeURIComponent(label)}`,
+				buildAuthUrl: vi.fn((input: string | { label: string }) => ({
+					url: `https://accounts.google.com/?label=${encodeURIComponent(
+						typeof input === "string" ? input : input.label,
+					)}`,
 					state: "oauth-state",
 				})),
 				loadOAuthState: vi.fn(() => ({

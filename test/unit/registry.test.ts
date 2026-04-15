@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -727,5 +728,28 @@ describe("registry", () => {
 		expect(matched.institutions).toEqual([]);
 		expect(matched.financialAccounts).toEqual([]);
 		expect(matched.senderRules).toEqual([]);
+	});
+
+	it("materializes empty registry yaml files on first load", async () => {
+		const runtime = await createTestRuntime();
+		await bootDb({ seedDefaultAccount: true });
+
+		const registry =
+			await runtime.importFresh<typeof import("#/lib/registry")>(
+				"#/lib/registry",
+			);
+		const snapshot = await registry.loadOperatorRegistry();
+		const registryDir = join(runtime.dataDir, "operator", "registry");
+
+		expect(snapshot.identities).toEqual([]);
+		expect(snapshot.institutions).toEqual([]);
+		expect(snapshot.financialAccounts).toEqual([]);
+		expect(snapshot.senderRules).toEqual([]);
+		expect(existsSync(join(registryDir, "identities.yaml"))).toBe(true);
+		expect(existsSync(join(registryDir, "institutions.yaml"))).toBe(true);
+		expect(existsSync(join(registryDir, "financial-accounts.yaml"))).toBe(
+			true,
+		);
+		expect(existsSync(join(registryDir, "sender-rules.yaml"))).toBe(true);
 	});
 });

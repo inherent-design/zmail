@@ -1,3 +1,5 @@
+import { rmSync } from "node:fs";
+
 import {
 	APP_CONFIG,
 	CLASSIFY_PROMPT_VERSION,
@@ -6,6 +8,7 @@ import {
 	OVERSEER_PROMPT_VERSION,
 } from "#/lib/config";
 import { type LogFields, type LogTrace, startTrace } from "#/lib/log";
+import type { AccountConnectionState } from "#/lib/schemas";
 
 let bootServerOnce: Promise<typeof import("#/lib/db")> | null = null;
 
@@ -105,10 +108,16 @@ async function loadFinanceCoverageSummary(input: {
 		.select(["message_labels.label_json"]);
 	let headQuery = input.db
 		.selectFrom("message_secondary_heads")
+		.leftJoin(
+			"message_secondary_results",
+			"message_secondary_results.id",
+			"message_secondary_heads.secondary_result_id",
+		)
 		.innerJoin("messages", "messages.id", "message_secondary_heads.message_id")
 		.select([
 			"message_secondary_heads.status",
 			"message_secondary_heads.message_id",
+			"message_secondary_results.schema_version as result_schema_version",
 		])
 		.where("message_secondary_heads.classifier_key", "=", "finance_intel");
 	let evidenceQuery = input.db
@@ -142,6 +151,7 @@ async function loadFinanceCoverageSummary(input: {
 	}, 0);
 
 	const statusCounts = createFinanceStatusCounts();
+	let financeV2HeadCount = 0;
 	for (const head of headRows) {
 		switch (head.status) {
 			case "ready":
@@ -159,6 +169,9 @@ async function loadFinanceCoverageSummary(input: {
 			default:
 				break;
 		}
+		if (head.result_schema_version === "finance-intel.v2") {
+			financeV2HeadCount += 1;
+		}
 	}
 
 	const eventCandidateIds = new Set<string>();
@@ -175,6 +188,7 @@ async function loadFinanceCoverageSummary(input: {
 	return {
 		rootFinanceRelevantCount,
 		totalHeads: headRows.length,
+		financeV2HeadCount,
 		readyCount: statusCounts.ready,
 		reviewCount: statusCounts.review,
 		staleCount: statusCounts.stale,
@@ -184,14 +198,103 @@ async function loadFinanceCoverageSummary(input: {
 	};
 }
 
+async function loadOpenJobCounts(
+	db: Awaited<ReturnType<typeof import("#/lib/db")["getDb"]>>,
+	kinds: string[],
+) {
+	const rows = await db
+		.selectFrom("jobs")
+		.select(["kind", "status", (eb) => eb.fn.countAll<number>().as("count")])
+		.where("kind", "in", kinds)
+		.where("status", "in", ["queued", "running"])
+		.groupBy(["kind", "status"])
+		.execute();
+
+	const counts = Object.fromEntries(
+		kinds.map((kind) => [kind, { queued: 0, running: 0 }]),
+	) as Record<string, { queued: number; running: number }>;
+
+	for (const row of rows) {
+		const current = counts[row.kind] ?? { queued: 0, running: 0 };
+		if (row.status === "queued" || row.status === "running") {
+			current[row.status] = Number(row.count);
+		}
+		counts[row.kind] = current;
+	}
+
+	return counts;
+}
+
+async function loadGoogleOAuthReadiness() {
+	const [{ isOAuthConfigured, missingOAuthVars }, { GOOGLE_OAUTH }] =
+		await Promise.all([
+			import("#/lib/google-oauth"),
+			import("#/lib/config"),
+		]);
+
+	return {
+		oauthReady: isOAuthConfigured(),
+		missingVars: missingOAuthVars(),
+		redirectUrl: GOOGLE_OAUTH.redirectUrl,
+	};
+}
+
+export function deriveAccountConnectionState(
+	account: {
+		sync_enabled: number;
+		sync_status: string;
+	},
+	hasOAuthToken: boolean,
+): AccountConnectionState {
+	if (account.sync_status === "needs_reconnect") {
+		return "needs_reconnect";
+	}
+	if (!hasOAuthToken) {
+		return "disconnected";
+	}
+	if (account.sync_status === "paused" || account.sync_enabled === 0) {
+		return "paused";
+	}
+	return "connected";
+}
+
+async function loadAccountConnectionState(accountId: string) {
+	const [{ getDb }, { readOAuthToken }] = await Promise.all([
+		bootServer(),
+		import("#/lib/google-oauth"),
+	]);
+	const db = getDb();
+	const account = await db
+		.selectFrom("accounts")
+		.selectAll()
+		.where("id", "=", accountId)
+		.executeTakeFirstOrThrow();
+	const hasOAuthToken = Boolean(readOAuthToken(account.id));
+	return {
+		db,
+		account,
+		hasOAuthToken,
+		connectionState: deriveAccountConnectionState(account, hasOAuthToken),
+	};
+}
+
 async function bootServer() {
 	if (!bootServerOnce) {
 		bootServerOnce = (async () => {
-			const [{ ensureWorkerStarted }, dbModule] = await Promise.all([
+			const [
+				{ ensureWorkerStarted },
+				dbModule,
+				{ ensureClassificationConfigFiles },
+				{ ensureOperatorRegistryFiles },
+			] = await Promise.all([
 				import("#/lib/worker"),
 				import("#/lib/db"),
+				import("#/lib/category-rules"),
+				import("#/lib/registry"),
 			]);
 			dbModule.runMigrations();
+			ensureClassificationConfigFiles();
+			ensureOperatorRegistryFiles();
 			ensureWorkerStarted();
 			return dbModule;
 		})().catch((error) => {
@@ -768,7 +871,10 @@ export async function loadFinanceData(
 		kind: "loader",
 		run: async () => {
 			const { getDb, safeJsonParse } = await bootServer();
-			const [{ loadCombinedFinanceLedger }, { rebuildFinanceRollups }] =
+			const [
+				{ buildFinanceRollupView, loadCombinedFinanceLedger },
+				{ rebuildFinanceRollups },
+			] =
 				await Promise.all([
 					import("#/lib/finance-rollups"),
 					import("#/lib/finance-rollups"),
@@ -777,6 +883,7 @@ export async function loadFinanceData(
 			const [
 				registry,
 				coverage,
+				jobCounts,
 				eventRows,
 				documentRows,
 				evidenceRows,
@@ -789,6 +896,11 @@ export async function loadFinanceData(
 			] = await Promise.all([
 				loadRegistryState(db, safeJsonParse),
 				loadFinanceCoverageSummary({ db, safeJsonParse }),
+				loadOpenJobCounts(db, [
+					"classify_finance_backlog",
+					"rebuild_finance_knowledge",
+					"rebuild_finance_rollups",
+				]),
 				db
 					.selectFrom("finance_event_candidates")
 					.selectAll()
@@ -841,7 +953,27 @@ export async function loadFinanceData(
 					.execute(),
 				db
 					.selectFrom("finance_import_documents")
-					.selectAll()
+					.innerJoin(
+						"finance_import_runs",
+						"finance_import_runs.id",
+						"finance_import_documents.import_run_id",
+					)
+					.select([
+						"finance_import_documents.id",
+						"finance_import_documents.document_type",
+						"finance_import_documents.issuer",
+						"finance_import_documents.external_id",
+						"finance_import_documents.statement_period_start",
+						"finance_import_documents.statement_period_end",
+						"finance_import_documents.due_at",
+						"finance_import_documents.tax_year",
+						"finance_import_documents.owner_identity_hint",
+						"finance_import_documents.financial_account_hint",
+						"finance_import_documents.institution_hint",
+						"finance_import_documents.evidence_text",
+						"finance_import_documents.created_at",
+						"finance_import_runs.source_kind as source_kind",
+					])
 					.orderBy("created_at", "desc")
 					.limit(100)
 					.execute(),
@@ -896,6 +1028,20 @@ export async function loadFinanceData(
 			).sort((left, right) => right - left);
 			const selectedYear =
 				input.year ?? availableYears[0] ?? new Date().getUTCFullYear();
+			const yearString = String(selectedYear);
+
+			const matchesSelectedYear = (value: {
+				statement_period_end: string | null;
+				tax_year?: number | null;
+			}) => {
+				if (value.statement_period_end) {
+					return value.statement_period_end.startsWith(yearString);
+				}
+				if (value.tax_year !== null && value.tax_year !== undefined) {
+					return value.tax_year === selectedYear;
+				}
+				return true;
+			};
 
 			const filteredLedger = ledger.filter((entry) => {
 				if (entry.year !== selectedYear) {
@@ -922,34 +1068,75 @@ export async function loadFinanceData(
 				return true;
 			});
 
-			const summary = filteredLedger.reduce(
-				(acc, entry) => {
-					const amount = entry.amountMinor ?? 0;
-					if (entry.direction === "income") {
-						acc.inflowMinor += amount;
-						acc.netMinor += amount;
-					}
-					if (entry.direction === "expense") {
-						acc.outflowMinor += amount;
-						acc.netMinor -= amount;
-					}
-					acc.extractedTransactionCount += 1;
-					if (entry.primaryCategory === "uncategorized") {
-						acc.uncategorizedCount += 1;
-					}
-					return acc;
-				},
-				{
-					inflowMinor: 0,
-					outflowMinor: 0,
-					netMinor: 0,
-					importedStatementCount: importDocumentRows.filter((row) =>
-						row.statement_period_end?.startsWith(String(selectedYear)),
-					).length,
-					extractedTransactionCount: 0,
-					uncategorizedCount: 0,
-				},
+			const filteredImportDocuments = importDocumentRows.filter((row) => {
+				if (!matchesSelectedYear(row)) {
+					return false;
+				}
+				if (input.accountId) {
+					return false;
+				}
+				if (input.sourceKind && row.source_kind !== input.sourceKind) {
+					return false;
+				}
+				if (
+					input.institutionId &&
+					row.institution_hint !== input.institutionId
+				) {
+					return false;
+				}
+				if (
+					input.ownerIdentityId &&
+					row.owner_identity_hint !== input.ownerIdentityId
+				) {
+					return false;
+				}
+				return true;
+			});
+			const filteredSuggestionRows = suggestionRows.filter((row) =>
+				input.sourceKind ? row.source_kind === input.sourceKind : true,
 			);
+			const hasGranularFilters = Boolean(
+				input.accountId ||
+					input.institutionId ||
+					input.ownerIdentityId ||
+					input.sourceKind,
+			);
+			const derivedRollups = buildFinanceRollupView({
+				ledger: filteredLedger,
+				importDocuments: filteredImportDocuments.map((row) => ({
+					sourceKind: row.source_kind,
+					statementPeriodEnd: row.statement_period_end,
+				})),
+			});
+			const summary = derivedRollups.summary;
+			const yearLedger = ledger.filter((entry) => entry.year === selectedYear);
+			const yearDocuments = importDocumentRows.filter(matchesSelectedYear);
+			const institutionIds = Array.from(
+				new Set(
+					[
+						...yearLedger.map((entry) => entry.institutionId),
+						...yearDocuments.map((row) => row.institution_hint),
+					].filter((value): value is string => Boolean(value)),
+				),
+			).sort((left, right) => left.localeCompare(right));
+			const ownerIdentityIds = Array.from(
+				new Set(
+					[
+						...yearLedger.map((entry) => entry.ownerIdentityId),
+						...yearDocuments.map((row) => row.owner_identity_hint),
+					].filter((value): value is string => Boolean(value)),
+				),
+			).sort((left, right) => left.localeCompare(right));
+			const sourceKinds = Array.from(
+				new Set(
+					[
+						...yearLedger.map((entry) => entry.sourceKind),
+						...yearDocuments.map((row) => row.source_kind),
+						...suggestionRows.map((row) => row.source_kind),
+						input.sourceKind ?? null,
+					].filter((value): value is string => Boolean(value)),
+				),
+			).sort((left, right) => left.localeCompare(right));
 
 			const evidenceByCandidate = new Map<
 				string,
@@ -993,47 +1180,82 @@ export async function loadFinanceData(
 					institutionId: input.institutionId ?? null,
 					ownerIdentityId: input.ownerIdentityId ?? null,
 					sourceKind: input.sourceKind ?? null,
-					accounts: accountRows.map((row) => ({
-						id: row.id,
-						label: row.label,
+					accounts: accountRows.map((row) => ({ id: row.id, label: row.label })),
+					institutions: institutionIds.map((id) => ({
+						id,
+						label: id,
 					})),
+					ownerIdentities: ownerIdentityIds.map((id) => ({
+						id,
+						label: id,
+					})),
+					sourceKinds,
 				},
 				registry,
 				coverage,
+				pipelineStatus: {
+					rootFinanceRelevantCount: coverage.rootFinanceRelevantCount,
+					financeHeadCount: coverage.totalHeads,
+					financeV2HeadCount: coverage.financeV2HeadCount,
+					knowledgeMaterialized:
+						coverage.eventCandidateCount > 0 ||
+						coverage.documentCandidateCount > 0,
+					registryImportedAt: registry.importedAt,
+					jobs: jobCounts,
+				},
 				summary,
-				rollups: refreshedRollupRows
-					.filter((row) => row.year === selectedYear)
-					.map((row) => ({
-						year: row.year,
-						sourceKind: row.source_kind,
-						primaryCategory: row.primary_category,
-						inflowMinor: row.inflow_minor,
-						outflowMinor: row.outflow_minor,
-						netMinor: row.net_minor,
-						transactionCount: row.transaction_count,
-						importedStatementCount: row.imported_statement_count,
-						extractedTransactionCount: row.extracted_transaction_count,
-						uncategorizedCount: row.uncategorized_count,
-					})),
-				subcategoryRollups: refreshedSubcategoryRows
-					.filter((row) => row.year === selectedYear)
-					.map((row) => ({
-						year: row.year,
-						sourceKind: row.source_kind,
-						primaryCategory: row.primary_category,
-						secondaryCategory: row.secondary_category,
-						inflowMinor: row.inflow_minor,
-						outflowMinor: row.outflow_minor,
-						netMinor: row.net_minor,
-						transactionCount: row.transaction_count,
-					})),
+				rollups: (hasGranularFilters
+					? derivedRollups.rollups
+					: refreshedRollupRows
+							.filter((row) => row.year === selectedYear)
+							.map((row) => ({
+								year: row.year,
+								sourceKind: row.source_kind,
+								primaryCategory: row.primary_category,
+								inflowMinor: row.inflow_minor,
+								outflowMinor: row.outflow_minor,
+								netMinor: row.net_minor,
+								transactionCount: row.transaction_count,
+								importedStatementCount: row.imported_statement_count,
+								extractedTransactionCount: row.extracted_transaction_count,
+								uncategorizedCount: row.uncategorized_count,
+							}))) as Array<{
+					year: number;
+					sourceKind: string;
+					primaryCategory: string;
+					inflowMinor: number;
+					outflowMinor: number;
+					netMinor: number;
+					transactionCount: number;
+					importedStatementCount: number;
+					extractedTransactionCount: number;
+					uncategorizedCount: number;
+				}>,
+				subcategoryRollups: (hasGranularFilters
+					? derivedRollups.subcategoryRollups
+					: refreshedSubcategoryRows
+							.filter((row) => row.year === selectedYear)
+							.map((row) => ({
+								year: row.year,
+								sourceKind: row.source_kind,
+								primaryCategory: row.primary_category,
+								secondaryCategory: row.secondary_category,
+								inflowMinor: row.inflow_minor,
+								outflowMinor: row.outflow_minor,
+								netMinor: row.net_minor,
+								transactionCount: row.transaction_count,
+							}))) as Array<{
+					year: number;
+					sourceKind: string;
+					primaryCategory: string;
+					secondaryCategory: string;
+					inflowMinor: number;
+					outflowMinor: number;
+					netMinor: number;
+					transactionCount: number;
+				}>,
 				ledgerPreview: filteredLedger.slice(0, 100),
-				importedDocuments: importDocumentRows
-					.filter(
-						(row) =>
-							row.statement_period_end?.startsWith(String(selectedYear)) ??
-							true,
-					)
+				importedDocuments: filteredImportDocuments
 					.slice(0, 50)
 					.map((row) => ({
 						id: row.id,
@@ -1049,7 +1271,7 @@ export async function loadFinanceData(
 						institutionHint: row.institution_hint,
 						evidenceText: row.evidence_text,
 					})),
-				registrySuggestions: suggestionRows.map((row) => ({
+				registrySuggestions: filteredSuggestionRows.map((row) => ({
 					id: row.id,
 					entityKind: row.entity_kind,
 					canonicalKey: row.canonical_key,
@@ -1310,7 +1532,10 @@ export async function loadAccountsData() {
 		operation: "loadAccountsData",
 		kind: "loader",
 		run: async () => {
-			const { getDb } = await bootServer();
+			const [{ getDb }, { readOAuthToken }] = await Promise.all([
+				bootServer(),
+				import("#/lib/google-oauth"),
+			]);
 			const db = getDb();
 			const [accounts, messageCounts, tombstoneCounts] = await Promise.all([
 				db.selectFrom("accounts").selectAll().orderBy("label").execute(),
@@ -1335,11 +1560,19 @@ export async function loadAccountsData() {
 			);
 
 			return {
-				accounts: accounts.map((account) => ({
-					...account,
-					message_count: messageCountsByAccount.get(account.id) ?? 0,
-					tombstone_count: tombstoneCountsByAccount.get(account.id) ?? 0,
-				})),
+				accounts: accounts.map((account) => {
+					const hasOAuthToken = Boolean(readOAuthToken(account.id));
+					return {
+						...account,
+						has_oauth_token: hasOAuthToken,
+						connection_state: deriveAccountConnectionState(
+							account,
+							hasOAuthToken,
+						),
+						message_count: messageCountsByAccount.get(account.id) ?? 0,
+						tombstone_count: tombstoneCountsByAccount.get(account.id) ?? 0,
+					};
+				}),
 			};
 		},
 		summarize: (result) => ({
@@ -1354,16 +1587,7 @@ export async function loadAccountNewData() {
 		kind: "loader",
 		run: async () => {
 			await bootServer();
-			const [{ isOAuthConfigured, missingOAuthVars }, { GOOGLE_OAUTH }] =
-				await Promise.all([
-					import("#/lib/google-oauth"),
-					import("#/lib/config"),
-				]);
-			return {
-				oauthReady: isOAuthConfigured(),
-				missingVars: missingOAuthVars(),
-				redirectUrl: GOOGLE_OAUTH.redirectUrl,
-			};
+			return loadGoogleOAuthReadiness();
 		},
 		summarize: (result) => ({
 			oauth_ready: result.oauthReady,
@@ -1380,21 +1604,18 @@ export async function loadAccountDetailData(input: { accountId: string }) {
 			account_id: input.accountId,
 		},
 		run: async () => {
-			const { getDb, safeJsonParse } = await bootServer();
-			const db = getDb();
+			const [{ safeJsonParse }, accountState] = await Promise.all([
+				bootServer(),
+				loadAccountConnectionState(input.accountId),
+			]);
+			const db = accountState.db;
 			const [
-				account,
 				syncState,
 				recentJobs,
 				msgCount,
 				tombCount,
 				financeCoverage,
 			] = await Promise.all([
-				db
-					.selectFrom("accounts")
-					.selectAll()
-					.where("id", "=", input.accountId)
-					.executeTakeFirstOrThrow(),
 				db
 					.selectFrom("account_sync_state")
 					.selectAll()
@@ -1427,7 +1648,13 @@ export async function loadAccountDetailData(input: { accountId: string }) {
 			]);
 
 			return {
-				account,
+				account: {
+					...accountState.account,
+					has_oauth_token: accountState.hasOAuthToken,
+					connection_state: accountState.connectionState,
+				},
+				has_oauth_token: accountState.hasOAuthToken,
+				connection_state: accountState.connectionState,
 				financeCoverage,
 				syncState: syncState ?? null,
 				recentJobs,
@@ -1445,6 +1672,93 @@ export async function loadAccountDetailData(input: { accountId: string }) {
 	});
 }
 
+export async function loadAccountReconnectData(input: { accountId: string }) {
+	return runLoggedAction({
+		operation: "loadAccountReconnectData",
+		kind: "loader",
+		context: {
+			account_id: input.accountId,
+		},
+		run: async () => {
+			const [accountState, oauthReadiness] = await Promise.all([
+				loadAccountConnectionState(input.accountId),
+				loadGoogleOAuthReadiness(),
+			]);
+
+			return {
+				account: {
+					...accountState.account,
+					has_oauth_token: accountState.hasOAuthToken,
+					connection_state: accountState.connectionState,
+				},
+				has_oauth_token: accountState.hasOAuthToken,
+				connection_state: accountState.connectionState,
+				...oauthReadiness,
+			};
+		},
+		summarize: (result) => ({
+			connection_state: result.connection_state,
+			has_oauth_token: result.has_oauth_token,
+			oauth_ready: result.oauthReady,
+		}),
+	});
+}
+
+export async function loadAccountDeleteData(input: { accountId: string }) {
+	return runLoggedAction({
+		operation: "loadAccountDeleteData",
+		kind: "loader",
+		context: {
+			account_id: input.accountId,
+		},
+		run: async () => {
+			const accountState = await loadAccountConnectionState(input.accountId);
+			const db = accountState.db;
+			const [msgCount, tombCount, runningJobs] = await Promise.all([
+				db
+					.selectFrom("messages")
+					.select((eb) => eb.fn.countAll<number>().as("count"))
+					.where("account_id", "=", input.accountId)
+					.executeTakeFirstOrThrow(),
+				db
+					.selectFrom("message_sources")
+					.select((eb) => eb.fn.countAll<number>().as("count"))
+					.where("account_id", "=", input.accountId)
+					.where("state", "=", "tombstoned")
+					.executeTakeFirstOrThrow(),
+				db
+					.selectFrom("jobs")
+					.select(["id", "kind", "status", "created_at"])
+					.where("scope_type", "=", "account")
+					.where("scope_id", "=", input.accountId)
+					.where("status", "=", "running")
+					.orderBy("created_at", "desc")
+					.limit(10)
+					.execute(),
+			]);
+
+			return {
+				account: {
+					...accountState.account,
+					has_oauth_token: accountState.hasOAuthToken,
+					connection_state: accountState.connectionState,
+				},
+				has_oauth_token: accountState.hasOAuthToken,
+				connection_state: accountState.connectionState,
+				messageCount: Number(msgCount.count),
+				tombstoneCount: Number(tombCount.count),
+				runningJobs,
+			};
+		},
+		summarize: (result) => ({
+			connection_state: result.connection_state,
+			message_count: result.messageCount,
+			tombstone_count: result.tombstoneCount,
+			running_jobs: result.runningJobs.length,
+		}),
+	});
+}
+
 export async function beginGoogleConnectCommand(input: { label: string }) {
 	return runLoggedAction({
 		operation: "beginGoogleConnectCommand",
@@ -1452,7 +1766,38 @@ export async function beginGoogleConnectCommand(input: { label: string }) {
 		run: async () => {
 			await bootServer();
 			const { buildAuthUrl } = await import("#/lib/google-oauth");
-			return buildAuthUrl(input.label);
+			return buildAuthUrl({
+				label: input.label,
+				flow: "connect",
+			});
+		},
+		summarize: () => ({
+			oauth_redirect_prepared: true,
+		}),
+	});
+}
+
+export async function beginGoogleReconnectCommand(input: {
+	accountId: string;
+	label: string;
+}) {
+	return runLoggedAction({
+		operation: "beginGoogleReconnectCommand",
+		kind: "command",
+		context: {
+			account_id: input.accountId,
+		},
+		run: async () => {
+			const { account } = await loadAccountConnectionState(input.accountId);
+			if (account.provider_kind !== "gmail") {
+				throw new Error("Only Gmail accounts can be reconnected.");
+			}
+			const { buildAuthUrl } = await import("#/lib/google-oauth");
+			return buildAuthUrl({
+				label: input.label,
+				flow: "reconnect",
+				accountId: input.accountId,
+			});
 		},
 		summarize: () => ({
 			oauth_redirect_prepared: true,
@@ -1491,50 +1836,92 @@ export async function completeGoogleConnectCommand(input: {
 				.toLowerCase();
 			const record = oauth.buildOAuthRecord(normalizedEmail, tokens);
 			const now = nowIso();
+			const flow = oauthState.flow ?? "connect";
 
-			const existingAccount = await db
-				.selectFrom("accounts")
-				.select(["id", "selected_mailbox"])
-				.where("email_address", "=", normalizedEmail)
-				.executeTakeFirst();
-			const selectedMailbox =
-				existingAccount?.selected_mailbox?.trim() || "[Gmail]/All Mail";
-			await db
-				.insertInto("accounts")
-				.values({
-					id: existingAccount?.id ?? crypto.randomUUID(),
-					label: oauthState.label,
-					email_address: normalizedEmail,
-					provider_kind: "gmail",
-					sync_enabled: 1,
-					sync_status: "idle",
-					source_truth: "corpus_mirror",
-					selected_mailbox: selectedMailbox,
-					last_synced_at: null,
-					last_error: null,
-					created_at: now,
-					updated_at: now,
-				})
-				.onConflict((oc) =>
-					oc.column("email_address").doUpdateSet({
+			let accountId: string;
+			if (flow === "reconnect") {
+				if (!oauthState.accountId) {
+					throw new Error("Invalid reconnect OAuth state");
+				}
+				const reconnectAccount = await db
+					.selectFrom("accounts")
+					.select([
+						"id",
+						"email_address",
+						"provider_kind",
+						"selected_mailbox",
+					])
+					.where("id", "=", oauthState.accountId)
+					.executeTakeFirst();
+				if (!reconnectAccount || reconnectAccount.provider_kind !== "gmail") {
+					throw new Error("The selected Gmail account no longer exists.");
+				}
+				if (
+					reconnectAccount.email_address.trim().toLowerCase() !== normalizedEmail
+				) {
+					throw new Error(
+						"Reconnect failed: you chose the wrong Gmail identity during reconnect.",
+					);
+				}
+
+				await db
+					.updateTable("accounts")
+					.set({
 						label: oauthState.label,
+						sync_enabled: 1,
+						sync_status: "idle",
+						last_error: null,
+						updated_at: now,
+					})
+					.where("id", "=", reconnectAccount.id)
+					.execute();
+
+				accountId = reconnectAccount.id;
+			} else {
+				const existingAccount = await db
+					.selectFrom("accounts")
+					.select(["id", "selected_mailbox"])
+					.where("email_address", "=", normalizedEmail)
+					.executeTakeFirst();
+				const selectedMailbox =
+					existingAccount?.selected_mailbox?.trim() || "[Gmail]/All Mail";
+				await db
+					.insertInto("accounts")
+					.values({
+						id: existingAccount?.id ?? crypto.randomUUID(),
+						label: oauthState.label,
+						email_address: normalizedEmail,
 						provider_kind: "gmail",
 						sync_enabled: 1,
 						sync_status: "idle",
 						source_truth: "corpus_mirror",
 						selected_mailbox: selectedMailbox,
+						last_synced_at: null,
 						last_error: null,
+						created_at: now,
 						updated_at: now,
-					}),
-				)
-				.execute();
+					})
+					.onConflict((oc) =>
+						oc.column("email_address").doUpdateSet({
+							label: oauthState.label,
+							provider_kind: "gmail",
+							sync_enabled: 1,
+							sync_status: "idle",
+							source_truth: "corpus_mirror",
+							selected_mailbox: selectedMailbox,
+							last_error: null,
+							updated_at: now,
+						}),
+					)
+					.execute();
 
-			const account = await db
-				.selectFrom("accounts")
-				.select(["id"])
-				.where("email_address", "=", normalizedEmail)
-				.executeTakeFirstOrThrow();
-			const accountId = account.id;
+				const account = await db
+					.selectFrom("accounts")
+					.select(["id"])
+					.where("email_address", "=", normalizedEmail)
+					.executeTakeFirstOrThrow();
+				accountId = account.id;
+			}
 			trace.add({
 				account_id: accountId,
 			});
@@ -1950,6 +2337,75 @@ export async function disconnectAccountCommand(input: { accountId: string }) {
 				.where("id", "=", input.accountId)
 				.execute();
 			return { status: "disconnected" as const };
+		},
+		summarize: (result) => ({
+			status: result.status,
+		}),
+	});
+}
+
+export async function purgeAccountCommand(input: {
+	accountId: string;
+	confirmationEmail: string;
+}) {
+	return runLoggedAction({
+		operation: "purgeAccountCommand",
+		kind: "command",
+		context: {
+			account_id: input.accountId,
+		},
+		run: async () => {
+			const { db, account } = await loadAccountConnectionState(input.accountId);
+			if (
+				input.confirmationEmail.trim().toLowerCase() !==
+				account.email_address.trim().toLowerCase()
+			) {
+				throw new Error(
+					"Confirmation email must match the account email before deletion.",
+				);
+			}
+
+			const runningJobs = await db
+				.selectFrom("jobs")
+				.select(["kind"])
+				.where("scope_type", "=", "account")
+				.where("scope_id", "=", input.accountId)
+				.where("status", "=", "running")
+				.orderBy("created_at", "desc")
+				.execute();
+			if (runningJobs.length > 0) {
+				throw new Error(
+					`Account purge is blocked while jobs are running: ${runningJobs
+						.map((job) => job.kind)
+						.join(", ")}`,
+				);
+			}
+
+			const [{ stopWatcher }, { accountDir, accountOAuthPath, accountRawDir }] =
+				await Promise.all([
+					import("#/lib/watchers"),
+					import("#/lib/config"),
+				]);
+			await stopWatcher(input.accountId);
+
+			rmSync(accountOAuthPath(input.accountId), { force: true });
+			rmSync(accountRawDir(input.accountId), { recursive: true, force: true });
+			rmSync(accountDir(input.accountId), { recursive: true, force: true });
+
+			await db.transaction().execute(async (trx) => {
+				await trx
+					.deleteFrom("jobs")
+					.where("scope_type", "=", "account")
+					.where("scope_id", "=", input.accountId)
+					.execute();
+				await trx
+					.deleteFrom("accounts")
+					.where("id", "=", input.accountId)
+					.executeTakeFirst();
+			});
+
+			await Promise.all([queueFinanceKnowledgeJob(), queueFinanceRollupsJob()]);
+			return { status: "deleted" as const };
 		},
 		summarize: (result) => ({
 			status: result.status,

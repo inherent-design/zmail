@@ -2,7 +2,11 @@ import { readFile } from "node:fs/promises";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { bootDb, insertMessageRow } from "#/test/helpers/db";
+import {
+	bootDb,
+	insertMessageLabelRow,
+	insertMessageRow,
+} from "#/test/helpers/db";
 import { fixturePath } from "#/test/helpers/fs";
 import { createTestRuntime } from "#/test/helpers/runtime";
 
@@ -213,6 +217,139 @@ describe("runtime integration", () => {
 			.executeTakeFirstOrThrow();
 		expect(resolvedReview.status).toBe("resolved");
 		expect(resolvedReview.override_label_json).toContain("message-label.v2");
+	});
+
+	it("refreshes stale moderation rows during worker drain when prompt version changed", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		const { MODERATION_PROMPT_VERSION, nowIso } =
+			await runtime.importFresh<typeof import("#/lib/config")>(
+				"#/lib/config",
+			);
+		const messageId = await insertMessageRow(db, {
+			id: "msg-stale-moderation-runtime",
+			subject: "mainstream casting reminder",
+			bodyTextNormalized: "mainstream acting marketplace reminder",
+			contentSha256: "sha-stale-moderation-runtime",
+		});
+		await insertMessageLabelRow(db, {
+			messageId,
+			contentSha256: "sha-stale-moderation-runtime",
+		});
+		await db
+			.insertInto("moderation_results")
+			.values({
+				id: "moderation-runtime-stale",
+				job_id: null,
+				message_id: messageId,
+				model: "gpt-5.4-mini",
+				categories_json: JSON.stringify({
+					explicitSexual: false,
+					suggestiveSexual: false,
+					nudity: false,
+					sexualMinors: false,
+					adultCommercial: true,
+				}),
+				category_scores_json: JSON.stringify({
+					explicitSexual: 0,
+					suggestiveSexual: 0.1,
+					nudity: 0,
+					sexualMinors: 0,
+					adultCommercial: 0.8,
+					overall: 0.8,
+				}),
+				raw_response_json: JSON.stringify({
+					promptVersion: "moderate-email-v1",
+					rawResponse: { assistantText: "{}" },
+				}),
+				nsfw_flag: 1,
+				created_at: nowIso(),
+			})
+			.execute();
+		const piJson = vi.fn(async () => ({
+			backend: "openai-subscription",
+			modelId: "gpt-5.4-mini",
+			parsed: {
+				schemaVersion: "message-moderation.v1",
+				nsfw: false,
+				categories: {
+					explicitSexual: false,
+					suggestiveSexual: false,
+					nudity: false,
+					sexualMinors: false,
+					adultCommercial: false,
+				},
+				scores: {
+					explicitSexual: 0.01,
+					suggestiveSexual: 0.02,
+					nudity: 0,
+					sexualMinors: 0,
+					adultCommercial: 0.03,
+					overall: 0.04,
+				},
+				explanation: "safe",
+			},
+			rawText: "{}",
+			usage: { totalTokens: 8 },
+		}));
+		vi.doMock("#/lib/pi", () => ({
+			piJson,
+			getPiStatus: vi.fn(async () => ({
+				subscriptionConfigured: true,
+				apiConfigured: false,
+				preferredBackend: "auto",
+				resolvedBackend: "openai-subscription",
+			})),
+		}));
+		vi.doMock("#/lib/classify", () => ({
+			buildAttachmentSummary: vi.fn(() => "No attachments"),
+			classifyMessageNow: vi.fn(async () => undefined),
+			mergeAllowedTags: vi.fn((tags: string[]) => tags),
+		}));
+		vi.doMock("#/lib/overseer", () => ({
+			buildOverseerProfile: vi.fn(),
+			loadLatestOverseerContext: vi.fn(async () => ({
+				promptPreamble: null,
+				promotedTags: [],
+				profile: null,
+			})),
+			maybeQueueOverseerForAccount: vi.fn(async () => false),
+		}));
+		vi.doMock("#/lib/category-rules", () => ({
+			listPendingMessageCategoryAssignmentIds: vi.fn(async () => []),
+			projectMessageCategoryAssignment: vi.fn(async () => undefined),
+		}));
+
+		const worker =
+			await runtime.importFresh<typeof import("#/lib/worker")>("#/lib/worker");
+		await worker.drainWorkerUntilIdle();
+
+		const moderationRow = await db
+			.selectFrom("moderation_results")
+			.selectAll()
+			.where("message_id", "=", messageId)
+			.executeTakeFirstOrThrow();
+		expect(JSON.parse(moderationRow.raw_response_json).promptVersion).toBe(
+			MODERATION_PROMPT_VERSION,
+		);
+		expect(piJson).toHaveBeenCalledTimes(1);
+
+		const backlogJobs = await db
+			.selectFrom("jobs")
+			.select(["kind", "status"])
+			.where("kind", "=", "classify_account_backlog")
+			.execute();
+		expect(backlogJobs).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					status: "complete",
+				}),
+			]),
+		);
+		vi.doUnmock("#/lib/category-rules");
+		vi.doUnmock("#/lib/classify");
+		vi.doUnmock("#/lib/overseer");
+		vi.doUnmock("#/lib/pi");
 	});
 
 	it("builds overseer profiles and checks rebuild threshold", async () => {
