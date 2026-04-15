@@ -25,6 +25,13 @@ export const Route = createRootRoute({
 		links: [{ rel: "stylesheet", href: appCss }],
 	}),
 	component: RootComponent,
+	errorComponent: ({ error }) => (
+		<RootDocument>
+			<RootErrorComponent
+				error={error instanceof Error ? error : new Error(String(error))}
+			/>
+		</RootDocument>
+	),
 });
 
 export function RootDocument({ children }: { children: React.ReactNode }) {
@@ -57,6 +64,7 @@ export function RootLayout() {
 				<div className="brand">zmail</div>
 				<nav className="nav">
 					<Link to="/accounts">Accounts</Link>
+					<Link to="/finance">Finance</Link>
 					<Link to="/">Home</Link>
 					<Link to="/messages">Messages</Link>
 					<Link to="/review">Review</Link>
@@ -75,5 +83,52 @@ export function RootComponent() {
 		<RootDocument>
 			<RootLayout />
 		</RootDocument>
+	);
+}
+
+function RootErrorComponent({ error }: { error: Error }) {
+	if (error.name === "SchemaResetRequiredError") {
+		return (
+			<div className="shell">
+				<main className="page">
+					<section className="card stack">
+						<h1>Local DB reset required</h1>
+						<p className="muted">{error.message}</p>
+						<div className="stack">
+							<p className="muted">Preferred recovery</p>
+							<ol className="stack">
+								<li>
+									<code>pnpm db:reset:messages</code>
+								</li>
+							</ol>
+							<p className="muted">Full reset</p>
+							<ol className="stack">
+								<li>
+									<code>pnpm db:reset</code>
+								</li>
+								<li>
+									<code>pnpm db:migrate</code>
+								</li>
+								<li>Reconnect Gmail accounts if you used the full reset.</li>
+							</ol>
+						</div>
+					</section>
+				</main>
+			</div>
+		);
+	}
+
+	return (
+		<div className="shell">
+			<main className="page">
+				<section className="card stack">
+					<h1>Application error</h1>
+					<p className="muted">
+						{error.message ||
+							"The application could not complete this request."}
+					</p>
+				</section>
+			</main>
+		</div>
 	);
 }

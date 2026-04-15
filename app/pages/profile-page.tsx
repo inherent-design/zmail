@@ -1,4 +1,4 @@
-import { useRouter } from "@tanstack/react-router";
+import { Link, useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 
 import { JsonBlock } from "#/app/components/JsonBlock";
@@ -16,6 +16,16 @@ interface ProfilePageData {
 		built_from_messages: number;
 		profile: unknown;
 	}>;
+	financeCoverage: {
+		rootFinanceRelevantCount: number;
+		totalHeads: number;
+		readyCount: number;
+		reviewCount: number;
+		staleCount: number;
+		blockedParseErrorCount: number;
+		eventCandidateCount: number;
+		documentCandidateCount: number;
+	};
 }
 
 export function ProfilePage({ data }: { data: ProfilePageData }) {
@@ -27,22 +37,43 @@ export function ProfilePage({ data }: { data: ProfilePageData }) {
 			<section className="card stack">
 				<div className="row">
 					<h1>{data.account.label}</h1>
-					<button
-						className="button"
-						type="button"
-						onClick={async () => {
-							await queueOverseer({
-								data: {
-									accountId: data.account.id,
-								},
-							});
-							await router.invalidate();
-						}}
-					>
-						Queue overseer rebuild
-					</button>
+					<div className="actions">
+						<button
+							className="button"
+							type="button"
+							onClick={async () => {
+								await queueOverseer({
+									data: {
+										accountId: data.account.id,
+									},
+								});
+								await router.invalidate();
+							}}
+						>
+							Queue overseer rebuild
+						</button>
+						<Link className="button secondary" to="/finance">
+							Open finance
+						</Link>
+					</div>
 				</div>
 				<p className="muted">{data.account.email_address}</p>
+				<div className="row">
+					<span className="pill">
+						root finance: {data.financeCoverage.rootFinanceRelevantCount}
+					</span>
+					<span className="pill">
+						finance heads: {data.financeCoverage.totalHeads}
+					</span>
+					<span className="pill">ready: {data.financeCoverage.readyCount}</span>
+					<span className="pill">
+						review: {data.financeCoverage.reviewCount}
+					</span>
+					<span className="pill">stale: {data.financeCoverage.staleCount}</span>
+					<span className="pill">
+						parse blocked: {data.financeCoverage.blockedParseErrorCount}
+					</span>
+				</div>
 			</section>
 
 			{data.profiles.length === 0 ? (

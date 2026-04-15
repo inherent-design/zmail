@@ -6,7 +6,7 @@ import { APP_CONFIG, nowIso, PROMPTS_DIR } from "#/lib/config";
 import { getDb, jsonText, safeJsonParse } from "#/lib/db";
 import { piJson } from "#/lib/pi";
 import {
-	type MessageLabelV1,
+	normalizeMessageLabel,
 	type OverseerProfileV1,
 	overseerProfileJsonSchema,
 	overseerProfileSchema,
@@ -72,19 +72,22 @@ export async function buildOverseerProfile(accountId: string) {
 			domainCounts.set(domain, (domainCounts.get(domain) ?? 0) + 1);
 		}
 
-		const label = safeJsonParse(row.label_json, null as MessageLabelV1 | null);
+		const label = normalizeMessageLabel(safeJsonParse(row.label_json, null));
 		if (!label || typeof label !== "object") {
 			continue;
 		}
 
 		if (domain) {
-			if (label.social.business) {
+			if (label.people.business || label.routing.primaryBucket === "work") {
 				businessDomainCounts.set(
 					domain,
 					(businessDomainCounts.get(domain) ?? 0) + 1,
 				);
 			}
-			if (label.social.personal) {
+			if (
+				label.people.personal ||
+				label.routing.primaryBucket === "relationships"
+			) {
 				personalDomainCounts.set(
 					domain,
 					(personalDomainCounts.get(domain) ?? 0) + 1,

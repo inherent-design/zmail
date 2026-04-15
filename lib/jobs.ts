@@ -6,11 +6,18 @@ import { startTrace } from "#/lib/log";
 
 export type JobKind =
 	| "rebuild_overseer"
+	| "rebuild_finance_knowledge"
+	| "rebuild_finance_rollups"
+	| "import_operator_registry"
+	| "reconcile_registry_suggestions"
+	| "import_finance_artifact"
 	| "sync_account_full"
 	| "sync_account_delta"
 	| "sync_account_backfill"
 	| "sync_account_reconcile"
-	| "classify_account_backlog";
+	| "classify_account_backlog"
+	| "classify_finance_backlog"
+	| "rebuild_category_assignments";
 
 export interface JobRecord {
 	id: string;

@@ -6,6 +6,7 @@ import {
 	pauseAccountSync,
 	queueAccountClassifyBacklog,
 	queueAccountDeltaSync,
+	queueAccountFinanceBacklog,
 	queueAccountFullSync,
 	queueAccountReconcile,
 	resumeAccountSync,
@@ -50,6 +51,16 @@ interface AccountDetailPageData {
 	}>;
 	messageCount: number;
 	tombstoneCount: number;
+	financeCoverage: {
+		rootFinanceRelevantCount: number;
+		totalHeads: number;
+		readyCount: number;
+		reviewCount: number;
+		staleCount: number;
+		blockedParseErrorCount: number;
+		eventCandidateCount: number;
+		documentCandidateCount: number;
+	};
 }
 
 export function AccountDetailPage({ data }: { data: AccountDetailPageData }) {
@@ -58,6 +69,7 @@ export function AccountDetailPage({ data }: { data: AccountDetailPageData }) {
 	const deltaSync = useServerFn(queueAccountDeltaSync);
 	const reconcile = useServerFn(queueAccountReconcile);
 	const classifyBacklog = useServerFn(queueAccountClassifyBacklog);
+	const classifyFinanceBacklog = useServerFn(queueAccountFinanceBacklog);
 	const pause = useServerFn(pauseAccountSync);
 	const resume = useServerFn(resumeAccountSync);
 	const disconnect = useServerFn(disconnectAccount);
@@ -130,12 +142,25 @@ export function AccountDetailPage({ data }: { data: AccountDetailPageData }) {
 					>
 						Classify backlog
 					</button>
+					<button
+						className="button secondary"
+						type="button"
+						onClick={async () => {
+							await classifyFinanceBacklog({ data: { accountId } });
+							await router.invalidate();
+						}}
+					>
+						Classify finance backlog
+					</button>
 					<Link
 						className="button secondary"
 						to="/profiles/$accountId"
 						params={{ accountId }}
 					>
 						Open overseer
+					</Link>
+					<Link className="button secondary" to="/finance">
+						Open finance
 					</Link>
 					<button
 						className="button secondary"
@@ -181,6 +206,37 @@ export function AccountDetailPage({ data }: { data: AccountDetailPageData }) {
 						<span className="muted">Tombstones</span>
 						<strong>{data.tombstoneCount}</strong>
 					</div>
+					<div className="stat">
+						<span className="muted">Root finance relevant</span>
+						<strong>{data.financeCoverage.rootFinanceRelevantCount}</strong>
+					</div>
+					<div className="stat">
+						<span className="muted">Finance intel heads</span>
+						<strong>{data.financeCoverage.totalHeads}</strong>
+					</div>
+					<div className="stat">
+						<span className="muted">Finance candidates</span>
+						<strong>
+							{data.financeCoverage.eventCandidateCount +
+								data.financeCoverage.documentCandidateCount}
+						</strong>
+					</div>
+				</div>
+				<div className="row">
+					<span className="pill">ready: {data.financeCoverage.readyCount}</span>
+					<span className="pill">
+						review: {data.financeCoverage.reviewCount}
+					</span>
+					<span className="pill">stale: {data.financeCoverage.staleCount}</span>
+					<span className="pill">
+						parse blocked: {data.financeCoverage.blockedParseErrorCount}
+					</span>
+					<span className="pill">
+						events: {data.financeCoverage.eventCandidateCount}
+					</span>
+					<span className="pill">
+						documents: {data.financeCoverage.documentCandidateCount}
+					</span>
 				</div>
 			</section>
 

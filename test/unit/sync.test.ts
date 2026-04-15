@@ -1,6 +1,14 @@
+import { createHash } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
-import { bootDb, seedTestAccount } from "#/test/helpers/db";
+import {
+	bootDb,
+	insertConversationRow,
+	seedTestAccount,
+} from "#/test/helpers/db";
 import { createMockLogModule } from "#/test/helpers/log";
 import { createTestRuntime } from "#/test/helpers/runtime";
 
@@ -88,11 +96,15 @@ function createParsedMessage(id: string, sha: string) {
 		ccJson: "[]",
 		subject: `Subject ${id}`,
 		inReplyTo: null,
+		bodyTextPrimary: "body",
+		bodyTextForwarded: "",
 		bodyTextNormalized: "body",
 		snippet: "body",
 		attachmentCount: 0,
 		hasHtml: 0,
 		parseStatus: "parsed",
+		bodyExtractionStrategy: "plain_text",
+		parseErrorReason: null,
 		tokenEstimate: 1,
 		contentSha256: sha,
 		attachments: [],
@@ -1451,12 +1463,16 @@ describe("sync", () => {
 				message_id: "<msg-reconcile@example.com>",
 				thread_key: "thread-reconcile",
 				received_at: "2026-01-01T00:00:00.000Z",
+				ingested_at: "2026-01-01T00:00:00.000Z",
+				conversation_id: null,
 				sender_name: "Sender",
 				sender_address: "sender@example.com",
 				to_json: "[]",
 				cc_json: "[]",
 				subject: "Subject",
 				in_reply_to: null,
+				body_text_primary: "body",
+				body_text_forwarded: "",
 				body_text_normalized: "body",
 				snippet: "body",
 				attachment_count: 0,
@@ -1464,6 +1480,8 @@ describe("sync", () => {
 				raw_byte_start: 0,
 				raw_byte_end: 3,
 				parse_status: "parsed",
+				body_extraction_strategy: "plain_text",
+				parse_error_reason: null,
 				token_estimate: 1,
 				content_sha256: "sha",
 				created_at: "2026-01-01T00:00:00.000Z",
@@ -1552,12 +1570,16 @@ describe("sync", () => {
 				message_id: "<msg-tombstone@example.com>",
 				thread_key: "thread-tombstone",
 				received_at: "2026-01-01T00:00:00.000Z",
+				ingested_at: "2026-01-01T00:00:00.000Z",
+				conversation_id: null,
 				sender_name: "Sender",
 				sender_address: "sender@example.com",
 				to_json: "[]",
 				cc_json: "[]",
 				subject: "Subject",
 				in_reply_to: null,
+				body_text_primary: "body",
+				body_text_forwarded: "",
 				body_text_normalized: "body",
 				snippet: "body",
 				attachment_count: 0,
@@ -1565,6 +1587,8 @@ describe("sync", () => {
 				raw_byte_start: 0,
 				raw_byte_end: 3,
 				parse_status: "parsed",
+				body_extraction_strategy: "plain_text",
+				parse_error_reason: null,
 				token_estimate: 1,
 				content_sha256: "sha",
 				created_at: "2026-01-01T00:00:00.000Z",
@@ -1754,12 +1778,16 @@ describe("sync", () => {
 				message_id: "<msg-existing@example.com>",
 				thread_key: "thread-existing",
 				received_at: "2026-01-01T00:00:00.000Z",
+				ingested_at: "2026-01-01T00:00:00.000Z",
+				conversation_id: null,
 				sender_name: "Old Sender",
 				sender_address: "old@example.com",
 				to_json: "[]",
 				cc_json: "[]",
 				subject: "Old subject",
 				in_reply_to: null,
+				body_text_primary: "old body",
+				body_text_forwarded: "",
 				body_text_normalized: "old body",
 				snippet: "old body",
 				attachment_count: 0,
@@ -1767,6 +1795,8 @@ describe("sync", () => {
 				raw_byte_start: 0,
 				raw_byte_end: 3,
 				parse_status: "parsed",
+				body_extraction_strategy: "plain_text",
+				parse_error_reason: null,
 				token_estimate: 1,
 				content_sha256: "old-sha",
 				created_at: "2026-01-01T00:00:00.000Z",
@@ -1830,11 +1860,15 @@ describe("sync", () => {
 				ccJson: "[]",
 				subject: "New subject",
 				inReplyTo: null,
+				bodyTextPrimary: "new body",
+				bodyTextForwarded: "",
 				bodyTextNormalized: "new body",
 				snippet: "new body",
 				attachmentCount: 1,
 				hasHtml: 0,
 				parseStatus: "parsed",
+				bodyExtractionStrategy: "plain_text",
+				parseErrorReason: null,
 				tokenEstimate: 2,
 				contentSha256: "new-sha",
 				attachments: [
@@ -1911,12 +1945,16 @@ describe("sync", () => {
 				message_id: "<msg-existing-unchanged@example.com>",
 				thread_key: "thread-existing-unchanged",
 				received_at: "2026-01-01T00:00:00.000Z",
+				ingested_at: "2026-01-01T00:00:00.000Z",
+				conversation_id: null,
 				sender_name: "Sender",
 				sender_address: "sender@example.com",
 				to_json: "[]",
 				cc_json: "[]",
 				subject: "Stable subject",
 				in_reply_to: null,
+				body_text_primary: "stable body",
+				body_text_forwarded: "",
 				body_text_normalized: "stable body",
 				snippet: "stable body",
 				attachment_count: 0,
@@ -1924,6 +1962,8 @@ describe("sync", () => {
 				raw_byte_start: 0,
 				raw_byte_end: 3,
 				parse_status: "parsed",
+				body_extraction_strategy: "plain_text",
+				parse_error_reason: null,
 				token_estimate: 1,
 				content_sha256: "stable-sha",
 				created_at: "2026-01-01T00:00:00.000Z",
@@ -2012,6 +2052,354 @@ describe("sync", () => {
 		});
 	});
 
+	it("moves a message to a new conversation when the raw source is unchanged but the thread changes", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-thread-move",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-thread-move", {
+			uidvalidity: 100,
+			latest_uid_cursor: 0,
+			earliest_uid_cursor: 1,
+			backfill_snapshot_uid: 7,
+			backfill_next_uid: null,
+		});
+		const oldConversationId = await insertConversationRow(db, {
+			id: "conv-thread-old",
+			accountId: "acct-thread-move",
+			gmailThreadId: "thr-thread-old",
+			messageCount: 1,
+			firstMessageReceivedAt: "2026-01-01T00:00:00.000Z",
+			lastMessageReceivedAt: "2026-01-01T00:00:00.000Z",
+		});
+		const newConversationId = await insertConversationRow(db, {
+			id: "conv-thread-new",
+			accountId: "acct-thread-move",
+			gmailThreadId: "thr-thread-new",
+			messageCount: 0,
+			firstMessageReceivedAt: null,
+			lastMessageReceivedAt: null,
+		});
+		await db
+			.insertInto("messages")
+			.values({
+				id: "msg-thread-move",
+				account_id: "acct-thread-move",
+				message_id: "<msg-thread-move@example.com>",
+				thread_key: "thread-thread-move",
+				received_at: "2026-01-01T00:00:00.000Z",
+				ingested_at: "2026-01-01T00:00:00.000Z",
+				conversation_id: oldConversationId,
+				sender_name: "Sender",
+				sender_address: "sender@example.com",
+				to_json: "[]",
+				cc_json: "[]",
+				subject: "Stable subject",
+				in_reply_to: null,
+				body_text_primary: "stable body",
+				body_text_forwarded: "",
+				body_text_normalized: "stable body",
+				snippet: "stable body",
+				attachment_count: 0,
+				has_html: 0,
+				raw_byte_start: 0,
+				raw_byte_end: 3,
+				parse_status: "parsed",
+				body_extraction_strategy: "plain_text",
+				parse_error_reason: null,
+				token_estimate: 1,
+				content_sha256: "stable-sha",
+				created_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("message_sources")
+			.values({
+				id: "src-thread-move",
+				message_id: "msg-thread-move",
+				account_id: "acct-thread-move",
+				remote_message_id: "gm-thread-move",
+				remote_thread_id: "thr-thread-old",
+				mailbox: "[Gmail]/All Mail",
+				imap_uid: 5,
+				uidvalidity: 100,
+				raw_rfc822_path: "/tmp/thread-move.eml",
+				raw_sha256: "stable-sha",
+				state: "active",
+				first_seen_at: "2026-01-01T00:00:00.000Z",
+				last_seen_at: "2026-01-01T00:00:00.000Z",
+				tombstoned_at: null,
+				updated_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+
+		const parseRawMessage = vi.fn();
+		const writeRawEml = vi.fn();
+
+		vi.doMock("#/lib/google-oauth", () => ({
+			ensureFreshToken: vi.fn(async () => ({
+				accessToken: "access-token",
+			})),
+		}));
+		vi.doMock("#/lib/jobs", () => ({
+			queueJobIdempotent: vi.fn(async () => null),
+		}));
+		vi.doMock("#/lib/imap", () => ({
+			createImapClient: vi.fn(() => createMockClient()),
+			fetchMessageRange: vi.fn(async () => [
+				{
+					uid: 6,
+					gmMsgId: "gm-thread-move",
+					gmThrid: "thr-thread-new",
+					internalDate: new Date("2026-01-02T00:00:00.000Z"),
+					raw: Buffer.from("stable raw"),
+					sha256: "stable-sha",
+				},
+			]),
+			fetchMessageWindowDescending: vi.fn(),
+			getMailboxStatus: vi.fn(async () => ({
+				uidvalidity: 100,
+				uidNext: 7,
+				messageCount: 1,
+			})),
+			parseRawMessage,
+			writeRawEml,
+		}));
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await sync.runDeltaSync("acct-thread-move");
+
+		expect(parseRawMessage).not.toHaveBeenCalled();
+		expect(writeRawEml).not.toHaveBeenCalled();
+
+		const message = await db
+			.selectFrom("messages")
+			.select(["conversation_id", "ingested_at"])
+			.where("id", "=", "msg-thread-move")
+			.executeTakeFirstOrThrow();
+		expect(message.ingested_at).toBe("2026-01-01T00:00:00.000Z");
+		expect(message.conversation_id).not.toBe(oldConversationId);
+
+		const source = await db
+			.selectFrom("message_sources")
+			.select(["remote_thread_id"])
+			.where("id", "=", "src-thread-move")
+			.executeTakeFirstOrThrow();
+		expect(source.remote_thread_id).toBe("thr-thread-new");
+
+		expect(
+			await db
+				.selectFrom("conversations")
+				.select(["id"])
+				.where("id", "=", oldConversationId)
+				.executeTakeFirst(),
+		).toBeUndefined();
+
+		const newConversation = await db
+			.selectFrom("conversations")
+			.select([
+				"id",
+				"gmail_thread_id",
+				"message_count",
+				"first_message_received_at",
+				"last_message_received_at",
+			])
+			.where("account_id", "=", "acct-thread-move")
+			.where("gmail_thread_id", "=", "thr-thread-new")
+			.executeTakeFirstOrThrow();
+		expect(newConversation.id).toBe(newConversationId);
+		expect(newConversation.id).toBe(message.conversation_id);
+		expect(newConversation.message_count).toBe(1);
+		expect(newConversation.first_message_received_at).toBe(
+			"2026-01-01T00:00:00.000Z",
+		);
+		expect(newConversation.last_message_received_at).toBe(
+			"2026-01-01T00:00:00.000Z",
+		);
+	});
+
+	it("leaves conversation linkage null when Gmail does not provide a thread id", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-no-thread",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-no-thread", {
+			uidvalidity: 100,
+			latest_uid_cursor: 0,
+			earliest_uid_cursor: 1,
+			backfill_snapshot_uid: 1,
+			backfill_next_uid: null,
+		});
+
+		vi.doMock("#/lib/google-oauth", () => ({
+			ensureFreshToken: vi.fn(async () => ({
+				accessToken: "access-token",
+			})),
+		}));
+		vi.doMock("#/lib/jobs", () => ({
+			queueJobIdempotent: vi.fn(async () => null),
+		}));
+		vi.doMock("#/lib/imap", () => ({
+			createImapClient: vi.fn(() => createMockClient()),
+			fetchMessageRange: vi.fn(async () => [
+				{
+					uid: 1,
+					gmMsgId: "gm-no-thread",
+					gmThrid: "",
+					internalDate: new Date("2026-01-02T00:00:00.000Z"),
+					raw: Buffer.from("raw"),
+					sha256: "sha-no-thread",
+				},
+			]),
+			fetchMessageWindowDescending: vi.fn(),
+			getMailboxStatus: vi.fn(async () => ({
+				uidvalidity: 100,
+				uidNext: 2,
+				messageCount: 1,
+			})),
+			parseRawMessage: vi.fn(async (_raw: Buffer, sha: string) =>
+				createParsedMessage(`msg-${sha}`, `content-${sha}`),
+			),
+			writeRawEml: vi.fn(() => "/tmp/no-thread.eml"),
+		}));
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await sync.runDeltaSync("acct-no-thread");
+
+		const message = await db
+			.selectFrom("messages")
+			.select(["conversation_id"])
+			.where("account_id", "=", "acct-no-thread")
+			.executeTakeFirstOrThrow();
+		expect(message.conversation_id).toBeNull();
+		expect(
+			await db.selectFrom("conversations").select(["id"]).execute(),
+		).toEqual([]);
+	});
+
+	it("keeps the fast path when the raw hash is unchanged and both thread ids are empty", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-empty-thread-fast-path",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-empty-thread-fast-path", {
+			uidvalidity: 100,
+			latest_uid_cursor: 0,
+			earliest_uid_cursor: 1,
+			backfill_snapshot_uid: 1,
+			backfill_next_uid: null,
+		});
+		await db
+			.insertInto("messages")
+			.values({
+				id: "msg-empty-thread-fast-path",
+				account_id: "acct-empty-thread-fast-path",
+				message_id: "<msg-empty-thread-fast-path@example.com>",
+				thread_key: "thread-empty-thread-fast-path",
+				received_at: "2026-01-01T00:00:00.000Z",
+				ingested_at: "2026-01-01T00:00:00.000Z",
+				conversation_id: null,
+				sender_name: "Sender",
+				sender_address: "sender@example.com",
+				to_json: "[]",
+				cc_json: "[]",
+				subject: "Stable subject",
+				in_reply_to: null,
+				body_text_primary: "stable body",
+				body_text_forwarded: "",
+				body_text_normalized: "stable body",
+				snippet: "stable body",
+				attachment_count: 0,
+				has_html: 0,
+				raw_byte_start: 0,
+				raw_byte_end: 3,
+				parse_status: "parsed",
+				body_extraction_strategy: "plain_text",
+				parse_error_reason: null,
+				token_estimate: 1,
+				content_sha256: "stable-sha",
+				created_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("message_sources")
+			.values({
+				id: "src-empty-thread-fast-path",
+				message_id: "msg-empty-thread-fast-path",
+				account_id: "acct-empty-thread-fast-path",
+				remote_message_id: "gm-empty-thread-fast-path",
+				remote_thread_id: null,
+				mailbox: "[Gmail]/All Mail",
+				imap_uid: 5,
+				uidvalidity: 100,
+				raw_rfc822_path: "/tmp/empty-thread-fast-path.eml",
+				raw_sha256: "stable-sha",
+				state: "active",
+				first_seen_at: "2026-01-01T00:00:00.000Z",
+				last_seen_at: "2026-01-01T00:00:00.000Z",
+				tombstoned_at: null,
+				updated_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+
+		const parseRawMessage = vi.fn();
+		const writeRawEml = vi.fn();
+
+		vi.doMock("#/lib/google-oauth", () => ({
+			ensureFreshToken: vi.fn(async () => ({
+				accessToken: "access-token",
+			})),
+		}));
+		vi.doMock("#/lib/jobs", () => ({
+			queueJobIdempotent: vi.fn(async () => null),
+		}));
+		vi.doMock("#/lib/imap", () => ({
+			createImapClient: vi.fn(() => createMockClient()),
+			fetchMessageRange: vi.fn(async () => [
+				{
+					uid: 6,
+					gmMsgId: "gm-empty-thread-fast-path",
+					gmThrid: "",
+					internalDate: new Date("2026-01-02T00:00:00.000Z"),
+					raw: Buffer.from("stable raw"),
+					sha256: "stable-sha",
+				},
+			]),
+			fetchMessageWindowDescending: vi.fn(),
+			getMailboxStatus: vi.fn(async () => ({
+				uidvalidity: 100,
+				uidNext: 7,
+				messageCount: 1,
+			})),
+			parseRawMessage,
+			writeRawEml,
+		}));
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await sync.runDeltaSync("acct-empty-thread-fast-path");
+
+		expect(parseRawMessage).not.toHaveBeenCalled();
+		expect(writeRawEml).not.toHaveBeenCalled();
+		const source = await db
+			.selectFrom("message_sources")
+			.select(["remote_thread_id", "imap_uid"])
+			.where("id", "=", "src-empty-thread-fast-path")
+			.executeTakeFirstOrThrow();
+		expect(source).toEqual({
+			remote_thread_id: null,
+			imap_uid: 6,
+		});
+	});
+
 	it("rolls back refreshed message writes when attachment replacement fails", async () => {
 		const runtime = await createTestRuntime();
 		const { db } = await bootDb();
@@ -2034,12 +2422,16 @@ describe("sync", () => {
 				message_id: "<msg-existing-rollback@example.com>",
 				thread_key: "thread-existing-rollback",
 				received_at: "2026-01-01T00:00:00.000Z",
+				ingested_at: "2026-01-01T00:00:00.000Z",
+				conversation_id: null,
 				sender_name: "Old Sender",
 				sender_address: "old@example.com",
 				to_json: "[]",
 				cc_json: "[]",
 				subject: "Old subject",
 				in_reply_to: null,
+				body_text_primary: "old body",
+				body_text_forwarded: "",
 				body_text_normalized: "old body",
 				snippet: "old body",
 				attachment_count: 1,
@@ -2047,6 +2439,8 @@ describe("sync", () => {
 				raw_byte_start: 0,
 				raw_byte_end: 3,
 				parse_status: "parsed",
+				body_extraction_strategy: "plain_text",
+				parse_error_reason: null,
 				token_estimate: 1,
 				content_sha256: "old-sha",
 				created_at: "2026-01-01T00:00:00.000Z",
@@ -2122,11 +2516,15 @@ describe("sync", () => {
 				ccJson: "[]",
 				subject: "New subject",
 				inReplyTo: null,
+				bodyTextPrimary: "new body",
+				bodyTextForwarded: "",
 				bodyTextNormalized: "new body",
 				snippet: "new body",
 				attachmentCount: 2,
 				hasHtml: 0,
 				parseStatus: "parsed",
+				bodyExtractionStrategy: "plain_text",
+				parseErrorReason: null,
 				tokenEstimate: 2,
 				contentSha256: "new-sha",
 				attachments: [
@@ -2220,12 +2618,16 @@ describe("sync", () => {
 				message_id: "<msg-existing-parse-error@example.com>",
 				thread_key: "thread-existing-parse-error",
 				received_at: "2026-01-01T00:00:00.000Z",
+				ingested_at: "2026-01-01T00:00:00.000Z",
+				conversation_id: null,
 				sender_name: "Sender",
 				sender_address: "sender@example.com",
 				to_json: "[]",
 				cc_json: "[]",
 				subject: "Subject",
 				in_reply_to: null,
+				body_text_primary: "body",
+				body_text_forwarded: "",
 				body_text_normalized: "body",
 				snippet: "body",
 				attachment_count: 0,
@@ -2233,6 +2635,8 @@ describe("sync", () => {
 				raw_byte_start: 0,
 				raw_byte_end: 3,
 				parse_status: "parsed",
+				body_extraction_strategy: "plain_text",
+				parse_error_reason: null,
 				token_estimate: 1,
 				content_sha256: "old-sha",
 				created_at: "2026-01-01T00:00:00.000Z",
@@ -2289,11 +2693,15 @@ describe("sync", () => {
 				ccJson: "[]",
 				subject: null,
 				inReplyTo: null,
+				bodyTextPrimary: "",
+				bodyTextForwarded: "",
 				bodyTextNormalized: "",
 				snippet: "",
 				attachmentCount: 0,
 				hasHtml: 0,
 				parseStatus: "error",
+				bodyExtractionStrategy: "parse_error",
+				parseErrorReason: "parse failure",
 				tokenEstimate: 0,
 				contentSha256: "new-sha",
 				attachments: [],
@@ -2453,11 +2861,15 @@ describe("sync", () => {
 				ccJson: "[]",
 				subject: null,
 				inReplyTo: null,
+				bodyTextPrimary: "",
+				bodyTextForwarded: "",
 				bodyTextNormalized: "",
 				snippet: "",
 				attachmentCount: 0,
 				hasHtml: 0,
 				parseStatus: "error",
+				bodyExtractionStrategy: "parse_error",
+				parseErrorReason: "parse failure",
 				tokenEstimate: 0,
 				contentSha256: "sha-1",
 				attachments: [],
@@ -2507,12 +2919,16 @@ describe("sync", () => {
 				message_id: "<existing-source-conflict@example.com>",
 				thread_key: "thread-existing-source-conflict",
 				received_at: "2026-01-01T00:00:00.000Z",
+				ingested_at: "2026-01-01T00:00:00.000Z",
+				conversation_id: null,
 				sender_name: "Existing",
 				sender_address: "existing@example.com",
 				to_json: "[]",
 				cc_json: "[]",
 				subject: "Existing subject",
 				in_reply_to: null,
+				body_text_primary: "body",
+				body_text_forwarded: "",
 				body_text_normalized: "body",
 				snippet: "body",
 				attachment_count: 0,
@@ -2520,6 +2936,8 @@ describe("sync", () => {
 				raw_byte_start: 0,
 				raw_byte_end: 3,
 				parse_status: "parsed",
+				body_extraction_strategy: "plain_text",
+				parse_error_reason: null,
 				token_estimate: 1,
 				content_sha256: "existing-sha",
 				created_at: "2026-01-01T00:00:00.000Z",
@@ -2582,11 +3000,15 @@ describe("sync", () => {
 				ccJson: "[]",
 				subject: "Subject rollback",
 				inReplyTo: null,
+				bodyTextPrimary: "body",
+				bodyTextForwarded: "",
 				bodyTextNormalized: "body",
 				snippet: "body",
 				attachmentCount: 1,
 				hasHtml: 0,
 				parseStatus: "parsed",
+				bodyExtractionStrategy: "plain_text",
+				parseErrorReason: null,
 				tokenEstimate: 1,
 				contentSha256: "sha-1",
 				attachments: [
@@ -2632,5 +3054,693 @@ describe("sync", () => {
 				.where("remote_message_id", "=", "gm-1")
 				.executeTakeFirst(),
 		).toBeUndefined();
+	});
+
+	it("reextracts a stored parse-error message from raw RFC822 and preserves ingest timestamps", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		const rawDir = join(runtime.dataDir, "accounts", "acct-1", "raw");
+		const rawPath = join(rawDir, "gm-reextract.eml");
+		mkdirSync(rawDir, { recursive: true });
+		writeFileSync(
+			rawPath,
+			[
+				"From: Billing <billing@example.com>",
+				"To: acct-1@example.com",
+				"Message-ID: <gm-reextract@example.com>",
+				"Subject: Recovered receipt",
+				"",
+				"Recovered body",
+				"",
+			].join("\n"),
+		);
+
+		await db
+			.insertInto("messages")
+			.values({
+				id: "msg-reextract",
+				account_id: "acct-1",
+				message_id: "<parse-error@example.com>",
+				thread_key: "thread-parse-error",
+				received_at: "2026-01-02T00:00:00.000Z",
+				ingested_at: "2026-01-03T00:00:00.000Z",
+				conversation_id: null,
+				sender_name: null,
+				sender_address: null,
+				to_json: "[]",
+				cc_json: "[]",
+				subject: null,
+				in_reply_to: null,
+				body_text_primary: "",
+				body_text_forwarded: "",
+				body_text_normalized: "",
+				snippet: "",
+				attachment_count: 0,
+				has_html: 0,
+				raw_byte_start: 0,
+				raw_byte_end: 0,
+				parse_status: "error",
+				body_extraction_strategy: "parse_error",
+				parse_error_reason: "input.html?.trim is not a function",
+				token_estimate: 0,
+				content_sha256: "old-content-sha",
+				created_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("message_sources")
+			.values({
+				id: "src-reextract",
+				message_id: "msg-reextract",
+				account_id: "acct-1",
+				remote_message_id: "gm-reextract",
+				remote_thread_id: "thr-reextract",
+				mailbox: "[Gmail]/All Mail",
+				imap_uid: 1,
+				uidvalidity: 100,
+				raw_rfc822_path: rawPath,
+				raw_sha256: "old-raw-sha",
+				state: "active",
+				first_seen_at: "2026-01-02T00:00:00.000Z",
+				last_seen_at: "2026-01-02T00:00:00.000Z",
+				tombstoned_at: null,
+				updated_at: "2026-01-02T00:00:00.000Z",
+			})
+			.execute();
+
+		vi.doUnmock("#/lib/imap");
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		const result = await sync.reextractStoredParseErrorMessage({
+			messageId: "msg-reextract",
+		});
+
+		expect(result).toMatchObject({
+			outcome: "recovered",
+			accountId: "acct-1",
+			messageId: "msg-reextract",
+			createdAt: "2026-01-01T00:00:00.000Z",
+			ingestedAt: "2026-01-03T00:00:00.000Z",
+		});
+
+		const message = await db
+			.selectFrom("messages")
+			.select([
+				"message_id",
+				"subject",
+				"sender_address",
+				"body_text_primary",
+				"body_text_normalized",
+				"parse_status",
+				"parse_error_reason",
+				"received_at",
+				"created_at",
+				"ingested_at",
+				"conversation_id",
+			])
+			.where("id", "=", "msg-reextract")
+			.executeTakeFirstOrThrow();
+		expect(message).toMatchObject({
+			message_id: "<gm-reextract@example.com>",
+			subject: "Recovered receipt",
+			sender_address: "billing@example.com",
+			body_text_primary: "Recovered body",
+			body_text_normalized: "Recovered body",
+			parse_status: "parsed",
+			parse_error_reason: null,
+			received_at: "2026-01-02T00:00:00.000Z",
+			created_at: "2026-01-01T00:00:00.000Z",
+			ingested_at: "2026-01-03T00:00:00.000Z",
+		});
+		expect(message.conversation_id).toBeTruthy();
+
+		const source = await db
+			.selectFrom("message_sources")
+			.select(["raw_rfc822_path", "raw_sha256"])
+			.where("id", "=", "src-reextract")
+			.executeTakeFirstOrThrow();
+		expect(source.raw_rfc822_path).toBe(rawPath);
+		expect(source.raw_sha256).not.toBe("old-raw-sha");
+	});
+
+	it("preserves the stored raw sha when reparsing the same raw bytes", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		const rawDir = join(runtime.dataDir, "accounts", "acct-1", "raw");
+		const rawPath = join(rawDir, "gm-stable-raw-sha.eml");
+		const raw = Buffer.from(
+			[
+				"From: Stable <stable@example.com>",
+				"To: acct-1@example.com",
+				"Message-ID: <gm-stable-raw-sha@example.com>",
+				"Subject: Stable raw sha",
+				"",
+				"Stable body",
+				"",
+			].join("\n"),
+		);
+		const rawSha256 = createHash("sha256").update(raw).digest("hex");
+		mkdirSync(rawDir, { recursive: true });
+		writeFileSync(rawPath, raw);
+
+		await db
+			.insertInto("messages")
+			.values({
+				id: "msg-stable-raw-sha",
+				account_id: "acct-1",
+				message_id: "<msg-stable-raw-sha@example.com>",
+				thread_key: "thread-stable-raw-sha",
+				received_at: "2026-01-02T00:00:00.000Z",
+				ingested_at: "2026-01-03T00:00:00.000Z",
+				conversation_id: null,
+				sender_name: null,
+				sender_address: null,
+				to_json: "[]",
+				cc_json: "[]",
+				subject: null,
+				in_reply_to: null,
+				body_text_primary: "",
+				body_text_forwarded: "",
+				body_text_normalized: "",
+				snippet: "",
+				attachment_count: 0,
+				has_html: 0,
+				raw_byte_start: 0,
+				raw_byte_end: 0,
+				parse_status: "error",
+				body_extraction_strategy: "parse_error",
+				parse_error_reason: "input.html?.trim is not a function",
+				token_estimate: 0,
+				content_sha256: "stable-raw-content-sha",
+				created_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("message_sources")
+			.values({
+				id: "src-stable-raw-sha",
+				message_id: "msg-stable-raw-sha",
+				account_id: "acct-1",
+				remote_message_id: "gm-stable-raw-sha",
+				remote_thread_id: "thr-stable-raw-sha",
+				mailbox: "[Gmail]/All Mail",
+				imap_uid: 1,
+				uidvalidity: 100,
+				raw_rfc822_path: rawPath,
+				raw_sha256: rawSha256,
+				state: "active",
+				first_seen_at: "2026-01-02T00:00:00.000Z",
+				last_seen_at: "2026-01-02T00:00:00.000Z",
+				tombstoned_at: null,
+				updated_at: "2026-01-02T00:00:00.000Z",
+			})
+			.execute();
+
+		vi.doUnmock("#/lib/imap");
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		const result = await sync.reextractStoredParseErrorMessage({
+			messageId: "msg-stable-raw-sha",
+		});
+
+		expect(result.outcome).toBe("recovered");
+		const source = await db
+			.selectFrom("message_sources")
+			.select(["raw_sha256"])
+			.where("id", "=", "src-stable-raw-sha")
+			.executeTakeFirstOrThrow();
+		expect(source.raw_sha256).toBe(rawSha256);
+	});
+
+	it("reports missing raw files without mutating the message row", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		await db
+			.insertInto("messages")
+			.values({
+				id: "msg-missing-raw",
+				account_id: "acct-1",
+				message_id: "<msg-missing-raw@example.com>",
+				thread_key: "thread-missing-raw",
+				received_at: "2026-01-02T00:00:00.000Z",
+				ingested_at: "2026-01-03T00:00:00.000Z",
+				conversation_id: null,
+				sender_name: null,
+				sender_address: null,
+				to_json: "[]",
+				cc_json: "[]",
+				subject: null,
+				in_reply_to: null,
+				body_text_primary: "",
+				body_text_forwarded: "",
+				body_text_normalized: "",
+				snippet: "",
+				attachment_count: 0,
+				has_html: 0,
+				raw_byte_start: 0,
+				raw_byte_end: 0,
+				parse_status: "error",
+				body_extraction_strategy: "parse_error",
+				parse_error_reason: "input.html?.trim is not a function",
+				token_estimate: 0,
+				content_sha256: "missing-raw-sha",
+				created_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("message_sources")
+			.values({
+				id: "src-missing-raw",
+				message_id: "msg-missing-raw",
+				account_id: "acct-1",
+				remote_message_id: "gm-missing-raw",
+				remote_thread_id: "thr-missing-raw",
+				mailbox: "[Gmail]/All Mail",
+				imap_uid: 1,
+				uidvalidity: 100,
+				raw_rfc822_path: join(runtime.dataDir, "missing.eml"),
+				raw_sha256: "missing-raw-sha",
+				state: "active",
+				first_seen_at: "2026-01-02T00:00:00.000Z",
+				last_seen_at: "2026-01-02T00:00:00.000Z",
+				tombstoned_at: null,
+				updated_at: "2026-01-02T00:00:00.000Z",
+			})
+			.execute();
+
+		vi.doUnmock("#/lib/imap");
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		const result = await sync.reextractStoredParseErrorMessage({
+			messageId: "msg-missing-raw",
+		});
+
+		expect(result.outcome).toBe("missingRaw");
+		const message = await db
+			.selectFrom("messages")
+			.select(["parse_status", "parse_error_reason", "content_sha256"])
+			.where("id", "=", "msg-missing-raw")
+			.executeTakeFirstOrThrow();
+		expect(message).toEqual({
+			parse_status: "error",
+			parse_error_reason: "input.html?.trim is not a function",
+			content_sha256: "missing-raw-sha",
+		});
+	});
+
+	it("prefers active and newest source rows when reparsing stored messages", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		const rawDir = join(runtime.dataDir, "accounts", "acct-1", "raw");
+		const olderRawPath = join(rawDir, "older.eml");
+		const preferredRawPath = join(rawDir, "preferred.eml");
+		const tombstonedRawPath = join(rawDir, "tombstoned.eml");
+		mkdirSync(rawDir, { recursive: true });
+		writeFileSync(
+			olderRawPath,
+			[
+				"From: Older <older@example.com>",
+				"Message-ID: <older@example.com>",
+				"Subject: Older source",
+				"",
+				"Older body",
+			].join("\n"),
+		);
+		writeFileSync(
+			preferredRawPath,
+			[
+				"From: Preferred <preferred@example.com>",
+				"Message-ID: <preferred@example.com>",
+				"Subject: Preferred source",
+				"",
+				"Preferred body",
+			].join("\n"),
+		);
+		writeFileSync(
+			tombstonedRawPath,
+			[
+				"From: Tombstoned <tombstoned@example.com>",
+				"Message-ID: <tombstoned@example.com>",
+				"Subject: Tombstoned source",
+				"",
+				"Tombstoned body",
+			].join("\n"),
+		);
+
+		await db
+			.insertInto("messages")
+			.values({
+				id: "msg-preferred-source",
+				account_id: "acct-1",
+				message_id: "<msg-preferred-source@example.com>",
+				thread_key: "thread-preferred-source",
+				received_at: "2026-01-02T00:00:00.000Z",
+				ingested_at: "2026-01-03T00:00:00.000Z",
+				conversation_id: null,
+				sender_name: null,
+				sender_address: null,
+				to_json: "[]",
+				cc_json: "[]",
+				subject: null,
+				in_reply_to: null,
+				body_text_primary: "",
+				body_text_forwarded: "",
+				body_text_normalized: "",
+				snippet: "",
+				attachment_count: 0,
+				has_html: 0,
+				raw_byte_start: 0,
+				raw_byte_end: 0,
+				parse_status: "error",
+				body_extraction_strategy: "parse_error",
+				parse_error_reason: "input.html?.trim is not a function",
+				token_estimate: 0,
+				content_sha256: "preferred-source-sha",
+				created_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("message_sources")
+			.values([
+				{
+					id: "src-preferred-older",
+					message_id: "msg-preferred-source",
+					account_id: "acct-1",
+					remote_message_id: "gm-preferred-source-older",
+					remote_thread_id: "thr-preferred-source",
+					mailbox: "[Gmail]/All Mail",
+					imap_uid: 1,
+					uidvalidity: 100,
+					raw_rfc822_path: olderRawPath,
+					raw_sha256: "older-sha",
+					state: "active",
+					first_seen_at: "2026-01-01T00:00:00.000Z",
+					last_seen_at: "2026-01-01T00:00:00.000Z",
+					tombstoned_at: null,
+					updated_at: "2026-01-01T00:00:00.000Z",
+				},
+				{
+					id: "src-preferred-newest",
+					message_id: "msg-preferred-source",
+					account_id: "acct-1",
+					remote_message_id: "gm-preferred-source-newest",
+					remote_thread_id: "thr-preferred-source",
+					mailbox: "[Gmail]/All Mail",
+					imap_uid: 2,
+					uidvalidity: 100,
+					raw_rfc822_path: preferredRawPath,
+					raw_sha256: "preferred-sha",
+					state: "active",
+					first_seen_at: "2026-01-02T00:00:00.000Z",
+					last_seen_at: "2026-01-02T00:00:00.000Z",
+					tombstoned_at: null,
+					updated_at: "2026-01-02T00:00:00.000Z",
+				},
+				{
+					id: "src-preferred-tombstoned",
+					message_id: "msg-preferred-source",
+					account_id: "acct-1",
+					remote_message_id: "gm-preferred-source-tombstoned",
+					remote_thread_id: "thr-preferred-source",
+					mailbox: "[Gmail]/All Mail",
+					imap_uid: 3,
+					uidvalidity: 100,
+					raw_rfc822_path: tombstonedRawPath,
+					raw_sha256: "tombstoned-sha",
+					state: "tombstoned",
+					first_seen_at: "2026-01-03T00:00:00.000Z",
+					last_seen_at: "2026-01-03T00:00:00.000Z",
+					tombstoned_at: "2026-01-03T00:00:00.000Z",
+					updated_at: "2026-01-03T00:00:00.000Z",
+				},
+			])
+			.execute();
+
+		vi.doUnmock("#/lib/imap");
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		const result = await sync.reextractStoredParseErrorMessage({
+			messageId: "msg-preferred-source",
+		});
+
+		expect(result.outcome).toBe("recovered");
+		const message = await db
+			.selectFrom("messages")
+			.select(["subject", "sender_address", "body_text_primary"])
+			.where("id", "=", "msg-preferred-source")
+			.executeTakeFirstOrThrow();
+		expect(message).toEqual({
+			subject: "Preferred source",
+			sender_address: "preferred@example.com",
+			body_text_primary: "Preferred body",
+		});
+	});
+
+	it("reports missing raw when the preferred source row has no RFC822 path", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		await db
+			.insertInto("messages")
+			.values({
+				id: "msg-missing-raw-path",
+				account_id: "acct-1",
+				message_id: "<msg-missing-raw-path@example.com>",
+				thread_key: "thread-missing-raw-path",
+				received_at: "2026-01-02T00:00:00.000Z",
+				ingested_at: "2026-01-03T00:00:00.000Z",
+				conversation_id: null,
+				sender_name: null,
+				sender_address: null,
+				to_json: "[]",
+				cc_json: "[]",
+				subject: null,
+				in_reply_to: null,
+				body_text_primary: "",
+				body_text_forwarded: "",
+				body_text_normalized: "",
+				snippet: "",
+				attachment_count: 0,
+				has_html: 0,
+				raw_byte_start: 0,
+				raw_byte_end: 0,
+				parse_status: "error",
+				body_extraction_strategy: "parse_error",
+				parse_error_reason: "input.html?.trim is not a function",
+				token_estimate: 0,
+				content_sha256: "missing-raw-path-sha",
+				created_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("message_sources")
+			.values({
+				id: "src-missing-raw-path",
+				message_id: "msg-missing-raw-path",
+				account_id: "acct-1",
+				remote_message_id: "gm-missing-raw-path",
+				remote_thread_id: "thr-missing-raw-path",
+				mailbox: "[Gmail]/All Mail",
+				imap_uid: 1,
+				uidvalidity: 100,
+				raw_rfc822_path: null,
+				raw_sha256: "missing-raw-path-sha",
+				state: "active",
+				first_seen_at: "2026-01-02T00:00:00.000Z",
+				last_seen_at: "2026-01-02T00:00:00.000Z",
+				tombstoned_at: null,
+				updated_at: "2026-01-02T00:00:00.000Z",
+			})
+			.execute();
+
+		vi.doUnmock("#/lib/imap");
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		const result = await sync.reextractStoredParseErrorMessage({
+			messageId: "msg-missing-raw-path",
+		});
+
+		expect(result.outcome).toBe("missingRaw");
+	});
+
+	it("rethrows unexpected raw read failures during parse-error re-extraction", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		const rawDir = join(runtime.dataDir, "accounts", "acct-1", "raw");
+		mkdirSync(rawDir, { recursive: true });
+		await db
+			.insertInto("messages")
+			.values({
+				id: "msg-read-error",
+				account_id: "acct-1",
+				message_id: "<msg-read-error@example.com>",
+				thread_key: "thread-read-error",
+				received_at: "2026-01-02T00:00:00.000Z",
+				ingested_at: "2026-01-03T00:00:00.000Z",
+				conversation_id: null,
+				sender_name: null,
+				sender_address: null,
+				to_json: "[]",
+				cc_json: "[]",
+				subject: null,
+				in_reply_to: null,
+				body_text_primary: "",
+				body_text_forwarded: "",
+				body_text_normalized: "",
+				snippet: "",
+				attachment_count: 0,
+				has_html: 0,
+				raw_byte_start: 0,
+				raw_byte_end: 0,
+				parse_status: "error",
+				body_extraction_strategy: "parse_error",
+				parse_error_reason: "input.html?.trim is not a function",
+				token_estimate: 0,
+				content_sha256: "read-error-sha",
+				created_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("message_sources")
+			.values({
+				id: "src-read-error",
+				message_id: "msg-read-error",
+				account_id: "acct-1",
+				remote_message_id: "gm-read-error",
+				remote_thread_id: "thr-read-error",
+				mailbox: "[Gmail]/All Mail",
+				imap_uid: 1,
+				uidvalidity: 100,
+				raw_rfc822_path: rawDir,
+				raw_sha256: "read-error-sha",
+				state: "active",
+				first_seen_at: "2026-01-02T00:00:00.000Z",
+				last_seen_at: "2026-01-02T00:00:00.000Z",
+				tombstoned_at: null,
+				updated_at: "2026-01-02T00:00:00.000Z",
+			})
+			.execute();
+
+		vi.doUnmock("#/lib/imap");
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await expect(
+			sync.reextractStoredParseErrorMessage({
+				messageId: "msg-read-error",
+			}),
+		).rejects.toThrow();
+	});
+
+	it("reports still-failing reparses without mutating the message row", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		const rawDir = join(runtime.dataDir, "accounts", "acct-1", "raw");
+		const rawPath = join(rawDir, "gm-still-failing.eml");
+		mkdirSync(rawDir, { recursive: true });
+		writeFileSync(rawPath, "raw");
+		await db
+			.insertInto("messages")
+			.values({
+				id: "msg-still-failing",
+				account_id: "acct-1",
+				message_id: "<msg-still-failing@example.com>",
+				thread_key: "thread-still-failing",
+				received_at: "2026-01-02T00:00:00.000Z",
+				ingested_at: "2026-01-03T00:00:00.000Z",
+				conversation_id: null,
+				sender_name: null,
+				sender_address: null,
+				to_json: "[]",
+				cc_json: "[]",
+				subject: null,
+				in_reply_to: null,
+				body_text_primary: "",
+				body_text_forwarded: "",
+				body_text_normalized: "",
+				snippet: "",
+				attachment_count: 0,
+				has_html: 0,
+				raw_byte_start: 0,
+				raw_byte_end: 0,
+				parse_status: "error",
+				body_extraction_strategy: "parse_error",
+				parse_error_reason: "input.html?.trim is not a function",
+				token_estimate: 0,
+				content_sha256: "still-failing-sha",
+				created_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("message_sources")
+			.values({
+				id: "src-still-failing",
+				message_id: "msg-still-failing",
+				account_id: "acct-1",
+				remote_message_id: "gm-still-failing",
+				remote_thread_id: "thr-still-failing",
+				mailbox: "[Gmail]/All Mail",
+				imap_uid: 1,
+				uidvalidity: 100,
+				raw_rfc822_path: rawPath,
+				raw_sha256: "still-failing-sha",
+				state: "active",
+				first_seen_at: "2026-01-02T00:00:00.000Z",
+				last_seen_at: "2026-01-02T00:00:00.000Z",
+				tombstoned_at: null,
+				updated_at: "2026-01-02T00:00:00.000Z",
+			})
+			.execute();
+
+		vi.doMock("#/lib/imap", async () => {
+			const actual =
+				await vi.importActual<typeof import("#/lib/imap")>("#/lib/imap");
+			return {
+				...actual,
+				parseRawMessage: vi.fn(async () => ({
+					id: "msg-still-failing-new",
+					messageId: "<msg-still-failing-new@example.com>",
+					threadKey: "thread-still-failing-new",
+					receivedAt: "2026-01-02T00:00:00.000Z",
+					senderName: null,
+					senderAddress: null,
+					toJson: "[]",
+					ccJson: "[]",
+					subject: null,
+					inReplyTo: null,
+					bodyTextPrimary: "",
+					bodyTextForwarded: "",
+					bodyTextNormalized: "",
+					snippet: "",
+					attachmentCount: 0,
+					hasHtml: 0,
+					parseStatus: "error",
+					bodyExtractionStrategy: "parse_error",
+					parseErrorReason: "still broken",
+					tokenEstimate: 0,
+					contentSha256: "still-failing-new-sha",
+					attachments: [],
+				})),
+			};
+		});
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		const result = await sync.reextractStoredParseErrorMessage({
+			messageId: "msg-still-failing",
+		});
+
+		expect(result).toMatchObject({
+			outcome: "stillFailing",
+			parseErrorReason: "still broken",
+		});
+		const message = await db
+			.selectFrom("messages")
+			.select(["parse_status", "parse_error_reason", "content_sha256"])
+			.where("id", "=", "msg-still-failing")
+			.executeTakeFirstOrThrow();
+		expect(message).toEqual({
+			parse_status: "error",
+			parse_error_reason: "input.html?.trim is not a function",
+			content_sha256: "still-failing-sha",
+		});
 	});
 });

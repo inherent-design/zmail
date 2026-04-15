@@ -7,6 +7,7 @@ import { simpleParser } from "mailparser";
 
 import { rawEmlPath } from "#/lib/config";
 import {
+	buildContentSha256,
 	buildThreadKey,
 	coerceReceivedAt,
 	normalizeBodyText,
@@ -41,6 +42,10 @@ export interface FetchedMessage {
 	sha256: string;
 }
 
+export function buildRawRfc822Sha256(raw: Buffer) {
+	return createHash("sha256").update(raw).digest("hex");
+}
+
 function mapFetchedMessage(
 	msg: {
 		uid: number;
@@ -55,7 +60,7 @@ function mapFetchedMessage(
 		return null;
 	}
 
-	const sha256 = createHash("sha256").update(raw).digest("hex");
+	const sha256 = buildRawRfc822Sha256(raw);
 	const gmMsgId = String(msg.emailId ?? msg["x-gm-msgid"] ?? "");
 	const gmThrid = String(msg.threadId ?? msg["x-gm-thrid"] ?? "");
 
@@ -153,11 +158,15 @@ export interface ParsedImapMessage {
 	ccJson: string;
 	subject: string | null;
 	inReplyTo: string | null;
+	bodyTextPrimary: string;
+	bodyTextForwarded: string;
 	bodyTextNormalized: string;
 	snippet: string;
 	attachmentCount: number;
 	hasHtml: number;
 	parseStatus: string;
+	bodyExtractionStrategy: string;
+	parseErrorReason: string | null;
 	tokenEstimate: number;
 	contentSha256: string;
 	attachments: Array<{
@@ -172,7 +181,8 @@ export interface ParsedImapMessage {
 
 export async function parseRawMessage(
 	raw: Buffer,
-	sha256: string,
+	_rawSha256: string,
+	receivedAtFallback?: string | null,
 ): Promise<ParsedImapMessage> {
 	const { randomUUID } = await import("node:crypto");
 
@@ -208,6 +218,17 @@ export async function parseRawMessage(
 				isInline: att.contentDisposition === "inline" ? 1 : 0,
 			}),
 		);
+		const receivedAt =
+			coerceReceivedAt(parsed.date) ?? receivedAtFallback ?? null;
+		const senderAddress = parsed.from?.value?.[0]?.address ?? null;
+		const subject = parsed.subject ?? null;
+		const contentSha256 = buildContentSha256({
+			senderAddress,
+			subject,
+			receivedAt,
+			bodyTextNormalized: body.bodyTextNormalized,
+			attachments,
+		});
 
 		return {
 			id: randomUUID(),
@@ -217,41 +238,58 @@ export async function parseRawMessage(
 				inReplyTo,
 				subject: parsed.subject,
 			}),
-			receivedAt: coerceReceivedAt(parsed.date),
+			receivedAt,
 			senderName: parsed.from?.value?.[0]?.name ?? null,
-			senderAddress: parsed.from?.value?.[0]?.address ?? null,
+			senderAddress,
 			toJson: toAddressJson(parsed.to?.value),
 			ccJson: toAddressJson(parsed.cc?.value),
-			subject: parsed.subject ?? null,
+			subject,
 			inReplyTo,
+			bodyTextPrimary: body.bodyTextPrimary,
+			bodyTextForwarded: body.bodyTextForwarded,
 			bodyTextNormalized: body.bodyTextNormalized,
 			snippet: body.snippet,
 			attachmentCount: attachments.length,
 			hasHtml: body.hasHtml ? 1 : 0,
 			parseStatus: "parsed",
+			bodyExtractionStrategy: body.bodyExtractionStrategy,
+			parseErrorReason: null,
 			tokenEstimate: body.tokenEstimate,
-			contentSha256: sha256,
+			contentSha256,
 			attachments,
 		};
-	} catch {
+	} catch (error) {
+		const parseErrorReason =
+			error instanceof Error ? error.message : String(error);
+		const receivedAt = receivedAtFallback ?? null;
 		return {
 			id: randomUUID(),
 			messageId: `<${randomUUID()}@parse-error>`,
 			threadKey: `<${randomUUID()}@parse-error>`,
-			receivedAt: null,
+			receivedAt,
 			senderName: null,
 			senderAddress: null,
 			toJson: "[]",
 			ccJson: "[]",
 			subject: null,
 			inReplyTo: null,
+			bodyTextPrimary: "",
+			bodyTextForwarded: "",
 			bodyTextNormalized: "",
 			snippet: "",
 			attachmentCount: 0,
 			hasHtml: 0,
 			parseStatus: "error",
+			bodyExtractionStrategy: "parse_error",
+			parseErrorReason,
 			tokenEstimate: 0,
-			contentSha256: sha256,
+			contentSha256: buildContentSha256({
+				senderAddress: null,
+				subject: null,
+				receivedAt,
+				bodyTextNormalized: "",
+				attachments: [],
+			}),
 			attachments: [],
 		};
 	}

@@ -16,11 +16,16 @@ CREATE TABLE IF NOT EXISTS accounts (
 CREATE TABLE IF NOT EXISTS account_sync_state (
   account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
   uidvalidity INTEGER,
-  last_seen_uid INTEGER,
-  last_full_sync_started_at TEXT,
-  last_full_sync_completed_at TEXT,
+  latest_uid_cursor INTEGER,
+  earliest_uid_cursor INTEGER,
+  backfill_snapshot_uid INTEGER,
+  backfill_next_uid INTEGER,
+  last_bootstrap_started_at TEXT,
+  last_bootstrap_completed_at TEXT,
   last_delta_sync_at TEXT,
   last_reconcile_at TEXT,
+  last_backfill_sync_at TEXT,
+  backfill_completed_at TEXT,
   last_idle_started_at TEXT,
   last_idle_heartbeat_at TEXT,
   watcher_status TEXT NOT NULL DEFAULT 'stopped',
@@ -30,18 +35,34 @@ CREATE TABLE IF NOT EXISTS account_sync_state (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS conversations (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  gmail_thread_id TEXT NOT NULL,
+  first_message_received_at TEXT,
+  last_message_received_at TEXT,
+  message_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (account_id, gmail_thread_id)
+);
+
 CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,
   account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
   message_id TEXT NOT NULL,
   thread_key TEXT NOT NULL,
   received_at TEXT,
+  ingested_at TEXT NOT NULL,
+  conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
   sender_name TEXT,
   sender_address TEXT,
   to_json TEXT NOT NULL,
   cc_json TEXT NOT NULL,
   subject TEXT,
   in_reply_to TEXT,
+  body_text_primary TEXT NOT NULL DEFAULT '',
+  body_text_forwarded TEXT NOT NULL DEFAULT '',
   body_text_normalized TEXT NOT NULL,
   snippet TEXT NOT NULL,
   attachment_count INTEGER NOT NULL DEFAULT 0,
@@ -49,6 +70,8 @@ CREATE TABLE IF NOT EXISTS messages (
   raw_byte_start INTEGER NOT NULL DEFAULT 0,
   raw_byte_end INTEGER NOT NULL DEFAULT 0,
   parse_status TEXT NOT NULL,
+  body_extraction_strategy TEXT NOT NULL DEFAULT 'plain_text',
+  parse_error_reason TEXT,
   token_estimate INTEGER NOT NULL DEFAULT 0,
   content_sha256 TEXT,
   created_at TEXT NOT NULL
@@ -90,10 +113,6 @@ CREATE TABLE IF NOT EXISTS jobs (
   status TEXT NOT NULL,
   model TEXT,
   prompt_version TEXT,
-  batch_id TEXT,
-  input_file_path TEXT,
-  output_file_path TEXT,
-  error_file_path TEXT,
   request_count INTEGER NOT NULL DEFAULT 0,
   success_count INTEGER NOT NULL DEFAULT 0,
   error_count INTEGER NOT NULL DEFAULT 0,
@@ -146,6 +165,143 @@ CREATE TABLE IF NOT EXISTS message_labels (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS message_secondary_results (
+  id TEXT PRIMARY KEY,
+  message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  classifier_key TEXT NOT NULL,
+  schema_version TEXT NOT NULL,
+  job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
+  model TEXT NOT NULL,
+  prompt_version TEXT NOT NULL,
+  source TEXT NOT NULL,
+  result_json TEXT NOT NULL,
+  raw_response_json TEXT NOT NULL,
+  usage_json TEXT,
+  input_content_sha256 TEXT,
+  input_registry_sha256 TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS message_secondary_heads (
+  message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  classifier_key TEXT NOT NULL,
+  secondary_result_id TEXT REFERENCES message_secondary_results(id) ON DELETE CASCADE,
+  status TEXT NOT NULL,
+  low_confidence INTEGER NOT NULL DEFAULT 0,
+  content_sha256 TEXT,
+  registry_sha256 TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (message_id, classifier_key)
+);
+
+CREATE TABLE IF NOT EXISTS registry_identities (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  aliases_json TEXT NOT NULL DEFAULT '[]',
+  email_addresses_json TEXT NOT NULL DEFAULT '[]',
+  domains_json TEXT NOT NULL DEFAULT '[]',
+  tax_owner_hint TEXT,
+  notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS registry_institutions (
+  id TEXT PRIMARY KEY,
+  display_name TEXT NOT NULL,
+  aliases_json TEXT NOT NULL DEFAULT '[]',
+  domains_json TEXT NOT NULL DEFAULT '[]',
+  notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS registry_financial_accounts (
+  id TEXT PRIMARY KEY,
+  institution_id TEXT REFERENCES registry_institutions(id) ON DELETE SET NULL,
+  owner_identity_id TEXT REFERENCES registry_identities(id) ON DELETE SET NULL,
+  display_name TEXT NOT NULL,
+  aliases_json TEXT NOT NULL DEFAULT '[]',
+  account_mask TEXT,
+  account_last4 TEXT,
+  account_type TEXT,
+  currency TEXT,
+  tax_owner_hint TEXT,
+  notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS registry_sender_rules (
+  id TEXT PRIMARY KEY,
+  sender_pattern TEXT NOT NULL,
+  domain TEXT,
+  owner_identity_id TEXT REFERENCES registry_identities(id) ON DELETE SET NULL,
+  institution_id TEXT REFERENCES registry_institutions(id) ON DELETE SET NULL,
+  financial_account_id TEXT REFERENCES registry_financial_accounts(id) ON DELETE SET NULL,
+  message_kind_hint TEXT,
+  priority INTEGER NOT NULL DEFAULT 100,
+  notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS registry_import_state (
+  key TEXT PRIMARY KEY,
+  combined_sha256 TEXT NOT NULL,
+  source_dir TEXT NOT NULL,
+  counts_json TEXT NOT NULL DEFAULT '{}',
+  imported_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS finance_event_candidates (
+  id TEXT PRIMARY KEY,
+  canonical_key TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL DEFAULT 'candidate',
+  event_kind TEXT NOT NULL,
+  direction TEXT,
+  amount_value TEXT,
+  currency TEXT,
+  occurred_at TEXT,
+  merchant_or_counterparty TEXT,
+  owner_identity_id TEXT REFERENCES registry_identities(id) ON DELETE SET NULL,
+  financial_account_id TEXT REFERENCES registry_financial_accounts(id) ON DELETE SET NULL,
+  institution_id TEXT REFERENCES registry_institutions(id) ON DELETE SET NULL,
+  category_hint TEXT,
+  tax_relevance_hint TEXT,
+  evidence_count INTEGER NOT NULL DEFAULT 0,
+  first_message_received_at TEXT,
+  last_message_received_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS finance_document_candidates (
+  id TEXT PRIMARY KEY,
+  canonical_key TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL DEFAULT 'candidate',
+  document_type TEXT NOT NULL,
+  issuer TEXT,
+  external_id TEXT,
+  statement_period_start TEXT,
+  statement_period_end TEXT,
+  due_at TEXT,
+  tax_year INTEGER,
+  owner_identity_id TEXT REFERENCES registry_identities(id) ON DELETE SET NULL,
+  financial_account_id TEXT REFERENCES registry_financial_accounts(id) ON DELETE SET NULL,
+  institution_id TEXT REFERENCES registry_institutions(id) ON DELETE SET NULL,
+  evidence_count INTEGER NOT NULL DEFAULT 0,
+  first_message_received_at TEXT,
+  last_message_received_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS finance_event_evidence (
+  id TEXT PRIMARY KEY,
+  event_candidate_id TEXT REFERENCES finance_event_candidates(id) ON DELETE CASCADE,
+  document_candidate_id TEXT REFERENCES finance_document_candidates(id) ON DELETE CASCADE,
+  message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  secondary_result_id TEXT NOT NULL REFERENCES message_secondary_results(id) ON DELETE CASCADE,
+  transaction_index INTEGER,
+  document_index INTEGER,
+  evidence_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS reviews (
   id TEXT PRIMARY KEY,
   message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
@@ -176,8 +332,14 @@ CREATE INDEX IF NOT EXISTS messages_account_received_idx
 CREATE INDEX IF NOT EXISTS messages_account_thread_idx
   ON messages (account_id, thread_key);
 
+CREATE INDEX IF NOT EXISTS messages_conversation_idx
+  ON messages (conversation_id);
+
 CREATE INDEX IF NOT EXISTS messages_subject_idx
   ON messages (subject);
+
+CREATE UNIQUE INDEX IF NOT EXISTS accounts_email_address_idx
+  ON accounts (email_address);
 
 CREATE UNIQUE INDEX IF NOT EXISTS message_sources_account_remote_idx
   ON message_sources (account_id, remote_message_id)
@@ -201,6 +363,33 @@ CREATE INDEX IF NOT EXISTS classification_results_message_created_idx
 
 CREATE INDEX IF NOT EXISTS message_labels_bucket_confidence_idx
   ON message_labels (primary_bucket, low_confidence);
+
+CREATE INDEX IF NOT EXISTS message_secondary_results_message_classifier_created_idx
+  ON message_secondary_results (message_id, classifier_key, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS message_secondary_results_classifier_created_idx
+  ON message_secondary_results (classifier_key, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS message_secondary_heads_classifier_status_idx
+  ON message_secondary_heads (classifier_key, status);
+
+CREATE INDEX IF NOT EXISTS registry_sender_rules_priority_idx
+  ON registry_sender_rules (priority, sender_pattern);
+
+CREATE INDEX IF NOT EXISTS finance_event_candidates_updated_idx
+  ON finance_event_candidates (updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS finance_document_candidates_updated_idx
+  ON finance_document_candidates (updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS finance_event_evidence_message_idx
+  ON finance_event_evidence (message_id);
+
+CREATE INDEX IF NOT EXISTS finance_event_evidence_event_idx
+  ON finance_event_evidence (event_candidate_id);
+
+CREATE INDEX IF NOT EXISTS finance_event_evidence_document_idx
+  ON finance_event_evidence (document_candidate_id);
 
 CREATE INDEX IF NOT EXISTS reviews_status_created_idx
   ON reviews (status, created_at);

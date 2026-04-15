@@ -47,7 +47,28 @@ For a clean local reset, run:
 mise run db:reset && mise run db:migrate
 ```
 
-`pnpm db:reset` removes the local SQLite files, account storage, and temporary OAuth state. It is a destructive local reset and does not preserve compatibility with existing databases.
+`pnpm db:reset` removes the local SQLite files, account storage, and temporary OAuth state. It is the full destructive reset.
+
+`pnpm db:reset:messages` rebuilds the message corpus while preserving account rows and `data/accounts/<accountId>/google-oauth.json`. It wipes message/state data, deletes stored raw `.eml` files, recreates the DB on the current schema, and queues fresh `sync_account_full` jobs for enabled accounts.
+
+`pnpm db:reset:jobs` clears only the `jobs` table.
+
+`pnpm db:migrate` now also repairs mixed local DBs that already have the V2 message model but are missing the additive secondary/registry/finance tables.
+
+If the app reports that the local DB predates the rewritten baseline, use the lower-disruption recovery first:
+
+```bash
+pnpm db:reset:messages
+```
+
+Use the full wipe only when you also want to drop account storage:
+
+```bash
+pnpm db:reset
+pnpm db:migrate
+```
+
+`pnpm reextract:parse-errors` is a supported recovery path only for fresh V2 DBs when a parser regression leaves messages in `parse_status = 'error'`. It is not a rescue path for old pre-secondary local DBs.
 
 ## Secrets
 
@@ -110,6 +131,11 @@ pnpm preview
 pnpm router:generate
 pnpm worker:drain
 pnpm pi:connect
+pnpm db:migrate
+pnpm db:reset
+pnpm db:reset:messages
+pnpm db:reset:jobs
+pnpm reextract:parse-errors
 pnpm test:unit
 pnpm coverage
 pnpm check

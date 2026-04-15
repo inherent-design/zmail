@@ -212,7 +212,7 @@ describe("runtime integration", () => {
 			.where("id", "=", reviews[0].id)
 			.executeTakeFirstOrThrow();
 		expect(resolvedReview.status).toBe("resolved");
-		expect(resolvedReview.override_label_json).toContain("message-label.v1");
+		expect(resolvedReview.override_label_json).toContain("message-label.v2");
 	});
 
 	it("builds overseer profiles and checks rebuild threshold", async () => {
@@ -234,12 +234,12 @@ describe("runtime integration", () => {
 			messageId,
 			model: "gpt-5.4-mini",
 			backend: "openai-subscription",
-			promptVersion: "classify-email-v1",
+			promptVersion: "classify-email-v2",
 			source: "model",
 			rawResponse: {},
 			usage: null,
 			label: {
-				schemaVersion: "message-label.v1",
+				schemaVersion: "message-label.v2",
 				nsfw: false,
 				finance: {
 					relevant: true,
@@ -248,11 +248,38 @@ describe("runtime integration", () => {
 					accountHint: "amex",
 					purpose: "client lunch",
 				},
-				social: {
+				people: {
 					personal: false,
 					private: false,
-					social: false,
 					business: true,
+					networking: false,
+					community: false,
+					recruiting: false,
+				},
+				commerce: {
+					transactional: true,
+					shopping: false,
+					subscription: false,
+					travel: false,
+					legal: false,
+				},
+				knowledge: {
+					course: false,
+					resource: false,
+					documentation: false,
+					newsletter: false,
+					research: false,
+				},
+				assets: {
+					license: false,
+					credential: false,
+					account: false,
+					document: false,
+				},
+				entertainment: {
+					gaming: false,
+					media: false,
+					fandom: false,
 				},
 				risk: {
 					businessSensitive: true,
@@ -260,12 +287,17 @@ describe("runtime integration", () => {
 				},
 				routing: {
 					primaryBucket: "finance",
+					secondaryBuckets: ["receipt"],
 					tags: ["receipt"],
 				},
 				confidence: {
 					overall: 0.9,
 					finance: 0.9,
-					social: 0.9,
+					people: 0.9,
+					commerce: 0.9,
+					knowledge: 0.1,
+					assets: 0.1,
+					entertainment: 0.05,
 					risk: 0.9,
 				},
 				explanation: "Seed label.",

@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 
+import {
+	seedLegacyPreSecondarySchema,
+	seedSecondaryTablesMissingSchema,
+} from "#/test/helpers/db";
 import { createTestRuntime } from "#/test/helpers/runtime";
 
 describe("db", () => {
-	it("creates migrations and the live-sync tables", async () => {
+	it("creates the baseline schema and records both migrations", async () => {
 		const runtime = await createTestRuntime();
 		const dbModule =
 			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
@@ -15,9 +19,11 @@ describe("db", () => {
 			.prepare("SELECT name FROM _migrations ORDER BY name")
 			.all();
 
-		expect(migrations.length).toBeGreaterThan(0);
+		expect(migrations).toEqual([
+			{ name: "001_init.sql" },
+			{ name: "002_secondary_schema.sql" },
+		]);
 
-		// account_sync_state and message_sources tables exist after migration
 		const tables = dbModule
 			.getSqlite()
 			.prepare(
@@ -26,7 +32,62 @@ describe("db", () => {
 			.all() as Array<{ name: string }>;
 		const tableNames = tables.map((t) => t.name);
 		expect(tableNames).toContain("account_sync_state");
+		expect(tableNames).toContain("conversations");
 		expect(tableNames).toContain("message_sources");
+		expect(tableNames).toContain("message_secondary_results");
+		expect(tableNames).toContain("message_secondary_heads");
+		expect(tableNames).toContain("registry_identities");
+		expect(tableNames).toContain("registry_institutions");
+		expect(tableNames).toContain("registry_financial_accounts");
+		expect(tableNames).toContain("registry_sender_rules");
+		expect(tableNames).toContain("registry_import_state");
+		expect(tableNames).toContain("finance_event_candidates");
+		expect(tableNames).toContain("finance_document_candidates");
+		expect(tableNames).toContain("finance_event_evidence");
+
+		const messageColumns = dbModule
+			.getSqlite()
+			.prepare("PRAGMA table_info(messages)")
+			.all() as Array<{ name: string }>;
+		expect(messageColumns.map((column) => column.name)).toEqual(
+			expect.arrayContaining([
+				"ingested_at",
+				"conversation_id",
+				"body_text_primary",
+				"body_text_forwarded",
+				"body_extraction_strategy",
+				"parse_error_reason",
+			]),
+		);
+
+		const conversationColumns = dbModule
+			.getSqlite()
+			.prepare("PRAGMA table_info(conversations)")
+			.all() as Array<{ name: string }>;
+		expect(conversationColumns.map((column) => column.name)).toEqual(
+			expect.arrayContaining([
+				"id",
+				"account_id",
+				"gmail_thread_id",
+				"first_message_received_at",
+				"last_message_received_at",
+				"message_count",
+				"created_at",
+				"updated_at",
+			]),
+		);
+		const messageIndexes = dbModule
+			.getSqlite()
+			.prepare("PRAGMA index_list(messages)")
+			.all() as Array<{ name: string }>;
+		expect(messageIndexes.map((index) => index.name)).toContain(
+			"messages_conversation_idx",
+		);
+		const conversationIndexes = dbModule
+			.getSqlite()
+			.prepare("PRAGMA index_list(conversations)")
+			.all() as Array<{ unique: number }>;
+		expect(conversationIndexes.some((index) => index.unique === 1)).toBe(true);
 
 		const jobColumns = dbModule
 			.getSqlite()
@@ -43,19 +104,18 @@ describe("db", () => {
 			.getSqlite()
 			.prepare("PRAGMA table_info(account_sync_state)")
 			.all() as Array<{ name: string }>;
-		const syncColumnNames = syncColumns.map((column) => column.name);
-
-		expect(syncColumnNames).toContain("latest_uid_cursor");
-		expect(syncColumnNames).toContain("earliest_uid_cursor");
-		expect(syncColumnNames).toContain("backfill_snapshot_uid");
-		expect(syncColumnNames).toContain("backfill_next_uid");
-		expect(syncColumnNames).toContain("last_bootstrap_started_at");
-		expect(syncColumnNames).toContain("last_bootstrap_completed_at");
-		expect(syncColumnNames).toContain("last_backfill_sync_at");
-		expect(syncColumnNames).toContain("backfill_completed_at");
-		expect(syncColumnNames).not.toContain("last_seen_uid");
-		expect(syncColumnNames).not.toContain("last_full_sync_started_at");
-		expect(syncColumnNames).not.toContain("last_full_sync_completed_at");
+		expect(syncColumns.map((column) => column.name)).toEqual(
+			expect.arrayContaining([
+				"latest_uid_cursor",
+				"earliest_uid_cursor",
+				"backfill_snapshot_uid",
+				"backfill_next_uid",
+				"last_bootstrap_started_at",
+				"last_bootstrap_completed_at",
+				"last_backfill_sync_at",
+				"backfill_completed_at",
+			]),
+		);
 	});
 
 	it("parses safe json with fallback and exposes fileName", async () => {
@@ -73,42 +133,69 @@ describe("db", () => {
 		expect(dbModule.fileName("/tmp/file.txt")).toBe("file.txt");
 	});
 
-	it("restores a missing bookkeeping row for migration 002 without replaying it", async () => {
+	it("builds a reset-required message without schema details when none are supplied", async () => {
 		const runtime = await createTestRuntime();
 		const dbModule =
 			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
 
-		dbModule.runMigrations();
-		const sqlite = dbModule.getSqlite();
-		sqlite
-			.prepare("DELETE FROM _migrations WHERE name = ?")
-			.run("002_jobs_live_cleanup.sql");
-
-		expect(() => dbModule.runMigrations()).not.toThrow();
-		expect(
-			sqlite
-				.prepare("SELECT name FROM _migrations WHERE name = ?")
-				.get("002_jobs_live_cleanup.sql"),
-		).toEqual({ name: "002_jobs_live_cleanup.sql" });
+		const message = dbModule.buildSchemaResetRequiredMessage();
+		expect(message).toContain(
+			"This local database predates the rewritten zmail baseline",
+		);
+		expect(message).toContain("1. pnpm db:reset:messages");
+		expect(message).toContain("1. pnpm db:reset");
+		expect(message).not.toContain("Missing tables:");
+		expect(message).not.toContain("Missing messages columns:");
 	});
 
-	it("restores a missing bookkeeping row for migration 003 without replaying it", async () => {
+	it("fails fast when a local DB predates the rewritten baseline", async () => {
 		const runtime = await createTestRuntime();
+		await seedLegacyPreSecondarySchema();
 		const dbModule =
 			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
 
-		dbModule.runMigrations();
-		const sqlite = dbModule.getSqlite();
-		sqlite
-			.prepare("DELETE FROM _migrations WHERE name = ?")
-			.run("003_account_sync_state_resumable_backfill.sql");
+		expect(() => dbModule.runMigrations()).toThrowError(
+			/This local database predates the rewritten zmail baseline/,
+		);
+		expect(() => dbModule.runMigrations()).toThrowError(
+			/Missing messages columns: ingested_at/,
+		);
+		expect(() => dbModule.runMigrations()).toThrowError(/parse_error_reason/);
+	});
+
+	it("repairs mixed databases that only need the secondary schema tables", async () => {
+		const runtime = await createTestRuntime();
+		await seedSecondaryTablesMissingSchema();
+		const dbModule =
+			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
 
 		expect(() => dbModule.runMigrations()).not.toThrow();
-		expect(
-			sqlite
-				.prepare("SELECT name FROM _migrations WHERE name = ?")
-				.get("003_account_sync_state_resumable_backfill.sql"),
-		).toEqual({ name: "003_account_sync_state_resumable_backfill.sql" });
+
+		const migrations = dbModule
+			.getSqlite()
+			.prepare("SELECT name FROM _migrations ORDER BY name")
+			.all();
+		expect(migrations).toEqual([
+			{ name: "001_init.sql" },
+			{ name: "002_secondary_schema.sql" },
+		]);
+
+		const tables = dbModule
+			.getSqlite()
+			.prepare(
+				"SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
+			)
+			.all() as Array<{ name: string }>;
+		expect(tables.map((table) => table.name)).toEqual(
+			expect.arrayContaining([
+				"message_secondary_results",
+				"message_secondary_heads",
+				"registry_import_state",
+				"finance_event_candidates",
+				"finance_document_candidates",
+				"finance_event_evidence",
+			]),
+		);
 	});
 
 	it("accounts table uses the live-only schema with provider_kind and sync columns", async () => {

@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 
 import Database from "better-sqlite3";
 
+import { buildContentSha256 } from "#/lib/normalize";
 import {
 	BACKLOG_BODY,
 	BACKLOG_MESSAGE_ID,
@@ -45,23 +46,46 @@ async function seedRuntime(dataDir: string) {
 	const backlogRawPath = resolve(rawDir, `${BACKLOG_REMOTE_ID}.eml`);
 	const classifyNowRawPath = resolve(rawDir, `${CLASSIFY_NOW_REMOTE_ID}.eml`);
 	const reviewRawPath = resolve(rawDir, `${REVIEW_REMOTE_ID}.eml`);
+	const backlogRaw = `Subject: ${BACKLOG_SUBJECT}\nFrom: billing@vendor.example\n\n${BACKLOG_BODY}\n`;
+	const classifyNowRaw = `Subject: ${CLASSIFY_NOW_SUBJECT}\nFrom: friend@example.com\n\n${CLASSIFY_NOW_BODY}\n`;
+	const reviewRaw = `Subject: ${REVIEW_SUBJECT}\nFrom: accounting@example.com\n\n${REVIEW_BODY}\n`;
 
-	await writeFile(
-		backlogRawPath,
-		`Subject: ${BACKLOG_SUBJECT}\nFrom: billing@vendor.example\n\n${BACKLOG_BODY}\n`,
-	);
-	await writeFile(
-		classifyNowRawPath,
-		`Subject: ${CLASSIFY_NOW_SUBJECT}\nFrom: friend@example.com\n\n${CLASSIFY_NOW_BODY}\n`,
-	);
-	await writeFile(
-		reviewRawPath,
-		`Subject: ${REVIEW_SUBJECT}\nFrom: accounting@example.com\n\n${REVIEW_BODY}\n`,
-	);
+	await writeFile(backlogRawPath, backlogRaw);
+	await writeFile(classifyNowRawPath, classifyNowRaw);
+	await writeFile(reviewRawPath, reviewRaw);
 
-	const backlogHash = sha256(BACKLOG_BODY);
-	const classifyNowHash = sha256(CLASSIFY_NOW_BODY);
-	const reviewHash = sha256(REVIEW_BODY);
+	const backlogRawHash = sha256(backlogRaw);
+	const classifyNowRawHash = sha256(classifyNowRaw);
+	const reviewRawHash = sha256(reviewRaw);
+	const backlogConversationId = "playwright-conversation-backlog";
+	const classifyNowConversationId = "playwright-conversation-classify-now";
+	const reviewConversationId = "playwright-conversation-review";
+	const backlogContentHash = buildContentSha256({
+		senderAddress: "billing@vendor.example",
+		subject: BACKLOG_SUBJECT,
+		receivedAt: "2026-04-11T10:00:00.000Z",
+		bodyTextNormalized: BACKLOG_BODY,
+		attachments: [
+			{
+				filename: "receipt.pdf",
+				mime_type: "application/pdf",
+			},
+		],
+	});
+	const classifyNowContentHash = buildContentSha256({
+		senderAddress: "friend@example.com",
+		subject: CLASSIFY_NOW_SUBJECT,
+		receivedAt: "2026-04-10T17:00:00.000Z",
+		bodyTextNormalized: CLASSIFY_NOW_BODY,
+		attachments: [],
+	});
+	const reviewContentHash = buildContentSha256({
+		senderAddress: "accounting@example.com",
+		subject: REVIEW_SUBJECT,
+		receivedAt: "2026-04-09T08:30:00.000Z",
+		bodyTextNormalized: REVIEW_BODY,
+		attachments: [],
+	});
 	const lowConfidenceLabel = buildLowConfidenceLabel();
 	const seededProfile = buildSeededProfile();
 
@@ -89,15 +113,68 @@ async function seedRuntime(dataDir: string) {
 		`,
 	).run(LIVE_ACCOUNT_ID, now, now, now, now, now, now, now, now);
 
+	db.prepare(
+		`
+			INSERT INTO conversations (
+				id, account_id, gmail_thread_id, first_message_received_at,
+				last_message_received_at, message_count, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`,
+	).run(
+		backlogConversationId,
+		LIVE_ACCOUNT_ID,
+		"810000000000000001",
+		"2026-04-11T10:00:00.000Z",
+		"2026-04-11T10:00:00.000Z",
+		1,
+		now,
+		now,
+	);
+	db.prepare(
+		`
+			INSERT INTO conversations (
+				id, account_id, gmail_thread_id, first_message_received_at,
+				last_message_received_at, message_count, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`,
+	).run(
+		classifyNowConversationId,
+		LIVE_ACCOUNT_ID,
+		"810000000000000002",
+		"2026-04-10T17:00:00.000Z",
+		"2026-04-10T17:00:00.000Z",
+		1,
+		now,
+		now,
+	);
+	db.prepare(
+		`
+			INSERT INTO conversations (
+				id, account_id, gmail_thread_id, first_message_received_at,
+				last_message_received_at, message_count, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`,
+	).run(
+		reviewConversationId,
+		LIVE_ACCOUNT_ID,
+		"810000000000000003",
+		"2026-04-09T08:30:00.000Z",
+		"2026-04-09T08:30:00.000Z",
+		1,
+		now,
+		now,
+	);
+
 	const insertMessage = db.prepare(
 		`
 			INSERT INTO messages (
-				id, account_id, message_id, thread_key, received_at, sender_name,
-				sender_address, to_json, cc_json, subject, in_reply_to,
+				id, account_id, message_id, thread_key, received_at, ingested_at,
+				conversation_id, sender_name, sender_address, to_json, cc_json,
+				subject, in_reply_to, body_text_primary, body_text_forwarded,
 				body_text_normalized, snippet, attachment_count, has_html,
-				raw_byte_start, raw_byte_end, parse_status, token_estimate,
-				content_sha256, created_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, '[]', '[]', ?, NULL, ?, ?, ?, 0, 0, 0, 'parsed', ?, ?, ?)
+				raw_byte_start, raw_byte_end, parse_status, body_extraction_strategy,
+				parse_error_reason, token_estimate, content_sha256, created_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', '[]', ?, NULL, ?, '', ?, ?, ?, 0, 0, 0, 'parsed', 'plain_text', NULL, ?, ?, ?)
 		`,
 	);
 
@@ -107,14 +184,17 @@ async function seedRuntime(dataDir: string) {
 		"<playwright-backlog@example.com>",
 		"<playwright-backlog@example.com>",
 		"2026-04-11T10:00:00.000Z",
+		now,
+		backlogConversationId,
 		"Vendor Billing",
 		"billing@vendor.example",
 		BACKLOG_SUBJECT,
 		BACKLOG_BODY,
+		BACKLOG_BODY,
 		BACKLOG_BODY.slice(0, 120),
 		1,
 		Math.ceil(BACKLOG_BODY.length / 4),
-		backlogHash,
+		backlogContentHash,
 		now,
 	);
 	insertMessage.run(
@@ -123,14 +203,17 @@ async function seedRuntime(dataDir: string) {
 		"<playwright-classify-now@example.com>",
 		"<playwright-classify-now@example.com>",
 		"2026-04-10T17:00:00.000Z",
+		now,
+		classifyNowConversationId,
 		"Friend",
 		"friend@example.com",
 		CLASSIFY_NOW_SUBJECT,
 		CLASSIFY_NOW_BODY,
+		CLASSIFY_NOW_BODY,
 		CLASSIFY_NOW_BODY.slice(0, 120),
 		0,
 		Math.ceil(CLASSIFY_NOW_BODY.length / 4),
-		classifyNowHash,
+		classifyNowContentHash,
 		now,
 	);
 	insertMessage.run(
@@ -139,14 +222,17 @@ async function seedRuntime(dataDir: string) {
 		"<playwright-review@example.com>",
 		"<playwright-review@example.com>",
 		"2026-04-09T08:30:00.000Z",
+		now,
+		reviewConversationId,
 		"Accounting",
 		"accounting@example.com",
 		REVIEW_SUBJECT,
 		REVIEW_BODY,
+		REVIEW_BODY,
 		REVIEW_BODY.slice(0, 120),
 		0,
 		Math.ceil(REVIEW_BODY.length / 4),
-		reviewHash,
+		reviewContentHash,
 		now,
 	);
 
@@ -182,7 +268,7 @@ async function seedRuntime(dataDir: string) {
 		"810000000000000001",
 		101,
 		backlogRawPath,
-		backlogHash,
+		backlogRawHash,
 		"active",
 		now,
 		now,
@@ -197,7 +283,7 @@ async function seedRuntime(dataDir: string) {
 		"810000000000000002",
 		102,
 		classifyNowRawPath,
-		classifyNowHash,
+		classifyNowRawHash,
 		"active",
 		now,
 		now,
@@ -212,7 +298,7 @@ async function seedRuntime(dataDir: string) {
 		"810000000000000003",
 		103,
 		reviewRawPath,
-		reviewHash,
+		reviewRawHash,
 		"tombstoned",
 		now,
 		now,
@@ -233,7 +319,7 @@ async function seedRuntime(dataDir: string) {
 		JSON.stringify(lowConfidenceLabel),
 		JSON.stringify({ seeded: true }),
 		now,
-		reviewHash,
+		reviewContentHash,
 	);
 
 	db.prepare(
@@ -249,7 +335,7 @@ async function seedRuntime(dataDir: string) {
 		JSON.stringify(lowConfidenceLabel),
 		lowConfidenceLabel.routing.primaryBucket,
 		now,
-		reviewHash,
+		reviewContentHash,
 	);
 
 	db.prepare(
