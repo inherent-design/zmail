@@ -9,6 +9,7 @@ import {
 } from "#/test/helpers/db";
 import { fixturePath } from "#/test/helpers/fs";
 import { createTestRuntime } from "#/test/helpers/runtime";
+import type { MessageLabelV2 } from "#/lib/schemas";
 
 describe("classify", () => {
 	it("builds attachment summaries and prompts with fallbacks", async () => {
@@ -185,6 +186,266 @@ describe("classify", () => {
 
 		const reviews = await db.selectFrom("reviews").selectAll().execute();
 		expect(reviews).toHaveLength(0);
+	});
+
+	it("updates an existing open review to the newest low-confidence result", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		const classify =
+			await runtime.importFresh<typeof import("#/lib/classify")>(
+				"#/lib/classify",
+			);
+		const messageId = await insertMessageRow(db, {
+			contentSha256: "review-refresh-sha",
+		});
+		const lowConfidenceLabel: MessageLabelV2 = {
+			schemaVersion: "message-label.v2" as const,
+			nsfw: false,
+			finance: {
+				relevant: true,
+				direction: "expense" as const,
+				owner: "business" as const,
+				accountHint: null,
+				purpose: "software",
+			},
+			people: {
+				personal: false,
+				private: false,
+				business: true,
+				networking: false,
+				community: false,
+				recruiting: false,
+			},
+			commerce: {
+				transactional: true,
+				shopping: false,
+				subscription: true,
+				travel: false,
+				legal: false,
+			},
+			knowledge: {
+				course: false,
+				resource: true,
+				documentation: false,
+				newsletter: false,
+				research: false,
+			},
+			assets: {
+				license: false,
+				credential: false,
+				account: false,
+				document: false,
+			},
+			entertainment: {
+				gaming: false,
+				media: false,
+				fandom: false,
+			},
+			risk: {
+				businessSensitive: false,
+				leakRisk: false,
+			},
+			routing: {
+				primaryBucket: "finance" as const,
+				secondaryBuckets: ["subscription"],
+				tags: ["receipt"],
+			},
+			confidence: {
+				overall: 0.4,
+				finance: 0.4,
+				people: 0.6,
+				commerce: 0.6,
+				knowledge: 0.5,
+				assets: 0.5,
+				entertainment: 0.1,
+				risk: 0.9,
+			},
+			explanation: "Low confidence.",
+		};
+
+		await classify.persistClassification({
+			jobId: null,
+			messageId,
+			model: "gpt-5.4-mini",
+			backend: "openai-subscription",
+			promptVersion: "classify-email-v2",
+			source: "model",
+			rawResponse: { step: 1 },
+			usage: null,
+			label: lowConfidenceLabel,
+		});
+
+		const firstReview = await db
+			.selectFrom("reviews")
+			.select(["id", "source_classification_result_id"])
+			.where("message_id", "=", messageId)
+			.where("status", "=", "open")
+			.executeTakeFirstOrThrow();
+
+		await classify.persistClassification({
+			jobId: null,
+			messageId,
+			model: "gpt-5.4-mini",
+			backend: "openai-subscription",
+			promptVersion: "classify-email-v2",
+			source: "model",
+			rawResponse: { step: 2 },
+			usage: null,
+			label: {
+				...lowConfidenceLabel,
+				confidence: {
+					...lowConfidenceLabel.confidence,
+					overall: 0.45,
+					finance: 0.45,
+				},
+				explanation: "Still low confidence.",
+			},
+		});
+
+		const latestResult = await db
+			.selectFrom("classification_results")
+			.select(["id"])
+			.where("message_id", "=", messageId)
+			.orderBy("created_at", "desc")
+			.executeTakeFirstOrThrow();
+		const reviews = await db
+			.selectFrom("reviews")
+			.select(["id", "status", "source_classification_result_id"])
+			.where("message_id", "=", messageId)
+			.execute();
+
+		expect(reviews).toHaveLength(1);
+		expect(reviews[0]).toMatchObject({
+			id: firstReview.id,
+			status: "open",
+			source_classification_result_id: latestResult.id,
+		});
+		expect(firstReview.source_classification_result_id).not.toBe(latestResult.id);
+	});
+
+	it("auto-resolves an open review after a higher-confidence reclassification", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		const classify =
+			await runtime.importFresh<typeof import("#/lib/classify")>(
+				"#/lib/classify",
+			);
+		const messageId = await insertMessageRow(db, {
+			contentSha256: "review-resolve-sha",
+		});
+		const lowConfidenceLabel: MessageLabelV2 = {
+			schemaVersion: "message-label.v2" as const,
+			nsfw: false,
+			finance: {
+				relevant: true,
+				direction: "expense" as const,
+				owner: "business" as const,
+				accountHint: null,
+				purpose: "software",
+			},
+			people: {
+				personal: false,
+				private: false,
+				business: true,
+				networking: false,
+				community: false,
+				recruiting: false,
+			},
+			commerce: {
+				transactional: true,
+				shopping: false,
+				subscription: true,
+				travel: false,
+				legal: false,
+			},
+			knowledge: {
+				course: false,
+				resource: true,
+				documentation: false,
+				newsletter: false,
+				research: false,
+			},
+			assets: {
+				license: false,
+				credential: false,
+				account: false,
+				document: false,
+			},
+			entertainment: {
+				gaming: false,
+				media: false,
+				fandom: false,
+			},
+			risk: {
+				businessSensitive: false,
+				leakRisk: false,
+			},
+			routing: {
+				primaryBucket: "finance" as const,
+				secondaryBuckets: ["subscription"],
+				tags: ["receipt"],
+			},
+			confidence: {
+				overall: 0.4,
+				finance: 0.4,
+				people: 0.6,
+				commerce: 0.6,
+				knowledge: 0.5,
+				assets: 0.5,
+				entertainment: 0.1,
+				risk: 0.9,
+			},
+			explanation: "Low confidence.",
+		};
+
+		await classify.persistClassification({
+			jobId: null,
+			messageId,
+			model: "gpt-5.4-mini",
+			backend: "openai-subscription",
+			promptVersion: "classify-email-v2",
+			source: "model",
+			rawResponse: { step: 1 },
+			usage: null,
+			label: lowConfidenceLabel,
+		});
+
+		await classify.persistClassification({
+			jobId: null,
+			messageId,
+			model: "gpt-5.4-mini",
+			backend: "openai-subscription",
+			promptVersion: "classify-email-v2",
+			source: "model",
+			rawResponse: { step: 2 },
+			usage: null,
+			label: {
+				...lowConfidenceLabel,
+				confidence: {
+					...lowConfidenceLabel.confidence,
+					overall: 0.92,
+					finance: 0.92,
+					people: 0.9,
+					commerce: 0.94,
+					knowledge: 0.88,
+					assets: 0.87,
+					risk: 0.93,
+				},
+				explanation: "High confidence.",
+			},
+		});
+
+		const review = await db
+			.selectFrom("reviews")
+			.select(["status", "reviewer_note", "resolved_at"])
+			.where("message_id", "=", messageId)
+			.executeTakeFirstOrThrow();
+
+		expect(review.status).toBe("resolved");
+		expect(review.reviewer_note).toBe(
+			"Resolved by higher-confidence reclassification.",
+		);
+		expect(review.resolved_at).toBeTruthy();
 	});
 
 	it("preserves manual labels and resolves overrides", async () => {

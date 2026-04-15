@@ -18,6 +18,12 @@ interface AccountDetailPageData {
 		label: string;
 		email_address: string;
 		provider_kind: string;
+		has_oauth_token: boolean;
+		connection_state:
+			| "connected"
+			| "paused"
+			| "needs_reconnect"
+			| "disconnected";
 		sync_enabled: number;
 		sync_status: string;
 		selected_mailbox: string;
@@ -26,6 +32,12 @@ interface AccountDetailPageData {
 		created_at: string;
 		updated_at: string;
 	};
+	has_oauth_token: boolean;
+	connection_state:
+		| "connected"
+		| "paused"
+		| "needs_reconnect"
+		| "disconnected";
 	syncState: {
 		uidvalidity: number | null;
 		latest_uid_cursor: number | null;
@@ -63,6 +75,34 @@ interface AccountDetailPageData {
 	};
 }
 
+const CONNECTION_COPY: Record<
+	AccountDetailPageData["connection_state"],
+	{
+		title: string;
+		description: string;
+	}
+> = {
+	connected: {
+		title: "Connected",
+		description: "Gmail OAuth is available and remote sync actions are enabled.",
+	},
+	paused: {
+		title: "Paused",
+		description:
+			"Remote sync is paused. Local corpus and local analysis remain available.",
+	},
+	needs_reconnect: {
+		title: "Reconnect required",
+		description:
+			"Local corpus is preserved. Reconnect Gmail OAuth before remote sync resumes.",
+	},
+	disconnected: {
+		title: "Disconnected",
+		description:
+			"Gmail is disconnected. Local corpus is preserved until you reconnect or delete the account.",
+	},
+};
+
 export function AccountDetailPage({ data }: { data: AccountDetailPageData }) {
 	const router = useRouter();
 	const fullSync = useServerFn(queueAccountFullSync);
@@ -75,6 +115,11 @@ export function AccountDetailPage({ data }: { data: AccountDetailPageData }) {
 	const disconnect = useServerFn(disconnectAccount);
 
 	const accountId = data.account.id;
+	const connectionState = data.connection_state;
+	const isConnected = connectionState === "connected";
+	const isPaused = connectionState === "paused";
+	const needsReconnect = connectionState === "needs_reconnect";
+	const isDisconnected = connectionState === "disconnected";
 
 	return (
 		<div className="page">
@@ -83,10 +128,14 @@ export function AccountDetailPage({ data }: { data: AccountDetailPageData }) {
 				<p className="muted">{data.account.email_address}</p>
 				<div className="row">
 					<span className="pill">{data.account.provider_kind}</span>
+					<span className="pill">connection: {data.connection_state}</span>
 					<span className="pill">
 						sync: {data.account.sync_enabled ? "enabled" : "disabled"}
 					</span>
 					<span className="pill">status: {data.account.sync_status}</span>
+					<span className="pill">
+						token: {data.has_oauth_token ? "present" : "missing"}
+					</span>
 					<span className="pill">mailbox: {data.account.selected_mailbox}</span>
 				</div>
 				<div className="row muted">
@@ -100,38 +149,85 @@ export function AccountDetailPage({ data }: { data: AccountDetailPageData }) {
 			</section>
 
 			<section className="card stack">
+				<h2>Connection status</h2>
+				<div className="row">
+					<span className="pill">{CONNECTION_COPY[connectionState].title}</span>
+					<span className="pill">
+						OAuth token: {data.has_oauth_token ? "available" : "missing"}
+					</span>
+				</div>
+				<p className="muted">{CONNECTION_COPY[connectionState].description}</p>
+				{needsReconnect ? (
+					<div className="actions">
+						<Link
+							className="button"
+							to="/accounts/$accountId/reconnect"
+							params={{ accountId }}
+						>
+							Reconnect Gmail
+						</Link>
+						<button
+							className="button secondary"
+							type="button"
+							onClick={async () => {
+								await disconnect({ data: { accountId } });
+								await router.invalidate();
+							}}
+						>
+							Disconnect Gmail
+						</button>
+					</div>
+				) : null}
+				{isDisconnected ? (
+					<div className="actions">
+						<Link
+							className="button"
+							to="/accounts/$accountId/reconnect"
+							params={{ accountId }}
+						>
+							Reconnect Gmail
+						</Link>
+					</div>
+				) : null}
+			</section>
+
+			<section className="card stack">
 				<h2>Sync controls</h2>
 				<div className="actions">
-					<button
-						className="button"
-						type="button"
-						onClick={async () => {
-							await fullSync({ data: { accountId } });
-							await router.invalidate();
-						}}
-					>
-						Full sync
-					</button>
-					<button
-						className="button secondary"
-						type="button"
-						onClick={async () => {
-							await deltaSync({ data: { accountId } });
-							await router.invalidate();
-						}}
-					>
-						Delta sync
-					</button>
-					<button
-						className="button secondary"
-						type="button"
-						onClick={async () => {
-							await reconcile({ data: { accountId } });
-							await router.invalidate();
-						}}
-					>
-						Reconcile
-					</button>
+					{isConnected ? (
+						<>
+							<button
+								className="button"
+								type="button"
+								onClick={async () => {
+									await fullSync({ data: { accountId } });
+									await router.invalidate();
+								}}
+							>
+								Full sync
+							</button>
+							<button
+								className="button secondary"
+								type="button"
+								onClick={async () => {
+									await deltaSync({ data: { accountId } });
+									await router.invalidate();
+								}}
+							>
+								Delta sync
+							</button>
+							<button
+								className="button secondary"
+								type="button"
+								onClick={async () => {
+									await reconcile({ data: { accountId } });
+									await router.invalidate();
+								}}
+							>
+								Reconcile
+							</button>
+						</>
+					) : null}
 					<button
 						className="button secondary"
 						type="button"
@@ -162,36 +258,54 @@ export function AccountDetailPage({ data }: { data: AccountDetailPageData }) {
 					<Link className="button secondary" to="/finance">
 						Open finance
 					</Link>
-					<button
-						className="button secondary"
-						type="button"
-						onClick={async () => {
-							await pause({ data: { accountId } });
-							await router.invalidate();
-						}}
-					>
-						Pause
-					</button>
-					<button
-						className="button secondary"
-						type="button"
-						onClick={async () => {
-							await resume({ data: { accountId } });
-							await router.invalidate();
-						}}
-					>
-						Resume
-					</button>
-					<button
-						className="button secondary"
-						type="button"
-						onClick={async () => {
-							await disconnect({ data: { accountId } });
-							await router.invalidate();
-						}}
-					>
-						Disconnect
-					</button>
+					{isConnected ? (
+						<>
+							<button
+								className="button secondary"
+								type="button"
+								onClick={async () => {
+									await pause({ data: { accountId } });
+									await router.invalidate();
+								}}
+							>
+								Pause
+							</button>
+							<button
+								className="button secondary"
+								type="button"
+								onClick={async () => {
+									await disconnect({ data: { accountId } });
+									await router.invalidate();
+								}}
+							>
+								Disconnect Gmail
+							</button>
+						</>
+					) : null}
+					{isPaused ? (
+						<>
+							<button
+								className="button secondary"
+								type="button"
+								onClick={async () => {
+									await resume({ data: { accountId } });
+									await router.invalidate();
+								}}
+							>
+								Resume
+							</button>
+							<button
+								className="button secondary"
+								type="button"
+								onClick={async () => {
+									await disconnect({ data: { accountId } });
+									await router.invalidate();
+								}}
+							>
+								Disconnect Gmail
+							</button>
+						</>
+					) : null}
 				</div>
 			</section>
 
@@ -332,6 +446,24 @@ export function AccountDetailPage({ data }: { data: AccountDetailPageData }) {
 						</table>
 					</div>
 				)}
+			</section>
+
+			<section className="card stack">
+				<h2>Danger zone</h2>
+				<p className="muted">
+					Delete the local Gmail account and mailbox-local state. This does not
+					remove other Gmail accounts, global operator registry data, or global
+					imported finance artifacts.
+				</p>
+				<div className="actions">
+					<Link
+						className="button secondary"
+						to="/accounts/$accountId/delete"
+						params={{ accountId }}
+					>
+						Delete local account
+					</Link>
+				</div>
 			</section>
 		</div>
 	);

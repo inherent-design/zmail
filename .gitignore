@@ -318,6 +318,13 @@ tags
 ### Windows ###
 # Windows thumbnail cache files
 Thumbs.db
+
+### zmail local runtime state ###
+data/*
+!data/batches/
+!data/batches/.gitkeep
+!data/tmp/
+!data/tmp/.gitkeep
 Thumbs.db:encryptable
 ehthumbs.db
 ehthumbs_vista.db

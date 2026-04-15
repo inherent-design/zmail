@@ -181,7 +181,6 @@ export async function persistClassification(input: {
 
 	if (
 		input.source === "model" &&
-		lowConfidence &&
 		!manualWins &&
 		message.parse_status !== "error"
 	) {
@@ -192,19 +191,39 @@ export async function persistClassification(input: {
 			.where("status", "=", "open")
 			.executeTakeFirst();
 
-		if (!existingOpenReview) {
+		if (lowConfidence) {
+			if (existingOpenReview) {
+				await db
+					.updateTable("reviews")
+					.set({
+						source_classification_result_id: classificationId,
+					})
+					.where("id", "=", existingOpenReview.id)
+					.execute();
+			} else {
+				await db
+					.insertInto("reviews")
+					.values({
+						id: randomUUID(),
+						message_id: input.messageId,
+						source_classification_result_id: classificationId,
+						status: "open",
+						reviewer_note: null,
+						override_label_json: null,
+						created_at: nowIso(),
+						resolved_at: null,
+					})
+					.execute();
+			}
+		} else if (existingOpenReview) {
 			await db
-				.insertInto("reviews")
-				.values({
-					id: randomUUID(),
-					message_id: input.messageId,
-					source_classification_result_id: classificationId,
-					status: "open",
-					reviewer_note: null,
-					override_label_json: null,
-					created_at: nowIso(),
-					resolved_at: null,
+				.updateTable("reviews")
+				.set({
+					status: "resolved",
+					reviewer_note: "Resolved by higher-confidence reclassification.",
+					resolved_at: nowIso(),
 				})
+				.where("id", "=", existingOpenReview.id)
 				.execute();
 		}
 	}

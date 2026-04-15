@@ -17,6 +17,7 @@ import {
 } from "#/lib/imap";
 import { queueJobIdempotent } from "#/lib/jobs";
 import { type LogTrace, startTrace } from "#/lib/log";
+import { isBadNormalizedBody } from "#/lib/normalize";
 
 function parsedMessageValues(
 	parsed: Awaited<ReturnType<typeof parseRawMessage>>,
@@ -239,6 +240,31 @@ async function applyParsedMessageUpdate(input: {
 export async function reextractStoredParseErrorMessage(input: {
 	messageId: string;
 }) {
+	return reextractStoredMessage({
+		messageId: input.messageId,
+		acceptParsed: (parsed) => parsed.parseStatus !== "error",
+	});
+}
+
+export async function reextractStoredBadBodyMessage(input: {
+	messageId: string;
+}) {
+	return reextractStoredMessage({
+		messageId: input.messageId,
+		acceptParsed: (parsed) =>
+			parsed.parseStatus !== "error" &&
+			!isBadNormalizedBody({
+				bodyTextPrimary: parsed.bodyTextPrimary,
+				snippet: parsed.snippet,
+				bodyExtractionStrategy: parsed.bodyExtractionStrategy,
+			}),
+	});
+}
+
+async function reextractStoredMessage(input: {
+	messageId: string;
+	acceptParsed: (parsed: ParsedMessage) => boolean;
+}) {
 	const db = getDb();
 	const now = nowIso();
 	const message = await db
@@ -288,7 +314,7 @@ export async function reextractStoredParseErrorMessage(input: {
 
 	const rawSha256 = buildRawRfc822Sha256(raw);
 	const parsed = await parseRawMessage(raw, rawSha256, message.received_at);
-	if (parsed.parseStatus === "error") {
+	if (!input.acceptParsed(parsed)) {
 		return {
 			outcome: "stillFailing" as const,
 			accountId: message.account_id,

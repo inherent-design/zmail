@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { parse } from "yaml";
+import { sql } from "kysely";
+import { parse, stringify } from "yaml";
 
 import { APP_CONFIG, nowIso } from "#/lib/config";
 import { getDb, jsonText, safeJsonParse } from "#/lib/db";
@@ -162,10 +163,31 @@ function loadYamlFile<T>(
 	return parseFile(parse(raw));
 }
 
+function writeYamlIfMissing(path: string, value: unknown) {
+	if (existsSync(path)) {
+		return;
+	}
+	writeFileSync(path, `${stringify(value)}`.trimEnd() + "\n", "utf8");
+}
+
+export function ensureClassificationConfigFiles(
+	baseDir = APP_CONFIG.classificationDir,
+) {
+	mkdirSync(baseDir, { recursive: true });
+	const paths = getClassificationPaths(baseDir);
+	writeYamlIfMissing(paths.rootTaxonomy, DEFAULT_ROOT_TAXONOMY);
+	writeYamlIfMissing(paths.financeTaxonomy, DEFAULT_FINANCE_TAXONOMY);
+	writeYamlIfMissing(paths.rules, {
+		schemaVersion: "classification-rules.v1",
+		rules: DEFAULT_RULES.rules,
+	});
+	return paths;
+}
+
 function readClassificationConfigFromDisk(
 	baseDir = APP_CONFIG.classificationDir,
 ) {
-	const paths = getClassificationPaths(baseDir);
+	const paths = ensureClassificationConfigFiles(baseDir);
 	return {
 		rootTaxonomy: loadYamlFile(
 			paths.rootTaxonomy,
@@ -215,7 +237,7 @@ function buildLoadedConfig(input: {
 export async function importClassificationConfig(
 	baseDir = APP_CONFIG.classificationDir,
 ): Promise<LoadedClassificationConfig> {
-	mkdirSync(baseDir, { recursive: true });
+	ensureClassificationConfigFiles(baseDir);
 	const { rootTaxonomy, financeTaxonomy, rules, paths } =
 		readClassificationConfigFromDisk(baseDir);
 
@@ -626,30 +648,78 @@ export async function projectMessageCategoryAssignment(messageId: string) {
 }
 
 export async function rebuildMessageCategoryAssignments(messageIds?: string[]) {
-	const db = getDb();
-	let rows: Array<{ id: string }>;
-	try {
-		rows = await db
-			.selectFrom("messages")
-			.select(["id"])
-			.$if(Boolean(messageIds && messageIds.length > 0), (qb) =>
-				qb.where("id", "in", messageIds ?? []),
-			)
-			.execute();
-	} catch (error) {
-		if (isMissingClassificationTableError(error)) {
-			return { projected: 0 };
-		}
-		throw error;
-	}
+	const pendingMessageIds = await listPendingMessageCategoryAssignmentIds({
+		messageIds,
+		limit: 500,
+	});
 
 	let projected = 0;
-	for (const row of rows) {
-		const result = await projectMessageCategoryAssignment(row.id);
+	for (const messageId of pendingMessageIds) {
+		const result = await projectMessageCategoryAssignment(messageId);
 		if (result) {
 			projected += 1;
 		}
 	}
 
 	return { projected };
+}
+
+export async function listPendingMessageCategoryAssignmentIds(input?: {
+	messageIds?: string[];
+	limit?: number;
+}) {
+	const db = getDb();
+	const config = await loadClassificationConfig();
+	let rows: Array<{ id: string }>;
+	try {
+		let query = db
+			.selectFrom("messages")
+			.innerJoin("message_labels", "message_labels.message_id", "messages.id")
+			.leftJoin(
+				"message_category_assignment_heads",
+				"message_category_assignment_heads.message_id",
+				"messages.id",
+			)
+			.leftJoin("message_secondary_heads as finance_heads", (join) =>
+				join
+					.onRef("finance_heads.message_id", "=", "messages.id")
+					.on("finance_heads.classifier_key", "=", "finance_intel"),
+			)
+			.select(["messages.id"])
+			.$if(Boolean(input?.messageIds?.length), (qb) =>
+				qb.where("messages.id", "in", input?.messageIds ?? []),
+			);
+
+		if (!input?.messageIds?.length) {
+			query = query.where((eb) =>
+				eb.or([
+					eb("message_category_assignment_heads.message_id", "is", null),
+					eb(
+						"message_category_assignment_heads.input_content_sha256",
+						"!=",
+						eb.ref("messages.content_sha256"),
+					),
+					eb(
+						"message_category_assignment_heads.rule_set_sha256",
+						"!=",
+						config.sha256,
+					),
+					eb(sql<string>`coalesce(message_category_assignment_heads.finance_result_id, '')`, "!=", sql<string>`coalesce(finance_heads.secondary_result_id, '')`),
+				]),
+			);
+		}
+
+		rows = await query
+			.orderBy("messages.received_at", "desc")
+			.orderBy("messages.id", "desc")
+			.limit(input?.limit ?? Number.MAX_SAFE_INTEGER)
+			.execute();
+	} catch (error) {
+		if (isMissingClassificationTableError(error)) {
+			return [];
+		}
+		throw error;
+	}
+
+	return rows.map((row) => row.id);
 }

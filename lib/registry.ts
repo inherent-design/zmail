@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { parse } from "yaml";
+import { parse, stringify } from "yaml";
 
 import { APP_CONFIG, nowIso } from "#/lib/config";
 import { getDb, jsonText, safeJsonParse } from "#/lib/db";
@@ -135,6 +135,13 @@ function loadYamlFile<T>(
 	return parseFile(parse(raw));
 }
 
+function writeYamlIfMissing(path: string, value: unknown) {
+	if (existsSync(path)) {
+		return;
+	}
+	writeFileSync(path, `${stringify(value)}`.trimEnd() + "\n", "utf8");
+}
+
 export function getRegistryPaths(baseDir = APP_CONFIG.registryDir) {
 	return {
 		identities: resolve(baseDir, "identities.yaml"),
@@ -142,6 +149,18 @@ export function getRegistryPaths(baseDir = APP_CONFIG.registryDir) {
 		financialAccounts: resolve(baseDir, "financial-accounts.yaml"),
 		senderRules: resolve(baseDir, "sender-rules.yaml"),
 	};
+}
+
+export function ensureOperatorRegistryFiles(
+	baseDir = APP_CONFIG.registryDir,
+) {
+	mkdirSync(baseDir, { recursive: true });
+	const paths = getRegistryPaths(baseDir);
+	writeYamlIfMissing(paths.identities, []);
+	writeYamlIfMissing(paths.institutions, []);
+	writeYamlIfMissing(paths.financialAccounts, []);
+	writeYamlIfMissing(paths.senderRules, []);
+	return paths;
 }
 
 export function buildRegistrySha256(input: {
@@ -177,8 +196,7 @@ export function extractDomain(value: string | null | undefined) {
 }
 
 export async function importOperatorRegistry(baseDir = APP_CONFIG.registryDir) {
-	mkdirSync(baseDir, { recursive: true });
-	const paths = getRegistryPaths(baseDir);
+	const paths = ensureOperatorRegistryFiles(baseDir);
 	const identities = loadYamlFile(
 		paths.identities,
 		(input) => registryIdentityFileSchema.parse(input),
@@ -347,6 +365,7 @@ export async function importOperatorRegistry(baseDir = APP_CONFIG.registryDir) {
 }
 
 export async function loadOperatorRegistry() {
+	ensureOperatorRegistryFiles();
 	const db = getDb();
 	const [
 		identities,

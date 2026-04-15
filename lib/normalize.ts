@@ -25,6 +25,12 @@ export interface ClassifierVisibleAttachment {
 	mime_type: string | null;
 }
 
+const SENTINEL_PLAIN_TEXT_VALUES = new Set([
+	"undefined",
+	"null",
+	"plain text version not available",
+]);
+
 export function normalizeWhitespace(value: string) {
 	return value
 		.replace(/\r\n/g, "\n")
@@ -101,8 +107,43 @@ function buildNormalizedBodyText(
 	return bodyTextPrimary || bodyTextForwarded || "";
 }
 
+export function isSentinelPlainText(value: string) {
+	return SENTINEL_PLAIN_TEXT_VALUES.has(value.trim().toLowerCase());
+}
+
+export function looksLikeHtmlDocument(value: string) {
+	const trimmed = value.trim();
+	if (!trimmed) {
+		return false;
+	}
+
+	const lower = trimmed.toLowerCase();
+	if (
+		lower.startsWith("<!doctype") ||
+		lower.startsWith("<html") ||
+		lower.startsWith("<head") ||
+		lower.startsWith("<body")
+	) {
+		return true;
+	}
+
+	const sample = trimmed.slice(0, 500);
+	if (/<style[\s>]/i.test(sample) && /<\/[a-z][^>]*>/i.test(sample)) {
+		return true;
+	}
+
+	return (sample.match(/<\/?[a-z][^>]*>/gi) ?? []).length >= 3;
+}
+
 function buildSnippet(bodyTextPrimary: string, bodyTextForwarded: string) {
-	return (bodyTextPrimary || bodyTextForwarded || "").slice(0, 1200);
+	const source = normalizeWhitespace(bodyTextPrimary || bodyTextForwarded || "");
+	if (!source) {
+		return "";
+	}
+	if (isSentinelPlainText(source) || looksLikeHtmlDocument(source)) {
+		return "";
+	}
+	return source.slice(0, 1200);
 }
 
 function buildTokenEstimate(value: string) {
@@ -164,15 +205,26 @@ export function normalizeBodyText(input: {
 }): NormalizedBody {
 	let text = coerceTextLike(input.text).trim();
 	const html = coerceTextLike(input.html).trim();
-	const hasHtml = html.length > 0;
+	const normalizedText = normalizeWhitespace(text);
+	const plainTextLooksLikeHtml = looksLikeHtmlDocument(normalizedText);
+	const plainTextUsable =
+		normalizedText.length > 0 &&
+		!isSentinelPlainText(normalizedText) &&
+		!plainTextLooksLikeHtml;
+	const hasHtml = html.length > 0 || plainTextLooksLikeHtml;
 	let source: "plain_text" | "html_to_text" | "fallback_empty" = "plain_text";
 
-	if (text) {
+	if (plainTextUsable) {
+		text = normalizedText;
 		source = "plain_text";
 	} else if (html) {
 		text = convertHtmlToText(html);
 		source = "html_to_text";
+	} else if (plainTextLooksLikeHtml) {
+		text = convertHtmlToText(normalizedText);
+		source = "html_to_text";
 	} else {
+		text = "";
 		source = "fallback_empty";
 	}
 
@@ -218,6 +270,19 @@ export function normalizeBodyText(input: {
 		bodyExtractionStrategy:
 			strippedText !== normalizedCandidate ? "quoted_tail_stripped" : source,
 	};
+}
+
+export function isBadNormalizedBody(input: {
+	bodyTextPrimary: string;
+	snippet: string;
+	bodyExtractionStrategy: string;
+}) {
+	return (
+		input.snippet.trim() === "undefined" ||
+		isSentinelPlainText(input.bodyTextPrimary) ||
+		(input.bodyExtractionStrategy === "plain_text" &&
+			looksLikeHtmlDocument(input.bodyTextPrimary))
+	);
 }
 
 export function normalizeSubjectRoot(subject: string | null | undefined) {

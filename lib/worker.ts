@@ -1,3 +1,5 @@
+import { sql } from "kysely";
+
 import {
 	buildAttachmentSummary,
 	classifyMessageNow,
@@ -8,6 +10,7 @@ import {
 	CLASSIFY_PROMPT_VERSION,
 	FINANCE_INTEL_PROMPT_VERSION,
 	FINANCE_KNOWLEDGE_PROMPT_VERSION,
+	MODERATION_PROMPT_VERSION,
 	OVERSEER_PROMPT_VERSION,
 } from "#/lib/config";
 import { getDb, runMigrations, safeJsonParse } from "#/lib/db";
@@ -17,6 +20,7 @@ import {
 	extendJobLease,
 	failJob,
 	findOpenJob,
+	type JobKind,
 	type JobRecord,
 	parseJobMeta,
 	queueJobIdempotent,
@@ -38,6 +42,22 @@ import { normalizeMessageLabel } from "#/lib/schemas";
 declare global {
 	var __zmailWorkerStarted__: boolean | undefined;
 	var __zmailWorkerLoop__: Promise<void> | undefined;
+}
+
+const ROOT_BACKLOG_BATCH_SIZE = 250;
+const FINANCE_BACKLOG_BATCH_SIZE = 100;
+
+function moderationPromptVersionSql() {
+	return sql<string | null>`case
+		when moderation_results.raw_response_json is not null
+			and json_valid(moderation_results.raw_response_json)
+		then json_extract(moderation_results.raw_response_json, '$.promptVersion')
+		else null
+	end`;
+}
+
+function staleModerationPromptSql() {
+	return sql<boolean>`coalesce(${moderationPromptVersionSql()}, '') != ${MODERATION_PROMPT_VERSION}`;
 }
 
 export function delay(ms: number) {
@@ -260,6 +280,18 @@ async function rebuildCategoryAssignmentsJob(job: JobRecord, trace: LogTrace) {
 	jobTrace.complete("worker.rebuild_category_assignments.complete", {
 		projected: result.projected,
 	});
+	const { listPendingMessageCategoryAssignmentIds } = await import(
+		"#/lib/category-rules"
+	);
+	if (
+		(
+			await listPendingMessageCategoryAssignmentIds({
+				limit: 1,
+			})
+		).length > 0
+	) {
+		await queueCategoryAssignmentsRebuild();
+	}
 }
 
 async function importFinanceArtifactJob(job: JobRecord, trace: LogTrace) {
@@ -331,6 +363,247 @@ async function queueFinanceRollupsRebuild() {
 		scopeId: "finance_rollups",
 		model: APP_CONFIG.fallbackModel,
 		promptVersion: FINANCE_KNOWLEDGE_PROMPT_VERSION,
+	});
+}
+
+async function queueCategoryAssignmentsRebuild() {
+	await queueJobIdempotent({
+		kind: "rebuild_category_assignments",
+		scopeType: "system",
+		scopeId: "categories",
+		model: APP_CONFIG.fallbackModel,
+		promptVersion: CLASSIFY_PROMPT_VERSION,
+	});
+}
+
+async function countOpenJobs(input: {
+	kinds: JobKind[];
+	scopeType?: string;
+	scopeId?: string;
+}) {
+	const db = getDb();
+	let query = db
+		.selectFrom("jobs")
+		.select((eb) => eb.fn.countAll<number>().as("count"))
+		.where("kind", "in", input.kinds)
+		.where("status", "in", ["queued", "running"]);
+
+	if (input.scopeType) {
+		query = query.where("scope_type", "=", input.scopeType);
+	}
+	if (input.scopeId) {
+		query = query.where("scope_id", "=", input.scopeId);
+	}
+
+	const row = await query.executeTakeFirstOrThrow();
+	return Number(row.count);
+}
+
+async function hasPendingRootBacklog(accountId: string) {
+	const db = getDb();
+	const row = await db
+		.selectFrom("messages")
+		.leftJoin("message_labels", "message_labels.message_id", "messages.id")
+		.leftJoin(
+			"moderation_results",
+			"moderation_results.message_id",
+			"messages.id",
+		)
+		.select(["messages.id"])
+		.where("messages.account_id", "=", accountId)
+		.where((eb) =>
+			eb.or([
+				eb("moderation_results.message_id", "is", null),
+				staleModerationPromptSql(),
+				eb("message_labels.message_id", "is", null),
+				eb("message_labels.schema_version", "!=", "message-label.v2"),
+				eb(
+					"message_labels.content_sha256",
+					"!=",
+					eb.ref("messages.content_sha256"),
+				),
+			]),
+		)
+		.orderBy("messages.received_at", "desc")
+		.orderBy("messages.id", "desc")
+		.limit(1)
+		.executeTakeFirst();
+	return Boolean(row);
+}
+
+async function hasPendingFinanceBacklog(accountId: string) {
+	const db = getDb();
+	const rows = await db
+		.selectFrom("messages")
+		.innerJoin("message_labels", "message_labels.message_id", "messages.id")
+		.leftJoin("message_secondary_heads", (join) =>
+			join
+				.onRef("message_secondary_heads.message_id", "=", "messages.id")
+				.on("message_secondary_heads.classifier_key", "=", "finance_intel"),
+		)
+		.leftJoin(
+			"message_secondary_results",
+			"message_secondary_results.id",
+			"message_secondary_heads.secondary_result_id",
+		)
+		.select([
+			"message_labels.label_json",
+			"message_secondary_heads.status as head_status",
+			"message_secondary_results.schema_version as result_schema_version",
+		])
+		.where("messages.account_id", "=", accountId)
+		.orderBy("messages.received_at", "desc")
+		.orderBy("messages.id", "desc")
+		.execute();
+
+	return rows.some((row) => {
+		const rootLabel = normalizeMessageLabel(safeJsonParse(row.label_json, null));
+		if (!rootLabel?.finance.relevant) {
+			return false;
+		}
+		return (
+			!row.head_status ||
+			row.head_status === "stale" ||
+			row.result_schema_version !== "finance-intel.v2"
+		);
+	});
+}
+
+async function hasReadyFinanceHeads() {
+	const row = await getDb()
+		.selectFrom("message_secondary_heads")
+		.select((eb) => eb.fn.countAll<number>().as("count"))
+		.where("classifier_key", "=", "finance_intel")
+		.where("status", "in", ["ready", "review"])
+		.executeTakeFirstOrThrow();
+	return Number(row.count) > 0;
+}
+
+function maxIsoValue(values: Array<string | null>) {
+	return values.reduce<string | null>(
+		(current, value) => {
+			if (!value) {
+				return current;
+			}
+			if (!current || value > current) {
+				return value;
+			}
+			return current;
+		},
+		null,
+	);
+}
+
+async function hasRollupInputs() {
+	const db = getDb();
+	const [readyHeads, importTransactions, importDocuments] = await Promise.all([
+		db
+			.selectFrom("message_secondary_heads")
+			.select((eb) => eb.fn.countAll<number>().as("count"))
+			.where("classifier_key", "=", "finance_intel")
+			.where("status", "in", ["ready", "review"])
+			.executeTakeFirstOrThrow(),
+		db
+			.selectFrom("finance_import_transactions")
+			.select((eb) => eb.fn.countAll<number>().as("count"))
+			.executeTakeFirstOrThrow(),
+		db
+			.selectFrom("finance_import_documents")
+			.select((eb) => eb.fn.countAll<number>().as("count"))
+			.executeTakeFirstOrThrow(),
+	]);
+
+	return (
+		Number(readyHeads.count) > 0 ||
+		Number(importTransactions.count) > 0 ||
+		Number(importDocuments.count) > 0
+	);
+}
+
+async function financeRollupsNeedRebuild() {
+	const db = getDb();
+	const [rollupState, subcategoryState, headState, importTransactionState] =
+		await Promise.all([
+			db
+				.selectFrom("finance_yearly_rollups")
+				.select((eb) => eb.fn.max("updated_at").as("updated_at"))
+				.executeTakeFirstOrThrow(),
+			db
+				.selectFrom("finance_yearly_subcategory_rollups")
+				.select((eb) => eb.fn.max("updated_at").as("updated_at"))
+				.executeTakeFirstOrThrow(),
+			db
+				.selectFrom("message_secondary_heads")
+				.select((eb) => eb.fn.max("updated_at").as("updated_at"))
+				.where("classifier_key", "=", "finance_intel")
+				.where("status", "in", ["ready", "review"])
+				.executeTakeFirstOrThrow(),
+			db
+				.selectFrom("finance_import_transactions")
+				.select((eb) => eb.fn.max("created_at").as("created_at"))
+				.executeTakeFirstOrThrow(),
+		]);
+
+	const latestRollup = maxIsoValue([
+		rollupState.updated_at ?? null,
+		subcategoryState.updated_at ?? null,
+	]);
+	const latestInput = maxIsoValue([
+		headState.updated_at ?? null,
+		importTransactionState.created_at ?? null,
+	]);
+	return !latestRollup || Boolean(latestInput && latestInput > latestRollup);
+}
+
+async function queueStartupReconciliation(trace?: LogTrace) {
+	const db = getDb();
+	const accounts = await db.selectFrom("accounts").select(["id"]).execute();
+	let rootQueued = 0;
+	let financeQueued = 0;
+
+	for (const account of accounts) {
+		if (await hasPendingRootBacklog(account.id)) {
+			await queueAccountBacklog(account.id);
+			rootQueued += 1;
+		}
+		if (await hasPendingFinanceBacklog(account.id)) {
+			await queueAccountFinanceBacklog(account.id);
+			financeQueued += 1;
+		}
+	}
+
+	const [{ listPendingMessageCategoryAssignmentIds }, openFinanceBacklogs] =
+		await Promise.all([
+			import("#/lib/category-rules"),
+			countOpenJobs({ kinds: ["classify_finance_backlog"] }),
+		]);
+	const pendingCategoryAssignments =
+		await listPendingMessageCategoryAssignmentIds({ limit: 1 });
+	if (pendingCategoryAssignments.length > 0) {
+		await queueCategoryAssignmentsRebuild();
+	}
+
+	const readyFinanceHeads = await hasReadyFinanceHeads();
+	const rollupInputsAvailable = await hasRollupInputs();
+	const rollupsNeedRebuild = rollupInputsAvailable
+		? await financeRollupsNeedRebuild()
+		: false;
+
+	if (openFinanceBacklogs === 0 && readyFinanceHeads) {
+		await queueFinanceKnowledgeRebuild();
+		if (rollupsNeedRebuild) {
+			await queueFinanceRollupsRebuild();
+		}
+	} else if (openFinanceBacklogs === 0 && rollupsNeedRebuild) {
+		await queueFinanceRollupsRebuild();
+	}
+
+	trace?.info("worker.startup_reconciliation", {
+		accounts: accounts.length,
+		root_queued: rootQueued,
+		finance_queued: financeQueued,
+		pending_category_assignments: pendingCategoryAssignments.length,
+		open_finance_backlogs: openFinanceBacklogs,
 	});
 }
 
@@ -572,6 +845,11 @@ async function classifyAccountBacklogJob(job: JobRecord, trace: LogTrace) {
 	const messages = await db
 		.selectFrom("messages")
 		.leftJoin("message_labels", "message_labels.message_id", "messages.id")
+		.leftJoin(
+			"moderation_results",
+			"moderation_results.message_id",
+			"messages.id",
+		)
 		.select([
 			"messages.id",
 			"messages.received_at",
@@ -585,6 +863,8 @@ async function classifyAccountBacklogJob(job: JobRecord, trace: LogTrace) {
 		.where("messages.account_id", "=", job.scope_id)
 		.where((eb) =>
 			eb.or([
+				eb("moderation_results.message_id", "is", null),
+				staleModerationPromptSql(),
 				eb("message_labels.message_id", "is", null),
 				eb("message_labels.schema_version", "!=", "message-label.v2"),
 				eb(
@@ -594,6 +874,9 @@ async function classifyAccountBacklogJob(job: JobRecord, trace: LogTrace) {
 				),
 			]),
 		)
+		.orderBy("messages.received_at", "desc")
+		.orderBy("messages.id", "desc")
+		.limit(ROOT_BACKLOG_BATCH_SIZE)
 		.execute();
 
 	backlogTrace.add({
@@ -618,15 +901,15 @@ async function classifyAccountBacklogJob(job: JobRecord, trace: LogTrace) {
 
 	const overseerCtx = await loadLatestOverseerContext(account.id);
 	const allowedTags = mergeAllowedTags(overseerCtx.promotedTags);
+	const messageIds = messages.map((message) => message.id);
 	const attachmentRows = await db
 		.selectFrom("attachments")
-		.innerJoin("messages", "messages.id", "attachments.message_id")
 		.select([
 			"attachments.message_id",
 			"attachments.filename",
 			"attachments.mime_type",
 		])
-		.where("messages.account_id", "=", job.scope_id)
+		.where("attachments.message_id", "in", messageIds)
 		.execute();
 
 	const attachmentsByMessage = new Map<
@@ -742,6 +1025,9 @@ async function classifyAccountBacklogJob(job: JobRecord, trace: LogTrace) {
 	if (successCount > 0) {
 		await queueAccountFinanceBacklog(account.id);
 	}
+	if (await hasPendingRootBacklog(account.id)) {
+		await queueAccountBacklog(account.id);
+	}
 }
 
 async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
@@ -762,6 +1048,16 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 	const rows = await db
 		.selectFrom("messages")
 		.innerJoin("message_labels", "message_labels.message_id", "messages.id")
+		.leftJoin("message_secondary_heads", (join) =>
+			join
+				.onRef("message_secondary_heads.message_id", "=", "messages.id")
+				.on("message_secondary_heads.classifier_key", "=", "finance_intel"),
+		)
+		.leftJoin(
+			"message_secondary_results",
+			"message_secondary_results.id",
+			"message_secondary_heads.secondary_result_id",
+		)
 		.select([
 			"messages.id",
 			"messages.content_sha256",
@@ -771,8 +1067,12 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 			"messages.subject",
 			"messages.body_text_normalized",
 			"message_labels.label_json",
+			"message_secondary_heads.status as head_status",
+			"message_secondary_results.schema_version as result_schema_version",
 		])
 		.where("messages.account_id", "=", job.scope_id)
+		.orderBy("messages.received_at", "desc")
+		.orderBy("messages.id", "desc")
 		.execute();
 
 	const rootFinanceRows = rows.flatMap((row) => {
@@ -871,7 +1171,7 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 				registrySha256: registry.sha256,
 			})
 		);
-	});
+	}).slice(0, FINANCE_BACKLOG_BATCH_SIZE);
 
 	backlogTrace.add({
 		total: workItems.length,
@@ -1036,6 +1336,9 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 		await queueFinanceKnowledgeRebuild();
 		await queueFinanceRollupsRebuild();
 	}
+	if (await hasPendingFinanceBacklog(account.id)) {
+		await queueAccountFinanceBacklog(account.id);
+	}
 }
 
 async function processJob(job: JobRecord, trace: LogTrace) {
@@ -1138,6 +1441,7 @@ async function workerLoop() {
 	}
 
 	await queuePendingBackfills(workerTrace);
+	await queueStartupReconciliation(workerTrace);
 
 	while (true) {
 		await runWorkerIteration({ waitOnIdle: true });
@@ -1173,6 +1477,7 @@ export async function drainWorkerUntilIdle() {
 	runMigrations();
 	requeueExpiredJobs();
 	await queuePendingBackfills(trace);
+	await queueStartupReconciliation(trace);
 
 	while (await runWorkerIteration({ waitOnIdle: false })) {
 		// Drain until no queued or expired jobs remain.

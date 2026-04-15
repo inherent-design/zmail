@@ -2,8 +2,17 @@ import { readFile } from "node:fs/promises";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { bootDb, insertMessageRow, seedTestAccount } from "#/test/helpers/db";
+import {
+	bootDb,
+	insertMessageRow,
+	insertMessageSourceRow,
+	seedTestAccount,
+} from "#/test/helpers/db";
 import { fixturePath } from "#/test/helpers/fs";
+import {
+	buildFinanceIntelV2,
+	buildMessageLabelV2,
+} from "#/test/helpers/labels";
 import { createTestRuntime } from "#/test/helpers/runtime";
 
 function mockPiModule() {
@@ -14,7 +23,7 @@ function mockPiModule() {
 				return {
 					backend: "openai-subscription",
 					modelId: "gpt-5.4-mini",
-					parsed: {
+					parsed: buildMessageLabelV2({
 						finance: {
 							relevant: !lowConfidence,
 							direction: lowConfidence ? "neither" : "expense",
@@ -22,28 +31,31 @@ function mockPiModule() {
 							accountHint: lowConfidence ? null : "amex",
 							purpose: lowConfidence ? null : "client lunch",
 						},
-						social: {
+						people: {
 							personal: lowConfidence,
 							private: lowConfidence,
-							social: lowConfidence,
+							networking: false,
+							community: lowConfidence,
+							recruiting: false,
 							business: !lowConfidence,
 						},
-						risk: {
-							businessSensitive: false,
-							leakRisk: false,
-						},
 						routing: {
-							primaryBucket: lowConfidence ? "personal" : "finance",
+							primaryBucket: lowConfidence ? "relationships" : "finance",
+							secondaryBuckets: lowConfidence ? ["community"] : ["receipt"],
 							tags: lowConfidence ? ["social"] : ["receipt"],
 						},
 						confidence: {
 							overall: lowConfidence ? 0.6 : 0.95,
 							finance: 0.9,
-							social: 0.9,
+							people: 0.9,
+							commerce: 0.9,
+							knowledge: 0.9,
+							assets: 0.9,
+							entertainment: 0.9,
 							risk: 0.9,
 						},
 						explanation: "Worker classification.",
-					},
+					}),
 					rawText: "{}",
 					usage: { totalTokens: 10 },
 				};
@@ -88,10 +100,8 @@ function mockPiModule() {
 				return {
 					backend: "openai-subscription",
 					modelId: "gpt-5.4-mini",
-					parsed: {
-						schemaVersion: "finance-intel.v1",
+					parsed: buildFinanceIntelV2({
 						messageKind: "receipt",
-						actionability: "create_transaction_candidate",
 						transactionCandidates: [
 							{
 								kind: "card_charge",
@@ -103,7 +113,9 @@ function mockPiModule() {
 								ownerIdentityRef: null,
 								financialAccountRef: null,
 								institutionRef: null,
-								categoryHint: "client lunch",
+								categoryPrimary: "meals",
+								categorySecondary: "client_meals",
+								statementRefHint: null,
 								taxRelevanceHint: "business expense",
 								evidence: "Expense receipt for client lunch",
 							},
@@ -117,28 +129,14 @@ function mockPiModule() {
 								statementPeriodEnd: null,
 								dueAt: null,
 								taxYear: 2026,
+								accountRefHint: null,
+								institutionRefHint: null,
 								attachmentRefs: ["receipt.pdf"],
 								evidence: "Receipt attachment present",
 							},
 						],
-						matchedRegistryRefs: {
-							identityIds: [],
-							institutionIds: [],
-							financialAccountIds: [],
-						},
-						unresolvedEntityHints: {
-							identityHints: [],
-							institutionHints: [],
-							financialAccountHints: [],
-						},
-						confidence: {
-							overall: 0.95,
-							messageKind: 0.95,
-							transactionExtraction: 0.95,
-							registryMatching: 0.95,
-						},
 						explanation: "Finance intel.",
-					},
+					}),
 					rawText: "{}",
 					usage: { totalTokens: 9 },
 				};
@@ -170,39 +168,6 @@ function mockPiModule() {
 			resolvedBackend: "openai-subscription",
 		})),
 	}));
-}
-
-async function insertMessageSource(
-	db: Awaited<ReturnType<typeof bootDb>>["db"],
-	input: {
-		messageId: string;
-		accountId: string;
-		remoteMessageId: string;
-		remoteThreadId: string;
-		state?: "active" | "tombstoned";
-	},
-) {
-	await db
-		.insertInto("message_sources")
-		.values({
-			id: `source-${input.messageId}`,
-			message_id: input.messageId,
-			account_id: input.accountId,
-			remote_message_id: input.remoteMessageId,
-			remote_thread_id: input.remoteThreadId,
-			mailbox: "[Gmail]/All Mail",
-			imap_uid: 1,
-			uidvalidity: 1,
-			raw_rfc822_path: `/tmp/${input.remoteMessageId}.eml`,
-			raw_sha256: `${input.remoteMessageId}-sha`,
-			state: input.state ?? "active",
-			first_seen_at: "2026-01-01T00:00:00.000Z",
-			last_seen_at: "2026-01-01T00:00:00.000Z",
-			tombstoned_at:
-				input.state === "tombstoned" ? "2026-01-02T00:00:00.000Z" : null,
-			updated_at: "2026-01-02T00:00:00.000Z",
-		})
-		.execute();
 }
 
 describe("worker and server actions", () => {
@@ -250,18 +215,29 @@ describe("worker and server actions", () => {
 				is_inline: 0,
 			})
 			.execute();
-		await insertMessageSource(db, {
+		await insertMessageSourceRow(db, {
 			messageId: receiptMessageId,
 			accountId: "acct-1",
 			remoteMessageId: "gm-receipt",
 			remoteThreadId: "thr-receipt",
+			rawRfc822Path: "/tmp/gm-receipt.eml",
+			rawSha256: "gm-receipt-sha",
+			firstSeenAt: "2026-01-01T00:00:00.000Z",
+			lastSeenAt: "2026-01-01T00:00:00.000Z",
+			updatedAt: "2026-01-02T00:00:00.000Z",
 		});
-		await insertMessageSource(db, {
+		await insertMessageSourceRow(db, {
 			messageId: reviewMessageId,
 			accountId: "acct-1",
 			remoteMessageId: "gm-review",
 			remoteThreadId: "thr-review",
 			state: "tombstoned",
+			rawRfc822Path: "/tmp/gm-review.eml",
+			rawSha256: "gm-review-sha",
+			firstSeenAt: "2026-01-01T00:00:00.000Z",
+			lastSeenAt: "2026-01-01T00:00:00.000Z",
+			updatedAt: "2026-01-02T00:00:00.000Z",
+			tombstonedAt: "2026-01-02T00:00:00.000Z",
 		});
 
 		await actions.queueAccountClassifyBacklogCommand({ accountId: "acct-1" });

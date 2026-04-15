@@ -22,7 +22,12 @@ mise run db:migrate
 mise run check
 ```
 
-A fresh local database starts empty. Connect Gmail accounts through `/accounts/new`. Do not expect a seeded default account.
+A fresh local database starts empty. Connect Gmail accounts through
+`/accounts/new`. Reconnect an existing account through
+`/accounts/$accountId/reconnect`, use `Disconnect Gmail` on
+`/accounts/$accountId` to preserve the local corpus while removing OAuth
+credentials, and use `/accounts/$accountId/delete` for typed-confirm local
+account deletion. Do not expect a seeded default account.
 
 For Gmail-authenticated local runs, prefer `mise run ...` so the repo-managed
 encrypted Google OAuth secrets are loaded automatically.
@@ -44,6 +49,26 @@ mise run db:reset && mise run db:migrate
 If the runtime reports that the local DB predates the rewritten baseline, prefer `pnpm db:reset:messages`. Use `pnpm db:reset` plus `pnpm db:migrate` only when you also want to discard account storage and reconnect Gmail accounts.
 
 `pnpm reextract:parse-errors` is a supported recovery path only for fresh V2 DBs when a parser regression leaves messages stuck in `parse_status = 'error'`. It is not a rescue path for old pre-secondary local DBs.
+
+`pnpm reextract:bad-bodies` is the repair path for rows that parsed
+successfully but stored unusable body output such as `undefined`, `null`,
+`Plain text version not available`, or literal HTML in `body_text_primary` or
+`snippet`. It reparses from the saved raw MIME, preserves row identity, and
+queues normal root reclassification for affected accounts.
+
+The operator source of truth lives on disk, not in SQLite:
+
+- `data/operator/classification/root-taxonomy.yaml`
+- `data/operator/classification/finance-taxonomy.yaml`
+- `data/operator/classification/rules.yaml`
+- `data/operator/registry/identities.yaml`
+- `data/operator/registry/institutions.yaml`
+- `data/operator/registry/financial-accounts.yaml`
+- `data/operator/registry/sender-rules.yaml`
+
+Runtime tables are imported caches. Missing YAML files are auto-written with
+defaults or empty schema-valid documents on first runtime boot or config load.
+Existing files are never overwritten automatically.
 
 Install the Playwright browser only when you need the live browser suite:
 
@@ -97,6 +122,7 @@ pnpm db:reset
 pnpm db:reset:messages
 pnpm db:reset:jobs
 pnpm reextract:parse-errors
+pnpm reextract:bad-bodies
 pnpm worker:drain
 pnpm pi:connect
 pnpm playwright:install

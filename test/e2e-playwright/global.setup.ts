@@ -4,367 +4,384 @@ import { existsSync } from "node:fs";
 import { cp, mkdir, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
-import Database from "better-sqlite3";
-
-import { buildContentSha256 } from "#/lib/normalize";
 import {
-	BACKLOG_BODY,
-	BACKLOG_MESSAGE_ID,
-	BACKLOG_REMOTE_ID,
-	BACKLOG_SUBJECT,
-	buildLowConfidenceLabel,
-	buildSeededProfile,
-	CLASSIFY_NOW_BODY,
-	CLASSIFY_NOW_MESSAGE_ID,
-	CLASSIFY_NOW_REMOTE_ID,
-	CLASSIFY_NOW_SUBJECT,
-	LIVE_ACCOUNT_EMAIL,
-	LIVE_ACCOUNT_ID,
-	LIVE_ACCOUNT_LABEL,
-	REVIEW_BODY,
-	REVIEW_MESSAGE_ID,
-	REVIEW_REMOTE_ID,
-	REVIEW_RESULT_ID,
-	REVIEW_ROW_ID,
-	REVIEW_SUBJECT,
-	SEEDED_PROFILE_ID,
-} from "./live-fixtures";
+	PLAYWRIGHT_SCENARIOS,
+	buildFinanceScenarioIntel,
+	buildSeededReviewLabel,
+} from "./scenarios";
+import { buildMessageLabelV2 } from "#/test/helpers/labels";
 
 function sha256(input: string) {
 	return createHash("sha256").update(input).digest("hex");
 }
 
-async function seedRuntime(dataDir: string) {
-	const dbPath = resolve(dataDir, "zmail.sqlite");
-	const db = new Database(dbPath);
-	db.pragma("foreign_keys = ON");
+function buildRawMessage(input: {
+	subject: string;
+	senderAddress: string;
+	body: string;
+}) {
+	return `Subject: ${input.subject}\nFrom: ${input.senderAddress}\n\n${input.body}\n`;
+}
 
-	const now = new Date().toISOString();
-	const rawDir = resolve(dataDir, "accounts", LIVE_ACCOUNT_ID, "raw");
+async function writeRawMessage(input: {
+	dataDir: string;
+	accountId: string;
+	remoteId: string;
+	subject: string;
+	senderAddress: string;
+	body: string;
+}) {
+	const rawDir = resolve(input.dataDir, "accounts", input.accountId, "raw");
 	await mkdir(rawDir, { recursive: true });
+	const rawPath = resolve(rawDir, `${input.remoteId}.eml`);
+	const raw = buildRawMessage(input);
+	await writeFile(rawPath, raw);
+	return {
+		rawPath,
+		rawSha256: sha256(raw),
+	};
+}
 
-	const backlogRawPath = resolve(rawDir, `${BACKLOG_REMOTE_ID}.eml`);
-	const classifyNowRawPath = resolve(rawDir, `${CLASSIFY_NOW_REMOTE_ID}.eml`);
-	const reviewRawPath = resolve(rawDir, `${REVIEW_REMOTE_ID}.eml`);
-	const backlogRaw = `Subject: ${BACKLOG_SUBJECT}\nFrom: billing@vendor.example\n\n${BACKLOG_BODY}\n`;
-	const classifyNowRaw = `Subject: ${CLASSIFY_NOW_SUBJECT}\nFrom: friend@example.com\n\n${CLASSIFY_NOW_BODY}\n`;
-	const reviewRaw = `Subject: ${REVIEW_SUBJECT}\nFrom: accounting@example.com\n\n${REVIEW_BODY}\n`;
+async function seedRuntime(dataDir: string) {
+	process.env.ZMAIL_DATA_DIR = dataDir;
 
-	await writeFile(backlogRawPath, backlogRaw);
-	await writeFile(classifyNowRawPath, classifyNowRaw);
-	await writeFile(reviewRawPath, reviewRaw);
+	const [
+		{ buildContentSha256 },
+		{
+			bootDb,
+			insertAccountSyncStateRow,
+			insertAttachmentRow,
+			insertConversationRow,
+			insertMessageLabelRow,
+			insertMessageRow,
+			insertMessageSourceRow,
+			insertReviewRow,
+			insertSecondaryResultRow,
+			seedTestAccount,
+		},
+		{ writeOAuthToken },
+	] = await Promise.all([
+		import("#/lib/normalize"),
+		import("#/test/helpers/db"),
+		import("#/lib/google-oauth"),
+	]);
 
-	const backlogRawHash = sha256(backlogRaw);
-	const classifyNowRawHash = sha256(classifyNowRaw);
-	const reviewRawHash = sha256(reviewRaw);
-	const backlogConversationId = "playwright-conversation-backlog";
-	const classifyNowConversationId = "playwright-conversation-classify-now";
-	const reviewConversationId = "playwright-conversation-review";
-	const backlogContentHash = buildContentSha256({
-		senderAddress: "billing@vendor.example",
-		subject: BACKLOG_SUBJECT,
-		receivedAt: "2026-04-11T10:00:00.000Z",
-		bodyTextNormalized: BACKLOG_BODY,
-		attachments: [
-			{
-				filename: "receipt.pdf",
-				mime_type: "application/pdf",
-			},
-		],
+	const { db } = await bootDb();
+	const now = new Date().toISOString();
+
+	async function seedAccount(input: {
+		id: string;
+		label: string;
+		email: string;
+		syncEnabled: number;
+		syncStatus:
+			| "idle"
+			| "syncing"
+			| "backfilling"
+			| "needs_reconnect"
+			| "resync_required"
+			| "paused"
+			| "error";
+		hasOAuthToken: boolean;
+	}) {
+		await seedTestAccount(db, {
+			id: input.id,
+			label: input.label,
+			emailAddress: input.email,
+			syncEnabled: input.syncEnabled,
+			syncStatus: input.syncStatus,
+		});
+		await insertAccountSyncStateRow(db, {
+			accountId: input.id,
+			uidvalidity: 1,
+			latestUidCursor: 100,
+			earliestUidCursor: 1,
+			watcherStatus: "stopped",
+		});
+		if (input.hasOAuthToken) {
+			writeOAuthToken(input.id, {
+				version: 1,
+				provider: "google",
+				emailAddress: input.email,
+				accessToken: `token-${input.id}`,
+				refreshToken: `refresh-${input.id}`,
+				expiresAt: "2099-01-01T00:00:00.000Z",
+				scope: ["openid", "email"],
+				tokenType: "Bearer",
+				updatedAt: now,
+			});
+		}
+	}
+
+	async function seedMessage(input: {
+		accountId: string;
+		message: {
+			id: string;
+			remoteId: string;
+			subject: string;
+			body: string;
+			senderName: string;
+			senderAddress: string;
+			receivedAt: string;
+			attachmentName?: string;
+		};
+		label?:
+			| {
+					label: Record<string, unknown>;
+					lowConfidence?: number;
+			  }
+			| undefined;
+		review?:
+			| {
+					id: string;
+					sourceClassificationResultId: string;
+			  }
+			| undefined;
+		financeResult?: Record<string, unknown>;
+	}) {
+		const conversationId = `conversation-${input.message.id}`;
+		await insertConversationRow(db, {
+			id: conversationId,
+			accountId: input.accountId,
+			gmailThreadId: `thread-${input.message.remoteId}`,
+			firstMessageReceivedAt: input.message.receivedAt,
+			lastMessageReceivedAt: input.message.receivedAt,
+			messageCount: 1,
+		});
+
+		const attachmentSummary = input.message.attachmentName
+			? [
+					{
+						filename: input.message.attachmentName,
+						mime_type: "application/pdf",
+					},
+				]
+			: [];
+		const contentSha256 = buildContentSha256({
+			senderAddress: input.message.senderAddress,
+			subject: input.message.subject,
+			receivedAt: input.message.receivedAt,
+			bodyTextNormalized: input.message.body,
+			attachments: attachmentSummary,
+		});
+		const messageId = await insertMessageRow(db, {
+			id: input.message.id,
+			accountId: input.accountId,
+			messageId: `<${input.message.id}@example.com>`,
+			senderAddress: input.message.senderAddress,
+			subject: input.message.subject,
+			bodyTextPrimary: input.message.body,
+			bodyTextNormalized: input.message.body,
+			snippet: input.message.body.slice(0, 120),
+			receivedAt: input.message.receivedAt,
+			conversationId,
+			contentSha256,
+		});
+		if (input.message.attachmentName) {
+			await insertAttachmentRow(db, {
+				id: `attachment-${input.message.id}`,
+				messageId,
+				filename: input.message.attachmentName,
+				mimeType: "application/pdf",
+				sizeBytes: 4096,
+			});
+		}
+		const { rawPath, rawSha256 } = await writeRawMessage({
+			dataDir,
+			accountId: input.accountId,
+			remoteId: input.message.remoteId,
+			subject: input.message.subject,
+			senderAddress: input.message.senderAddress,
+			body: input.message.body,
+		});
+		await insertMessageSourceRow(db, {
+			id: `source-${input.message.id}`,
+			messageId,
+			accountId: input.accountId,
+			remoteMessageId: input.message.remoteId,
+			remoteThreadId: `thread-${input.message.remoteId}`,
+			imapUid: Number.parseInt(input.message.remoteId.slice(-3), 10),
+			uidvalidity: 1,
+			rawRfc822Path: rawPath,
+			rawSha256,
+			state: "active",
+			firstSeenAt: now,
+			lastSeenAt: now,
+			updatedAt: now,
+		});
+
+		if (input.label) {
+			await insertMessageLabelRow(db, {
+				messageId,
+				primaryBucket:
+					typeof input.label.label.routing === "object" &&
+					input.label.label.routing !== null &&
+					"primaryBucket" in input.label.label.routing
+						? String(
+								(input.label.label.routing as { primaryBucket?: string })
+									.primaryBucket ?? "other",
+							)
+						: "other",
+				lowConfidence: input.label.lowConfidence ?? 0,
+				contentSha256,
+				label: input.label.label,
+			});
+		}
+
+		if (input.review) {
+			await insertReviewRow(db, {
+				id: input.review.id,
+				messageId,
+				sourceClassificationResultId: input.review.sourceClassificationResultId,
+				status: "open",
+				createdAt: now,
+			});
+		}
+
+		if (input.financeResult) {
+			await insertSecondaryResultRow(db, {
+				messageId,
+				classifierKey: "finance_intel",
+				status: "ready",
+				contentSha256,
+				registrySha256: null,
+				result: input.financeResult,
+			});
+		}
+
+		return {
+			messageId,
+			contentSha256,
+		};
+	}
+
+	for (const scenario of Object.values(PLAYWRIGHT_SCENARIOS)) {
+		await seedAccount(scenario.account);
+	}
+
+	await seedMessage({
+		accountId: PLAYWRIGHT_SCENARIOS.backlog.account.id,
+		message: PLAYWRIGHT_SCENARIOS.backlog.message,
 	});
-	const classifyNowContentHash = buildContentSha256({
-		senderAddress: "friend@example.com",
-		subject: CLASSIFY_NOW_SUBJECT,
-		receivedAt: "2026-04-10T17:00:00.000Z",
-		bodyTextNormalized: CLASSIFY_NOW_BODY,
-		attachments: [],
+	await seedMessage({
+		accountId: PLAYWRIGHT_SCENARIOS.classifyNow.account.id,
+		message: PLAYWRIGHT_SCENARIOS.classifyNow.message,
 	});
-	const reviewContentHash = buildContentSha256({
-		senderAddress: "accounting@example.com",
-		subject: REVIEW_SUBJECT,
-		receivedAt: "2026-04-09T08:30:00.000Z",
-		bodyTextNormalized: REVIEW_BODY,
-		attachments: [],
+	await seedMessage({
+		accountId: PLAYWRIGHT_SCENARIOS.review.account.id,
+		message: PLAYWRIGHT_SCENARIOS.review.message,
+		label: {
+			label: buildSeededReviewLabel(),
+			lowConfidence: 1,
+		},
+		review: {
+			id: PLAYWRIGHT_SCENARIOS.review.reviewId,
+			sourceClassificationResultId: `classification-${PLAYWRIGHT_SCENARIOS.review.message.id}`,
+		},
 	});
-	const lowConfidenceLabel = buildLowConfidenceLabel();
-	const seededProfile = buildSeededProfile();
+	await seedMessage({
+		accountId: PLAYWRIGHT_SCENARIOS.delete.account.id,
+		message: PLAYWRIGHT_SCENARIOS.delete.message,
+		label: {
+			label: buildSeededReviewLabel(),
+			lowConfidence: 0,
+		},
+	});
+	await seedMessage({
+		accountId: PLAYWRIGHT_SCENARIOS.finance.account.id,
+		message: PLAYWRIGHT_SCENARIOS.finance.emailMessage,
+		label: {
+			label: buildMessageLabelV2({
+				finance: {
+					relevant: true,
+					direction: "expense",
+					owner: "business",
+					accountHint: "acct:finance",
+					purpose: "software_services",
+				},
+				commerce: {
+					transactional: true,
+					shopping: false,
+					subscription: true,
+					travel: false,
+					legal: false,
+				},
+				routing: {
+					primaryBucket: "finance",
+					secondaryBuckets: ["receipt", "subscription"],
+					tags: ["receipt", "software"],
+				},
+				explanation: "Seeded finance message for Playwright.",
+			}),
+			lowConfidence: 0,
+		},
+		financeResult: buildFinanceScenarioIntel(),
+	});
 
-	db.prepare(
-		`
-			INSERT INTO accounts (
-				id, label, email_address, provider_kind, sync_enabled, sync_status,
-				source_truth, selected_mailbox, last_synced_at, last_error, created_at,
-				updated_at
-			) VALUES (?, ?, ?, 'gmail', 0, 'paused', 'corpus_mirror',
-				'[Gmail]/All Mail', ?, NULL, ?, ?)
-		`,
-	).run(LIVE_ACCOUNT_ID, LIVE_ACCOUNT_LABEL, LIVE_ACCOUNT_EMAIL, now, now, now);
-
-	db.prepare(
-		`
-			INSERT INTO account_sync_state (
-				account_id, uidvalidity, latest_uid_cursor, earliest_uid_cursor,
-				backfill_snapshot_uid, backfill_next_uid, last_bootstrap_started_at,
-				last_bootstrap_completed_at, last_delta_sync_at, last_reconcile_at,
-				last_backfill_sync_at, backfill_completed_at, last_idle_started_at,
-				last_idle_heartbeat_at, watcher_status, consecutive_failures,
-				backoff_until, created_at, updated_at
-			) VALUES (?, 1, 103, 1, 103, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, 'stopped', 0, NULL, ?, ?)
-		`,
-	).run(LIVE_ACCOUNT_ID, now, now, now, now, now, now, now, now);
-
-	db.prepare(
-		`
-			INSERT INTO conversations (
-				id, account_id, gmail_thread_id, first_message_received_at,
-				last_message_received_at, message_count, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		`,
-	).run(
-		backlogConversationId,
-		LIVE_ACCOUNT_ID,
-		"810000000000000001",
-		"2026-04-11T10:00:00.000Z",
-		"2026-04-11T10:00:00.000Z",
-		1,
-		now,
-		now,
-	);
-	db.prepare(
-		`
-			INSERT INTO conversations (
-				id, account_id, gmail_thread_id, first_message_received_at,
-				last_message_received_at, message_count, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		`,
-	).run(
-		classifyNowConversationId,
-		LIVE_ACCOUNT_ID,
-		"810000000000000002",
-		"2026-04-10T17:00:00.000Z",
-		"2026-04-10T17:00:00.000Z",
-		1,
-		now,
-		now,
-	);
-	db.prepare(
-		`
-			INSERT INTO conversations (
-				id, account_id, gmail_thread_id, first_message_received_at,
-				last_message_received_at, message_count, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		`,
-	).run(
-		reviewConversationId,
-		LIVE_ACCOUNT_ID,
-		"810000000000000003",
-		"2026-04-09T08:30:00.000Z",
-		"2026-04-09T08:30:00.000Z",
-		1,
-		now,
-		now,
-	);
-
-	const insertMessage = db.prepare(
-		`
-			INSERT INTO messages (
-				id, account_id, message_id, thread_key, received_at, ingested_at,
-				conversation_id, sender_name, sender_address, to_json, cc_json,
-				subject, in_reply_to, body_text_primary, body_text_forwarded,
-				body_text_normalized, snippet, attachment_count, has_html,
-				raw_byte_start, raw_byte_end, parse_status, body_extraction_strategy,
-				parse_error_reason, token_estimate, content_sha256, created_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', '[]', ?, NULL, ?, '', ?, ?, ?, 0, 0, 0, 'parsed', 'plain_text', NULL, ?, ?, ?)
-		`,
-	);
-
-	insertMessage.run(
-		BACKLOG_MESSAGE_ID,
-		LIVE_ACCOUNT_ID,
-		"<playwright-backlog@example.com>",
-		"<playwright-backlog@example.com>",
-		"2026-04-11T10:00:00.000Z",
-		now,
-		backlogConversationId,
-		"Vendor Billing",
-		"billing@vendor.example",
-		BACKLOG_SUBJECT,
-		BACKLOG_BODY,
-		BACKLOG_BODY,
-		BACKLOG_BODY.slice(0, 120),
-		1,
-		Math.ceil(BACKLOG_BODY.length / 4),
-		backlogContentHash,
-		now,
-	);
-	insertMessage.run(
-		CLASSIFY_NOW_MESSAGE_ID,
-		LIVE_ACCOUNT_ID,
-		"<playwright-classify-now@example.com>",
-		"<playwright-classify-now@example.com>",
-		"2026-04-10T17:00:00.000Z",
-		now,
-		classifyNowConversationId,
-		"Friend",
-		"friend@example.com",
-		CLASSIFY_NOW_SUBJECT,
-		CLASSIFY_NOW_BODY,
-		CLASSIFY_NOW_BODY,
-		CLASSIFY_NOW_BODY.slice(0, 120),
-		0,
-		Math.ceil(CLASSIFY_NOW_BODY.length / 4),
-		classifyNowContentHash,
-		now,
-	);
-	insertMessage.run(
-		REVIEW_MESSAGE_ID,
-		LIVE_ACCOUNT_ID,
-		"<playwright-review@example.com>",
-		"<playwright-review@example.com>",
-		"2026-04-09T08:30:00.000Z",
-		now,
-		reviewConversationId,
-		"Accounting",
-		"accounting@example.com",
-		REVIEW_SUBJECT,
-		REVIEW_BODY,
-		REVIEW_BODY,
-		REVIEW_BODY.slice(0, 120),
-		0,
-		Math.ceil(REVIEW_BODY.length / 4),
-		reviewContentHash,
-		now,
-	);
-
-	db.prepare(
-		`
-			INSERT INTO attachments (
-				id, message_id, filename, mime_type, size_bytes, content_id, is_inline
-			) VALUES (?, ?, ?, ?, ?, NULL, 0)
-		`,
-	).run(
-		"playwright-attachment-receipt",
-		BACKLOG_MESSAGE_ID,
-		"receipt.pdf",
-		"application/pdf",
-		4096,
-	);
-
-	const insertSource = db.prepare(
-		`
-			INSERT INTO message_sources (
-				id, message_id, account_id, remote_message_id, remote_thread_id, mailbox,
-				imap_uid, uidvalidity, raw_rfc822_path, raw_sha256, state, first_seen_at,
-				last_seen_at, tombstoned_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, '[Gmail]/All Mail', ?, 1, ?, ?, ?, ?, ?, ?, ?)
-		`,
-	);
-
-	insertSource.run(
-		"playwright-source-backlog",
-		BACKLOG_MESSAGE_ID,
-		LIVE_ACCOUNT_ID,
-		BACKLOG_REMOTE_ID,
-		"810000000000000001",
-		101,
-		backlogRawPath,
-		backlogRawHash,
-		"active",
-		now,
-		now,
-		null,
-		now,
-	);
-	insertSource.run(
-		"playwright-source-classify-now",
-		CLASSIFY_NOW_MESSAGE_ID,
-		LIVE_ACCOUNT_ID,
-		CLASSIFY_NOW_REMOTE_ID,
-		"810000000000000002",
-		102,
-		classifyNowRawPath,
-		classifyNowRawHash,
-		"active",
-		now,
-		now,
-		null,
-		now,
-	);
-	insertSource.run(
-		"playwright-source-review",
-		REVIEW_MESSAGE_ID,
-		LIVE_ACCOUNT_ID,
-		REVIEW_REMOTE_ID,
-		"810000000000000003",
-		103,
-		reviewRawPath,
-		reviewRawHash,
-		"tombstoned",
-		now,
-		now,
-		now,
-		now,
-	);
-
-	db.prepare(
-		`
-			INSERT INTO classification_results (
-				id, job_id, message_id, model, prompt_version, source, result_json,
-				raw_response_json, usage_json, low_confidence, created_at, input_content_sha256
-			) VALUES (?, NULL, ?, 'gpt-5.4-mini', 'classify-email-v1', 'model', ?, ?, NULL, 1, ?, ?)
-		`,
-	).run(
-		REVIEW_RESULT_ID,
-		REVIEW_MESSAGE_ID,
-		JSON.stringify(lowConfidenceLabel),
-		JSON.stringify({ seeded: true }),
-		now,
-		reviewContentHash,
-	);
-
-	db.prepare(
-		`
-			INSERT INTO message_labels (
-				message_id, classification_result_id, source, label_json, primary_bucket,
-				low_confidence, nsfw, updated_at, content_sha256
-			) VALUES (?, ?, 'model', ?, ?, 1, 0, ?, ?)
-		`,
-	).run(
-		REVIEW_MESSAGE_ID,
-		REVIEW_RESULT_ID,
-		JSON.stringify(lowConfidenceLabel),
-		lowConfidenceLabel.routing.primaryBucket,
-		now,
-		reviewContentHash,
-	);
-
-	db.prepare(
-		`
-			INSERT INTO reviews (
-				id, message_id, source_classification_result_id, status, reviewer_note,
-				override_label_json, created_at, resolved_at
-			) VALUES (?, ?, ?, 'open', NULL, NULL, ?, NULL)
-		`,
-	).run(REVIEW_ROW_ID, REVIEW_MESSAGE_ID, REVIEW_RESULT_ID, now);
-
-	db.prepare(
-		`
-			INSERT INTO overseer_profiles (
-				id, account_id, built_from_messages, promoted_tags_json, prompt_preamble,
-				profile_json, created_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?)
-		`,
-	).run(
-		SEEDED_PROFILE_ID,
-		LIVE_ACCOUNT_ID,
-		seededProfile.builtFromMessages,
-		JSON.stringify(seededProfile.promotedTags),
-		seededProfile.promptPreamble,
-		JSON.stringify(seededProfile),
-		now,
-	);
-
-	db.close();
+	await db
+		.insertInto("finance_import_runs")
+		.values({
+			id: "pw-finance-import-run",
+			source_kind: "pdf",
+			source_file_path: "/tmp/pw-finance-statement.pdf",
+			source_file_sha256: "pw-finance-statement-sha",
+			filename: "pw-finance-statement.pdf",
+			artifact_sha256: "pw-finance-artifact-sha",
+			extractor_runner: "pytest",
+			extractor_model: "claude-opus",
+			extractor_prompt_version: "finance-source-import.v1",
+			extracted_text_hash: "pw-finance-text-sha",
+			status: "imported",
+			raw_artifact_json: JSON.stringify({ schemaVersion: "finance-source-import.v1" }),
+			imported_at: now,
+		})
+		.execute();
+	await db
+		.insertInto("finance_import_documents")
+		.values({
+			id: "pw-finance-document",
+			import_run_id: "pw-finance-import-run",
+			source_document_ref: "statement-2026-03",
+			document_type: "statement",
+			issuer: "PDF Credit Union",
+			external_id: "pdf-statement-2026-03",
+			statement_period_start: "2026-03-01",
+			statement_period_end: "2026-03-31",
+			due_at: null,
+			tax_year: 2026,
+			owner_identity_hint: "owner:pdf",
+			financial_account_hint: "acct:pdf",
+			institution_hint: "inst:pdf-bank",
+			evidence_text: "Imported PDF statement for March.",
+			payload_json: JSON.stringify({ seeded: true }),
+			created_at: now,
+		})
+		.execute();
+	await db
+		.insertInto("finance_import_transactions")
+		.values({
+			id: "pw-finance-transaction",
+			import_run_id: "pw-finance-import-run",
+			source_document_ref: "statement-2026-03",
+			occurred_at: "2026-03-20",
+			posted_at: "2026-03-21",
+			amount_value: "51.00",
+			amount_minor: 5100,
+			currency: "USD",
+			direction: "expense",
+			description: "Imported PDF software charge",
+			merchant_or_counterparty: "PDF Services",
+			balance_value: null,
+			owner_identity_hint: "owner:pdf",
+			financial_account_hint: "acct:pdf",
+			institution_hint: "inst:pdf-bank",
+			category_primary: "software_services",
+			category_secondary: "statement_import",
+			evidence_text: "Imported PDF charge for software services.",
+			payload_json: JSON.stringify({ seeded: true }),
+			created_at: now,
+		})
+		.execute();
 }
 
 async function main() {

@@ -635,3 +635,204 @@ export async function insertSecondaryResultRow(
 
 	return resultId;
 }
+
+export async function insertAccountSyncStateRow(
+	db: TestDb,
+	input: {
+		accountId: string;
+		uidvalidity?: number | null;
+		latestUidCursor?: number | null;
+		earliestUidCursor?: number | null;
+		backfillSnapshotUid?: number | null;
+		backfillNextUid?: number | null;
+		watcherStatus?: "running" | "stopped";
+		consecutiveFailures?: number;
+	},
+) {
+	const { nowIso } = await import("#/lib/config");
+	await db
+		.insertInto("account_sync_state")
+		.values({
+			account_id: input.accountId,
+			uidvalidity: input.uidvalidity ?? 1,
+			latest_uid_cursor: input.latestUidCursor ?? 1,
+			earliest_uid_cursor: input.earliestUidCursor ?? 1,
+			backfill_snapshot_uid: input.backfillSnapshotUid ?? null,
+			backfill_next_uid: input.backfillNextUid ?? null,
+			last_bootstrap_started_at: null,
+			last_bootstrap_completed_at: null,
+			last_delta_sync_at: null,
+			last_reconcile_at: null,
+			last_backfill_sync_at: null,
+			backfill_completed_at: null,
+			last_idle_started_at: null,
+			last_idle_heartbeat_at: null,
+			watcher_status: input.watcherStatus ?? "stopped",
+			consecutive_failures: input.consecutiveFailures ?? 0,
+			backoff_until: null,
+			created_at: nowIso(),
+			updated_at: nowIso(),
+		})
+		.onConflict((oc) =>
+			oc.column("account_id").doUpdateSet({
+				uidvalidity: input.uidvalidity ?? 1,
+				latest_uid_cursor: input.latestUidCursor ?? 1,
+				earliest_uid_cursor: input.earliestUidCursor ?? 1,
+				backfill_snapshot_uid: input.backfillSnapshotUid ?? null,
+				backfill_next_uid: input.backfillNextUid ?? null,
+				watcher_status: input.watcherStatus ?? "stopped",
+				consecutive_failures: input.consecutiveFailures ?? 0,
+				updated_at: nowIso(),
+			}),
+		)
+		.execute();
+}
+
+export async function insertAttachmentRow(
+	db: TestDb,
+	input: {
+		id?: string;
+		messageId: string;
+		filename?: string | null;
+		mimeType?: string | null;
+		sizeBytes?: number;
+		contentId?: string | null;
+		isInline?: number;
+	},
+) {
+	const id = input.id ?? randomUUID();
+	await db
+		.insertInto("attachments")
+		.values({
+			id,
+			message_id: input.messageId,
+			filename: input.filename ?? null,
+			mime_type: input.mimeType ?? null,
+			size_bytes: input.sizeBytes ?? 0,
+			content_id:
+				input && "contentId" in input ? (input.contentId ?? null) : null,
+			is_inline: input.isInline ?? 0,
+		})
+		.execute();
+	return id;
+}
+
+export async function insertMessageSourceRow(
+	db: TestDb,
+	input: {
+		id?: string;
+		messageId: string;
+		accountId: string;
+		remoteMessageId: string;
+		remoteThreadId: string;
+		mailbox?: string | null;
+		imapUid?: number | null;
+		uidvalidity?: number | null;
+		rawRfc822Path?: string | null;
+		rawSha256?: string | null;
+		state?: "active" | "tombstoned";
+		firstSeenAt?: string;
+		lastSeenAt?: string;
+		tombstonedAt?: string | null;
+		updatedAt?: string;
+	},
+) {
+	const { nowIso } = await import("#/lib/config");
+	const id = input.id ?? `source-${input.messageId}`;
+	const firstSeenAt = input.firstSeenAt ?? nowIso();
+	const lastSeenAt = input.lastSeenAt ?? firstSeenAt;
+	await db
+		.insertInto("message_sources")
+		.values({
+			id,
+			message_id: input.messageId,
+			account_id: input.accountId,
+			remote_message_id: input.remoteMessageId,
+			remote_thread_id: input.remoteThreadId,
+			mailbox: input.mailbox ?? "[Gmail]/All Mail",
+			imap_uid:
+				input && "imapUid" in input ? (input.imapUid ?? null) : null,
+			uidvalidity:
+				input && "uidvalidity" in input ? (input.uidvalidity ?? null) : null,
+			raw_rfc822_path:
+				input && "rawRfc822Path" in input
+					? (input.rawRfc822Path ?? null)
+					: null,
+			raw_sha256:
+				input && "rawSha256" in input ? (input.rawSha256 ?? null) : null,
+			state: input.state ?? "active",
+			first_seen_at: firstSeenAt,
+			last_seen_at: lastSeenAt,
+			tombstoned_at:
+				input.tombstonedAt ??
+				(input.state === "tombstoned" ? lastSeenAt : null),
+			updated_at: input.updatedAt ?? lastSeenAt,
+		})
+		.execute();
+	return id;
+}
+
+export async function insertReviewRow(
+	db: TestDb,
+	input: {
+		id?: string;
+		messageId: string;
+		sourceClassificationResultId: string;
+		status?: "open" | "resolved";
+		reviewerNote?: string | null;
+		overrideLabelJson?: string | null;
+		createdAt?: string;
+		resolvedAt?: string | null;
+	},
+) {
+	const { nowIso } = await import("#/lib/config");
+	const id = input.id ?? randomUUID();
+	await db
+		.insertInto("reviews")
+		.values({
+			id,
+			message_id: input.messageId,
+			source_classification_result_id: input.sourceClassificationResultId,
+			status: input.status ?? "open",
+			reviewer_note:
+				input && "reviewerNote" in input ? (input.reviewerNote ?? null) : null,
+			override_label_json:
+				input && "overrideLabelJson" in input
+					? (input.overrideLabelJson ?? null)
+					: null,
+			created_at: input.createdAt ?? nowIso(),
+			resolved_at:
+				input && "resolvedAt" in input ? (input.resolvedAt ?? null) : null,
+		})
+		.execute();
+	return id;
+}
+
+export async function insertOverseerProfileRow(
+	db: TestDb,
+	input: {
+		id?: string;
+		accountId: string;
+		builtFromMessages?: number;
+		promotedTagsJson?: string;
+		promptPreamble?: string;
+		profileJson: string;
+		createdAt?: string;
+	},
+) {
+	const { nowIso } = await import("#/lib/config");
+	const id = input.id ?? randomUUID();
+	await db
+		.insertInto("overseer_profiles")
+		.values({
+			id,
+			account_id: input.accountId,
+			built_from_messages: input.builtFromMessages ?? 0,
+			promoted_tags_json: input.promotedTagsJson ?? "[]",
+			prompt_preamble: input.promptPreamble ?? "",
+			profile_json: input.profileJson,
+			created_at: input.createdAt ?? nowIso(),
+		})
+		.execute();
+	return id;
+}

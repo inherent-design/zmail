@@ -28,6 +28,44 @@ export interface FinanceLedgerEntry {
 	description: string | null;
 }
 
+export interface FinanceImportDocumentEntry {
+	sourceKind: string;
+	statementPeriodEnd: string | null;
+}
+
+export interface FinanceSummary {
+	inflowMinor: number;
+	outflowMinor: number;
+	netMinor: number;
+	importedStatementCount: number;
+	extractedTransactionCount: number;
+	uncategorizedCount: number;
+}
+
+export interface FinancePrimaryRollup {
+	year: number;
+	sourceKind: string;
+	primaryCategory: string;
+	inflowMinor: number;
+	outflowMinor: number;
+	netMinor: number;
+	transactionCount: number;
+	importedStatementCount: number;
+	extractedTransactionCount: number;
+	uncategorizedCount: number;
+}
+
+export interface FinanceSubcategoryRollup {
+	year: number;
+	sourceKind: string;
+	primaryCategory: string;
+	secondaryCategory: string;
+	inflowMinor: number;
+	outflowMinor: number;
+	netMinor: number;
+	transactionCount: number;
+}
+
 export async function loadCombinedFinanceLedger() {
 	const db = getDb();
 	const [emailRows, importRows] = await Promise.all([
@@ -136,154 +174,218 @@ export async function loadCombinedFinanceLedger() {
 	return entries;
 }
 
-export async function rebuildFinanceRollups() {
-	const db = getDb();
-	const ledger = await loadCombinedFinanceLedger();
-	const importDocuments = await db
-		.selectFrom("finance_import_documents")
-		.select(["statement_period_end"])
-		.execute();
+export function buildFinanceRollupView(input: {
+	ledger: FinanceLedgerEntry[];
+	importDocuments: FinanceImportDocumentEntry[];
+}) {
+	const yearly = new Map<string, FinancePrimaryRollup>();
+	const subcategory = new Map<string, FinanceSubcategoryRollup>();
 
-	const yearly = new Map<
-		string,
-		{
-			id: string;
-			year: number;
-			source_kind: string;
-			primary_category: string;
-			inflow_minor: number;
-			outflow_minor: number;
-			net_minor: number;
-			transaction_count: number;
-			imported_statement_count: number;
-			extracted_transaction_count: number;
-			uncategorized_count: number;
-			created_at: string;
-			updated_at: string;
-		}
-	>();
-	const subcategory = new Map<
-		string,
-		{
-			id: string;
-			year: number;
-			source_kind: string;
-			primary_category: string;
-			secondary_category: string;
-			inflow_minor: number;
-			outflow_minor: number;
-			net_minor: number;
-			transaction_count: number;
-			created_at: string;
-			updated_at: string;
-		}
-	>();
-	const now = nowIso();
-
-	for (const entry of ledger) {
+	for (const entry of input.ledger) {
 		const yearlyKey = `${entry.year}:${entry.sourceKind}:${entry.primaryCategory}`;
 		const currentYearly = yearly.get(yearlyKey) ?? {
-			id: randomUUID(),
 			year: entry.year,
-			source_kind: entry.sourceKind,
-			primary_category: entry.primaryCategory,
-			inflow_minor: 0,
-			outflow_minor: 0,
-			net_minor: 0,
-			transaction_count: 0,
-			imported_statement_count: 0,
-			extracted_transaction_count: 0,
-			uncategorized_count: 0,
-			created_at: now,
-			updated_at: now,
+			sourceKind: entry.sourceKind,
+			primaryCategory: entry.primaryCategory,
+			inflowMinor: 0,
+			outflowMinor: 0,
+			netMinor: 0,
+			transactionCount: 0,
+			importedStatementCount: 0,
+			extractedTransactionCount: 0,
+			uncategorizedCount: 0,
 		};
 
 		const amount = entry.amountMinor ?? 0;
 		if (entry.direction === "income") {
-			currentYearly.inflow_minor += amount;
-			currentYearly.net_minor += amount;
+			currentYearly.inflowMinor += amount;
+			currentYearly.netMinor += amount;
 		} else if (entry.direction === "expense") {
-			currentYearly.outflow_minor += amount;
-			currentYearly.net_minor -= amount;
+			currentYearly.outflowMinor += amount;
+			currentYearly.netMinor -= amount;
 		}
-		currentYearly.transaction_count += 1;
-		currentYearly.extracted_transaction_count += 1;
+		currentYearly.transactionCount += 1;
+		currentYearly.extractedTransactionCount += 1;
 		if (entry.primaryCategory === "uncategorized") {
-			currentYearly.uncategorized_count += 1;
+			currentYearly.uncategorizedCount += 1;
 		}
 		yearly.set(yearlyKey, currentYearly);
 
 		const secondaryCategory = entry.secondaryCategory ?? "uncategorized";
 		const subcategoryKey = `${entry.year}:${entry.sourceKind}:${entry.primaryCategory}:${secondaryCategory}`;
 		const currentSubcategory = subcategory.get(subcategoryKey) ?? {
-			id: randomUUID(),
 			year: entry.year,
-			source_kind: entry.sourceKind,
-			primary_category: entry.primaryCategory,
-			secondary_category: secondaryCategory,
-			inflow_minor: 0,
-			outflow_minor: 0,
-			net_minor: 0,
-			transaction_count: 0,
-			created_at: now,
-			updated_at: now,
+			sourceKind: entry.sourceKind,
+			primaryCategory: entry.primaryCategory,
+			secondaryCategory,
+			inflowMinor: 0,
+			outflowMinor: 0,
+			netMinor: 0,
+			transactionCount: 0,
 		};
 		if (entry.direction === "income") {
-			currentSubcategory.inflow_minor += amount;
-			currentSubcategory.net_minor += amount;
+			currentSubcategory.inflowMinor += amount;
+			currentSubcategory.netMinor += amount;
 		} else if (entry.direction === "expense") {
-			currentSubcategory.outflow_minor += amount;
-			currentSubcategory.net_minor -= amount;
+			currentSubcategory.outflowMinor += amount;
+			currentSubcategory.netMinor -= amount;
 		}
-		currentSubcategory.transaction_count += 1;
+		currentSubcategory.transactionCount += 1;
 		subcategory.set(subcategoryKey, currentSubcategory);
 	}
 
-	for (const row of importDocuments) {
-		const year = extractYear(row.statement_period_end);
+	for (const row of input.importDocuments) {
+		const year = extractYear(row.statementPeriodEnd);
 		if (!year) {
 			continue;
 		}
-		const key = `${year}:statement:uncategorized`;
+		const sourceKind = row.sourceKind || "statement";
+		const key = `${year}:${sourceKind}:uncategorized`;
 		const current = yearly.get(key) ?? {
-			id: randomUUID(),
 			year,
-			source_kind: "statement",
-			primary_category: "uncategorized",
-			inflow_minor: 0,
-			outflow_minor: 0,
-			net_minor: 0,
-			transaction_count: 0,
-			imported_statement_count: 0,
-			extracted_transaction_count: 0,
-			uncategorized_count: 0,
-			created_at: now,
-			updated_at: now,
+			sourceKind,
+			primaryCategory: "uncategorized",
+			inflowMinor: 0,
+			outflowMinor: 0,
+			netMinor: 0,
+			transactionCount: 0,
+			importedStatementCount: 0,
+			extractedTransactionCount: 0,
+			uncategorizedCount: 0,
 		};
-		current.imported_statement_count += 1;
+		current.importedStatementCount += 1;
 		yearly.set(key, current);
 	}
+
+	const summary = input.ledger.reduce<FinanceSummary>(
+		(acc, entry) => {
+			const amount = entry.amountMinor ?? 0;
+			if (entry.direction === "income") {
+				acc.inflowMinor += amount;
+				acc.netMinor += amount;
+			} else if (entry.direction === "expense") {
+				acc.outflowMinor += amount;
+				acc.netMinor -= amount;
+			}
+			acc.extractedTransactionCount += 1;
+			if (entry.primaryCategory === "uncategorized") {
+				acc.uncategorizedCount += 1;
+			}
+			return acc;
+		},
+		{
+			inflowMinor: 0,
+			outflowMinor: 0,
+			netMinor: 0,
+			importedStatementCount: input.importDocuments.length,
+			extractedTransactionCount: 0,
+			uncategorizedCount: 0,
+		},
+	);
+
+	const rollups = [...yearly.values()].sort((left, right) => {
+		if (left.year !== right.year) {
+			return right.year - left.year;
+		}
+		if (left.sourceKind !== right.sourceKind) {
+			return left.sourceKind.localeCompare(right.sourceKind);
+		}
+		return left.primaryCategory.localeCompare(right.primaryCategory);
+	});
+	const subcategoryRollups = [...subcategory.values()].sort((left, right) => {
+		if (left.year !== right.year) {
+			return right.year - left.year;
+		}
+		if (left.sourceKind !== right.sourceKind) {
+			return left.sourceKind.localeCompare(right.sourceKind);
+		}
+		if (left.primaryCategory !== right.primaryCategory) {
+			return left.primaryCategory.localeCompare(right.primaryCategory);
+		}
+		return left.secondaryCategory.localeCompare(right.secondaryCategory);
+	});
+
+	return {
+		summary,
+		rollups,
+		subcategoryRollups,
+	};
+}
+
+export async function rebuildFinanceRollups() {
+	const db = getDb();
+	const ledger = await loadCombinedFinanceLedger();
+	const importDocuments = await db
+		.selectFrom("finance_import_documents")
+		.innerJoin(
+			"finance_import_runs",
+			"finance_import_runs.id",
+			"finance_import_documents.import_run_id",
+		)
+		.select([
+			"finance_import_documents.statement_period_end",
+			"finance_import_runs.source_kind as source_kind",
+		])
+		.execute();
+	const now = nowIso();
+	const view = buildFinanceRollupView({
+		ledger,
+		importDocuments: importDocuments.map((row) => ({
+			sourceKind: row.source_kind,
+			statementPeriodEnd: row.statement_period_end,
+		})),
+	});
 
 	await db.transaction().execute(async (trx) => {
 		await trx.deleteFrom("finance_yearly_subcategory_rollups").execute();
 		await trx.deleteFrom("finance_yearly_rollups").execute();
-		if (yearly.size > 0) {
+		if (view.rollups.length > 0) {
 			await trx
 				.insertInto("finance_yearly_rollups")
-				.values([...yearly.values()])
+				.values(
+					view.rollups.map((row) => ({
+						id: randomUUID(),
+						year: row.year,
+						source_kind: row.sourceKind,
+						primary_category: row.primaryCategory,
+						inflow_minor: row.inflowMinor,
+						outflow_minor: row.outflowMinor,
+						net_minor: row.netMinor,
+						transaction_count: row.transactionCount,
+						imported_statement_count: row.importedStatementCount,
+						extracted_transaction_count: row.extractedTransactionCount,
+						uncategorized_count: row.uncategorizedCount,
+						created_at: now,
+						updated_at: now,
+					})),
+				)
 				.execute();
 		}
-		if (subcategory.size > 0) {
+		if (view.subcategoryRollups.length > 0) {
 			await trx
 				.insertInto("finance_yearly_subcategory_rollups")
-				.values([...subcategory.values()])
+				.values(
+					view.subcategoryRollups.map((row) => ({
+						id: randomUUID(),
+						year: row.year,
+						source_kind: row.sourceKind,
+						primary_category: row.primaryCategory,
+						secondary_category: row.secondaryCategory,
+						inflow_minor: row.inflowMinor,
+						outflow_minor: row.outflowMinor,
+						net_minor: row.netMinor,
+						transaction_count: row.transactionCount,
+						created_at: now,
+						updated_at: now,
+					})),
+				)
 				.execute();
 		}
 	});
 
 	return {
 		years: new Set(ledger.map((entry) => entry.year)).size,
-		rollups: yearly.size,
-		subcategoryRollups: subcategory.size,
+		rollups: view.rollups.length,
+		subcategoryRollups: view.subcategoryRollups.length,
 	};
 }

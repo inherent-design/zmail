@@ -57,8 +57,40 @@ describe("google-oauth", () => {
 		const stateFile = `${config.OAUTH_TMP_DIR}/${state}.json`;
 		expect(existsSync(stateFile)).toBe(true);
 		const contents = JSON.parse(readFileSync(stateFile, "utf8"));
-		expect(contents).toMatchObject({ state, label: "Work Gmail" });
+		expect(contents).toMatchObject({
+			state,
+			label: "Work Gmail",
+			flow: "connect",
+		});
 		expect(contents.codeVerifier).toBeTruthy();
+	});
+
+	it("buildAuthUrl stores reconnect flow metadata when provided", async () => {
+		const runtime = await createTestRuntime();
+		process.env.GOOGLE_OAUTH_CLIENT_ID = "cid";
+		process.env.GOOGLE_OAUTH_CLIENT_SECRET = "csecret";
+		vi.resetModules();
+		const mod =
+			await runtime.importFresh<typeof import("#/lib/google-oauth")>(
+				"#/lib/google-oauth",
+			);
+		const { state } = mod.buildAuthUrl({
+			label: "Reconnect Gmail",
+			flow: "reconnect",
+			accountId: "acct-1",
+		});
+		const config =
+			await runtime.importFresh<typeof import("#/lib/config")>("#/lib/config");
+		const contents = JSON.parse(
+			readFileSync(`${config.OAUTH_TMP_DIR}/${state}.json`, "utf8"),
+		);
+
+		expect(contents).toMatchObject({
+			state,
+			label: "Reconnect Gmail",
+			flow: "reconnect",
+			accountId: "acct-1",
+		});
 	});
 
 	it("loadOAuthState reads and deletes state file, returns null for missing", async () => {
@@ -75,7 +107,11 @@ describe("google-oauth", () => {
 
 		const { state } = mod.buildAuthUrl("Test");
 		const loaded = mod.loadOAuthState(state);
-		expect(loaded).toMatchObject({ state, label: "Test" });
+		expect(loaded).toMatchObject({
+			state,
+			label: "Test",
+			flow: "connect",
+		});
 		expect(loaded?.codeVerifier).toBeTruthy();
 
 		expect(mod.loadOAuthState(state)).toBeNull();

@@ -1,6 +1,11 @@
-import { ensureStorageDirs, nowIso } from "#/lib/config";
+import {
+	ensureStorageDirs,
+	MODERATION_PROMPT_VERSION,
+	nowIso,
+} from "#/lib/config";
 import { getDb, getSqlite, runMigrations, safeJsonParse } from "#/lib/db";
 import type { LogTrace } from "#/lib/log";
+import { getStoredModerationPromptVersion } from "#/lib/moderation";
 import { runCli } from "#/scripts/_shared";
 
 function count(sql: string, ...params: unknown[]) {
@@ -18,9 +23,12 @@ export async function main(_trace?: LogTrace) {
 	const [
 		labelRows,
 		parseReasons,
+		moderationRows,
 		conversationRows,
 		conversationRollups,
 		financeHeadStatusRows,
+		financeHeadVersionRows,
+		jobRows,
 		registryState,
 	] = await Promise.all([
 		db.selectFrom("message_labels").select(["label_json"]).execute(),
@@ -33,6 +41,7 @@ export async function main(_trace?: LogTrace) {
 			.where("parse_status", "=", "error")
 			.groupBy("parse_error_reason")
 			.execute(),
+		db.selectFrom("moderation_results").select(["raw_response_json"]).execute(),
 		db
 			.selectFrom("messages")
 			.leftJoin("message_sources", "message_sources.message_id", "messages.id")
@@ -52,6 +61,26 @@ export async function main(_trace?: LogTrace) {
 			.groupBy("status")
 			.execute(),
 		db
+			.selectFrom("message_secondary_heads")
+			.innerJoin(
+				"message_secondary_results",
+				"message_secondary_results.id",
+				"message_secondary_heads.secondary_result_id",
+			)
+			.select([
+				"message_secondary_results.schema_version",
+				(eb) => eb.fn.countAll<number>().as("count"),
+			])
+			.where("message_secondary_heads.classifier_key", "=", "finance_intel")
+			.groupBy("message_secondary_results.schema_version")
+			.execute(),
+		db
+			.selectFrom("jobs")
+			.select(["kind", "status", (eb) => eb.fn.countAll<number>().as("count")])
+			.where("status", "in", ["queued", "running"])
+			.groupBy(["kind", "status"])
+			.execute(),
+		db
 			.selectFrom("registry_import_state")
 			.selectAll()
 			.where("key", "=", "operator_registry")
@@ -65,6 +94,20 @@ export async function main(_trace?: LogTrace) {
 		);
 		return countValue + Number(Boolean(label?.finance?.relevant));
 	}, 0);
+
+	let rowsWithCurrentPromptVersion = 0;
+	let rowsWithStalePromptVersion = 0;
+	let rowsMissingPromptVersion = 0;
+	for (const row of moderationRows) {
+		const promptVersion = getStoredModerationPromptVersion(row.raw_response_json);
+		if (!promptVersion) {
+			rowsMissingPromptVersion += 1;
+		} else if (promptVersion === MODERATION_PROMPT_VERSION) {
+			rowsWithCurrentPromptVersion += 1;
+		} else {
+			rowsWithStalePromptVersion += 1;
+		}
+	}
 
 	const remoteThreadToThreadKeys = new Map<string, Set<string>>();
 	const threadKeyToRemoteThreads = new Map<string, Set<string>>();
@@ -142,6 +185,28 @@ export async function main(_trace?: LogTrace) {
 		}
 	}
 
+	const financeHeadVersionCounts = {
+		"finance-intel.v1": 0,
+		"finance-intel.v2": 0,
+	};
+	for (const row of financeHeadVersionRows) {
+		if (row.schema_version in financeHeadVersionCounts) {
+			financeHeadVersionCounts[
+				row.schema_version as keyof typeof financeHeadVersionCounts
+			] = Number(row.count);
+		}
+	}
+
+	const openJobCounts = jobRows.reduce<Record<string, Record<string, number>>>(
+		(acc, row) => {
+			const current = acc[row.kind] ?? {};
+			current[row.status] = Number(row.count);
+			acc[row.kind] = current;
+			return acc;
+		},
+		{},
+	);
+
 	const report = {
 		generatedAt: nowIso(),
 		sourceInvariants: {
@@ -190,6 +255,56 @@ export async function main(_trace?: LogTrace) {
 			openReviews: count(
 				"SELECT COUNT(*) AS count FROM reviews WHERE status = 'open'",
 			),
+			rootV1CurrentHeads: count(
+				`
+					SELECT COUNT(*) AS count
+					FROM message_labels
+					WHERE schema_version = 'message-label.v1'
+				`,
+			),
+			rootV2CurrentHeads: count(
+				`
+					SELECT COUNT(*) AS count
+					FROM message_labels
+					WHERE schema_version = 'message-label.v2'
+				`,
+			),
+			staleReviewPointers: count(
+				`
+					SELECT COUNT(*) AS count
+					FROM reviews
+					INNER JOIN message_labels ON message_labels.message_id = reviews.message_id
+					WHERE reviews.status = 'open'
+					  AND reviews.source_classification_result_id != message_labels.classification_result_id
+				`,
+			),
+		},
+		badParsedBodies: {
+			undefinedSnippet: count(
+				`
+					SELECT COUNT(*) AS count
+					FROM messages
+					WHERE snippet = 'undefined'
+				`,
+			),
+			plainTextNotAvailable: count(
+				`
+					SELECT COUNT(*) AS count
+					FROM messages
+					WHERE lower(trim(body_text_primary)) IN ('undefined', 'plain text version not available')
+				`,
+			),
+			htmlLiteralPlainText: count(
+				`
+					SELECT COUNT(*) AS count
+					FROM messages
+					WHERE body_extraction_strategy = 'plain_text'
+					  AND (
+							lower(body_text_primary) LIKE '<html%'
+							OR lower(body_text_primary) LIKE '<!doctype%'
+					  )
+				`,
+			),
 		},
 		parseErrors: {
 			total: count(
@@ -208,6 +323,12 @@ export async function main(_trace?: LogTrace) {
 				reason: row.parse_error_reason ?? "(none)",
 				count: Number(row.count),
 			})),
+		},
+		moderation: {
+			currentPromptVersion: MODERATION_PROMPT_VERSION,
+			rowsWithCurrentPromptVersion,
+			rowsWithStalePromptVersion,
+			rowsMissingPromptVersion,
 		},
 		conversations: {
 			nullConversationLinks: count(
@@ -231,6 +352,8 @@ export async function main(_trace?: LogTrace) {
 				`,
 			),
 			statuses: financeHeadStatusCounts,
+			financeV1Heads: financeHeadVersionCounts["finance-intel.v1"],
+			financeV2Heads: financeHeadVersionCounts["finance-intel.v2"],
 			eventCandidates: count(
 				"SELECT COUNT(*) AS count FROM finance_event_candidates",
 			),
@@ -241,6 +364,18 @@ export async function main(_trace?: LogTrace) {
 				"SELECT COUNT(*) AS count FROM finance_event_evidence",
 			),
 		},
+		categoryAssignments: {
+			missingCategoryAssignmentHeads: count(
+				`
+					SELECT COUNT(*) AS count
+					FROM message_labels
+					LEFT JOIN message_category_assignment_heads
+						ON message_category_assignment_heads.message_id = message_labels.message_id
+					WHERE message_category_assignment_heads.message_id IS NULL
+				`,
+			),
+		},
+		jobs: openJobCounts,
 		registry: registryState
 			? {
 					importedAt: registryState.imported_at,

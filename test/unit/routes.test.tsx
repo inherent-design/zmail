@@ -10,6 +10,11 @@ import {
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import {
+	buildFinanceIntelV2,
+	buildManualOverrideLabelV2,
+} from "#/test/helpers/labels";
+
 function mockRouteRuntime(
 	loaderData: unknown,
 	options?: {
@@ -185,6 +190,8 @@ describe("route components", () => {
 					label: "Personal Gmail",
 					email_address: "user@example.com",
 					provider_kind: "gmail",
+					has_oauth_token: true,
+					connection_state: "connected",
 					sync_enabled: 1,
 					sync_status: "idle",
 					last_synced_at: null,
@@ -197,8 +204,10 @@ describe("route components", () => {
 					label: "Paused Gmail",
 					email_address: "paused@example.com",
 					provider_kind: "gmail",
+					has_oauth_token: false,
+					connection_state: "disconnected",
 					sync_enabled: 0,
-					sync_status: "paused",
+					sync_status: "idle",
 					last_synced_at: "2026-01-01",
 					last_error: "oauth expired",
 					message_count: 1,
@@ -222,8 +231,10 @@ describe("route components", () => {
 		).toBeTruthy();
 		expect(screen.getByText("Personal Gmail")).toBeTruthy();
 		expect(screen.getByText("12")).toBeTruthy();
+		expect(screen.getByText("connected")).toBeTruthy();
 		expect(screen.getByText("disabled")).toBeTruthy();
 		expect(screen.getByText("oauth expired")).toBeTruthy();
+		expect(screen.getByText("Reconnect")).toBeTruthy();
 	});
 
 	it("renders the accounts layout outlet", async () => {
@@ -545,26 +556,24 @@ describe("route components", () => {
 				},
 				current: {
 					id: "secondary-1",
-					schemaVersion: "finance-intel.v1",
+					schemaVersion: "finance-intel.v2",
 					model: "gpt-5.4-mini",
-					promptVersion: "finance-intel-v1",
+					promptVersion: "finance-intel-v2",
 					source: "model",
 					createdAt: "2026-01-03",
-					result: {
-						messageKind: "receipt",
-					},
+					result: buildFinanceIntelV2({ messageKind: "receipt" }),
 					rawResponse: { assistantText: "{}" },
 					usage: { totalTokens: 10 },
 				},
 				history: [
 					{
 						id: "secondary-history-1",
-						schemaVersion: "finance-intel.v1",
+						schemaVersion: "finance-intel.v2",
 						model: "gpt-5.4-mini",
-						promptVersion: "finance-intel-v1",
+						promptVersion: "finance-intel-v2",
 						source: "model",
 						createdAt: "2026-01-02",
-						result: { messageKind: "receipt" },
+						result: buildFinanceIntelV2({ messageKind: "receipt" }),
 						rawResponse: { assistantText: "{}" },
 						usage: { totalTokens: 8 },
 					},
@@ -834,7 +843,9 @@ describe("route components", () => {
 			screen.getByText("Override error: Override JSON must be valid JSON."),
 		).toBeTruthy();
 		fireEvent.change(textbox, {
-			target: { value: '{"schemaVersion":"message-label.v1"}' },
+			target: {
+				value: JSON.stringify(buildManualOverrideLabelV2()),
+			},
 		});
 		fireEvent.click(screen.getByRole("button", { name: "Override" }));
 
@@ -1011,6 +1022,7 @@ describe("route components", () => {
 
 		expect(screen.getByText("Gmail connection failed")).toBeTruthy();
 		expect(screen.getByText("Invalid OAuth state")).toBeTruthy();
+		expect(screen.getByText("Back to Accounts")).toBeTruthy();
 		expect(screen.getByText("Back to Connect Gmail")).toBeTruthy();
 
 		cleanup();
@@ -1058,6 +1070,8 @@ describe("route components", () => {
 				label: "Personal Gmail",
 				email_address: "user@example.com",
 				provider_kind: "gmail",
+				has_oauth_token: true,
+				connection_state: "connected",
 				sync_enabled: 1,
 				sync_status: "idle",
 				selected_mailbox: "[Gmail]/All Mail",
@@ -1066,6 +1080,8 @@ describe("route components", () => {
 				created_at: "2026-01-01",
 				updated_at: "2026-01-02",
 			},
+			has_oauth_token: true,
+			connection_state: "connected",
 			syncState: {
 				uidvalidity: 123,
 				latest_uid_cursor: 456,
@@ -1117,7 +1133,7 @@ describe("route components", () => {
 			]),
 		});
 
-		const route = await import("#/app/routes/accounts.$accountId");
+		const route = await import("#/app/routes/accounts.$accountId.index");
 		await (
 			route.Route as unknown as {
 				loader: (input: { params: { accountId: string } }) => Promise<unknown>;
@@ -1136,8 +1152,7 @@ describe("route components", () => {
 			"Classify backlog",
 			"Classify finance backlog",
 			"Pause",
-			"Resume",
-			"Disconnect",
+			"Disconnect Gmail",
 		]) {
 			fireEvent.click(screen.getByRole("button", { name: label }));
 		}
@@ -1161,13 +1176,10 @@ describe("route components", () => {
 			expect(pause).toHaveBeenCalledWith({
 				data: { accountId: "account-1" },
 			});
-			expect(resume).toHaveBeenCalledWith({
-				data: { accountId: "account-1" },
-			});
 			expect(disconnect).toHaveBeenCalledWith({
 				data: { accountId: "account-1" },
 			});
-			expect(runtime.invalidate).toHaveBeenCalledTimes(8);
+			expect(runtime.invalidate).toHaveBeenCalledTimes(7);
 		});
 
 		expect(
@@ -1221,6 +1233,8 @@ describe("route components", () => {
 				label: "Paused Gmail",
 				email_address: "paused@example.com",
 				provider_kind: "gmail",
+				has_oauth_token: true,
+				connection_state: "paused",
 				sync_enabled: 0,
 				sync_status: "paused",
 				selected_mailbox: "[Gmail]/All Mail",
@@ -1229,6 +1243,8 @@ describe("route components", () => {
 				created_at: "2026-01-01",
 				updated_at: "2026-01-02",
 			},
+			has_oauth_token: true,
+			connection_state: "paused",
 			syncState: null,
 			recentJobs: [],
 			messageCount: 0,
@@ -1245,12 +1261,16 @@ describe("route components", () => {
 			},
 		});
 
-		const route = await import("#/app/routes/accounts.$accountId");
+		const route = await import("#/app/routes/accounts.$accountId.index");
 		renderRouteComponent(route);
 
 		expect(screen.getByText("sync: disabled")).toBeTruthy();
+		expect(screen.getByText("connection: paused")).toBeTruthy();
 		expect(screen.getByText("Last synced: never")).toBeTruthy();
 		expect(screen.getByText("No recent jobs.")).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Resume" })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Disconnect Gmail" })).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Full sync" })).toBeNull();
 		expect(screen.queryByText(/Last error:/)).toBeNull();
 		expect(screen.queryByText("Cursor state")).toBeNull();
 	});
@@ -1285,6 +1305,8 @@ describe("route components", () => {
 				label: "Unknown Gmail",
 				email_address: "unknown@example.com",
 				provider_kind: "gmail",
+				has_oauth_token: true,
+				connection_state: "connected",
 				sync_enabled: 1,
 				sync_status: "idle",
 				selected_mailbox: "[Gmail]/All Mail",
@@ -1293,6 +1315,8 @@ describe("route components", () => {
 				created_at: "2026-01-01",
 				updated_at: "2026-01-02",
 			},
+			has_oauth_token: true,
+			connection_state: "connected",
 			syncState: {
 				uidvalidity: null,
 				latest_uid_cursor: null,
@@ -1324,7 +1348,7 @@ describe("route components", () => {
 			},
 		});
 
-		const route = await import("#/app/routes/accounts.$accountId");
+		const route = await import("#/app/routes/accounts.$accountId.index");
 		renderRouteComponent(route);
 
 		expect(screen.getByText("uidvalidity: unknown")).toBeTruthy();
@@ -1351,6 +1375,247 @@ describe("route components", () => {
 					element?.textContent?.startsWith("Backoff until:") ?? false,
 			),
 		).toBeNull();
+	});
+
+	it("renders account detail reconnect state without remote sync controls", async () => {
+		const actions = {
+			queueAccountClassifyBacklog: Symbol("queueAccountClassifyBacklog"),
+			queueAccountFinanceBacklog: Symbol("queueAccountFinanceBacklog"),
+			disconnectAccount: Symbol("disconnectAccount"),
+		};
+
+		vi.doMock("#/app/server/actions", () => ({
+			getAccountDetailData: vi.fn(),
+			queueAccountFullSync: Symbol("queueAccountFullSync"),
+			queueAccountDeltaSync: Symbol("queueAccountDeltaSync"),
+			queueAccountReconcile: Symbol("queueAccountReconcile"),
+			queueAccountClassifyBacklog: actions.queueAccountClassifyBacklog,
+			queueAccountFinanceBacklog: actions.queueAccountFinanceBacklog,
+			pauseAccountSync: Symbol("pauseAccountSync"),
+			resumeAccountSync: Symbol("resumeAccountSync"),
+			disconnectAccount: actions.disconnectAccount,
+		}));
+
+		mockRouteRuntime({
+			account: {
+				id: "account-reconnect",
+				label: "Reconnect Gmail",
+				email_address: "needs@example.com",
+				provider_kind: "gmail",
+				has_oauth_token: true,
+				connection_state: "needs_reconnect",
+				sync_enabled: 1,
+				sync_status: "needs_reconnect",
+				selected_mailbox: "[Gmail]/All Mail",
+				last_synced_at: null,
+				last_error: "oauth expired",
+				created_at: "2026-01-01",
+				updated_at: "2026-01-02",
+			},
+			has_oauth_token: true,
+			connection_state: "needs_reconnect",
+			syncState: null,
+			recentJobs: [],
+			messageCount: 4,
+			tombstoneCount: 1,
+			financeCoverage: {
+				rootFinanceRelevantCount: 0,
+				totalHeads: 0,
+				readyCount: 0,
+				reviewCount: 0,
+				staleCount: 0,
+				blockedParseErrorCount: 0,
+				eventCandidateCount: 0,
+				documentCandidateCount: 0,
+			},
+		});
+
+		const route = await import("#/app/routes/accounts.$accountId.index");
+		renderRouteComponent(route);
+
+		expect(screen.getByText("Reconnect required")).toBeTruthy();
+		expect(screen.getByText(/local corpus is preserved/i)).toBeTruthy();
+		expect(screen.getByRole("link", { name: "Reconnect Gmail" })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Disconnect Gmail" })).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Full sync" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
+	});
+
+	it("renders the reconnect route and redirects to Google on reconnect", async () => {
+		const beginGoogleReconnect = Symbol("beginGoogleReconnect");
+		const startReconnect = vi.fn(async () => ({
+			url: "https://accounts.google.com/o/oauth2/v2/auth?state=reconnect-state",
+			state: "reconnect-state",
+		}));
+
+		vi.doMock("#/app/server/actions", () => ({
+			getAccountReconnectData: vi.fn(),
+			beginGoogleReconnect,
+		}));
+		const fakeWindow = Object.create(window) as Window & typeof globalThis;
+		Object.assign(fakeWindow, {
+			document: window.document,
+			location: {
+				href: "http://localhost:3000/accounts/account-1/reconnect",
+			},
+		});
+		vi.stubGlobal("window", fakeWindow);
+
+		const loaderData = {
+			account: {
+				id: "account-1",
+				label: "Personal Gmail",
+				email_address: "user@example.com",
+				provider_kind: "gmail",
+				has_oauth_token: false,
+				connection_state: "disconnected",
+			},
+			has_oauth_token: false,
+			connection_state: "disconnected",
+			oauthReady: true,
+			missingVars: [],
+			redirectUrl: "http://127.0.0.1:3000/oauth/google/callback",
+		};
+		mockRouteRuntime(loaderData, {
+			serverFnMap: new Map<unknown, ReturnType<typeof vi.fn>>([
+				[beginGoogleReconnect, startReconnect],
+			]),
+		});
+
+		const route = await import("#/app/routes/accounts.$accountId.reconnect");
+		renderRouteComponent(route);
+
+		expect(screen.getByDisplayValue("Personal Gmail")).toBeTruthy();
+		expect(screen.getByDisplayValue("user@example.com")).toBeTruthy();
+		fireEvent.change(screen.getByLabelText("Account label"), {
+			target: { value: "Renamed Gmail" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Reconnect Gmail" }));
+
+		await waitFor(() => {
+			expect(startReconnect).toHaveBeenCalledWith({
+				data: {
+					accountId: "account-1",
+					label: "Renamed Gmail",
+				},
+			});
+			expect(window.location.href).toBe(
+				"https://accounts.google.com/o/oauth2/v2/auth?state=reconnect-state",
+			);
+		});
+	});
+
+	it("renders the delete route and blocks the destructive submit while jobs are running", async () => {
+		const purgeAccount = Symbol("purgeAccount");
+
+		vi.doMock("#/app/server/actions", () => ({
+			getAccountDeleteData: vi.fn(),
+			purgeAccount,
+		}));
+
+		const loaderData = {
+			account: {
+				id: "account-1",
+				label: "Personal Gmail",
+				email_address: "user@example.com",
+				has_oauth_token: false,
+				connection_state: "disconnected",
+			},
+			messageCount: 12,
+			tombstoneCount: 2,
+			runningJobs: [
+				{
+					id: "job-1",
+					kind: "sync_account_full",
+					status: "running",
+					created_at: "2026-01-01",
+				},
+			],
+		};
+		const purge = vi.fn(async () => ({ status: "deleted" }));
+		const runtime = mockRouteRuntime(loaderData, {
+			serverFnMap: new Map<unknown, ReturnType<typeof vi.fn>>([
+				[purgeAccount, purge],
+			]),
+		});
+
+		const route = await import("#/app/routes/accounts.$accountId.delete");
+		renderRouteComponent(route);
+
+		expect(screen.getByText("This will delete")).toBeTruthy();
+		expect(
+			screen.getByText(/Account purge is blocked while account-scoped jobs are running/i),
+		).toBeTruthy();
+		const deleteButton = screen.getByRole("button", {
+			name: "Delete local account",
+		});
+		expect(deleteButton).toHaveProperty("disabled", true);
+		fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+		await waitFor(() => {
+			expect(runtime.invalidate).toHaveBeenCalled();
+		});
+		expect(purge).not.toHaveBeenCalled();
+	});
+
+	it("enables delete when the confirmation email matches exactly", async () => {
+		const purgeAccount = Symbol("purgeAccount");
+		const purge = vi.fn(async () => ({ status: "deleted" }));
+
+		vi.doMock("#/app/server/actions", () => ({
+			getAccountDeleteData: vi.fn(),
+			purgeAccount,
+		}));
+		const fakeWindow = Object.create(window) as Window & typeof globalThis;
+		Object.assign(fakeWindow, {
+			document: window.document,
+			location: {
+				href: "http://localhost:3000/accounts/account-1/delete",
+			},
+		});
+		vi.stubGlobal("window", fakeWindow);
+
+		mockRouteRuntime(
+			{
+				account: {
+					id: "account-1",
+					label: "Personal Gmail",
+					email_address: "user@example.com",
+					has_oauth_token: false,
+					connection_state: "disconnected",
+				},
+				messageCount: 12,
+				tombstoneCount: 2,
+				runningJobs: [],
+			},
+			{
+				serverFnMap: new Map<unknown, ReturnType<typeof vi.fn>>([
+					[purgeAccount, purge],
+				]),
+			},
+		);
+
+		const route = await import("#/app/routes/accounts.$accountId.delete");
+		renderRouteComponent(route);
+
+		const deleteButton = screen.getByRole("button", {
+			name: "Delete local account",
+		});
+		expect(deleteButton).toHaveProperty("disabled", true);
+		fireEvent.change(screen.getByLabelText("Confirmation email"), {
+			target: { value: "user@example.com" },
+		});
+		expect(deleteButton).toHaveProperty("disabled", false);
+		fireEvent.click(deleteButton);
+
+		await waitFor(() => {
+			expect(purge).toHaveBeenCalledWith({
+				data: {
+					accountId: "account-1",
+					confirmationEmail: "user@example.com",
+				},
+			});
+			expect(window.location.href).toBe("/accounts");
+		});
 	});
 
 	it("renders runs route and profile route", async () => {
@@ -1819,6 +2084,163 @@ describe("route components", () => {
 		expect(
 			screen.getByText("No materialized document candidates."),
 		).toBeTruthy();
+	});
+
+	it("renders finance filter controls and warning banners", async () => {
+		const queueImportOperatorRegistry = Symbol("queueImportOperatorRegistry");
+		const queueRebuildFinanceKnowledge = Symbol("queueRebuildFinanceKnowledge");
+		const queueRebuildFinanceRollups = Symbol("queueRebuildFinanceRollups");
+		const queueReconcileRegistrySuggestions = Symbol(
+			"queueReconcileRegistrySuggestions",
+		);
+
+		vi.doMock("#/app/server/actions", () => ({
+			getFinanceData: vi.fn(),
+			queueImportOperatorRegistry,
+			queueRebuildFinanceKnowledge,
+			queueRebuildFinanceRollups,
+			queueReconcileRegistrySuggestions,
+		}));
+
+		mockRouteRuntime({
+			year: 2026,
+			availableYears: [2026, 2025],
+			filters: {
+				accountId: "acct-1",
+				institutionId: "inst:pdf-bank",
+				ownerIdentityId: "owner:pdf",
+				sourceKind: "pdf",
+				accounts: [{ id: "acct-1", label: "Finance Account" }],
+				institutions: [{ id: "inst:pdf-bank", label: "inst:pdf-bank" }],
+				ownerIdentities: [{ id: "owner:pdf", label: "owner:pdf" }],
+				sourceKinds: ["email", "pdf"],
+			},
+			registry: {
+				sha256: null,
+				importedAt: null,
+				sourceDir: "/tmp/registry",
+				counts: {
+					identities: 0,
+					institutions: 0,
+					financialAccounts: 0,
+					senderRules: 0,
+				},
+			},
+			coverage: {
+				rootFinanceRelevantCount: 2,
+				totalHeads: 1,
+				readyCount: 1,
+				reviewCount: 0,
+				staleCount: 0,
+				blockedParseErrorCount: 0,
+				eventCandidateCount: 0,
+				documentCandidateCount: 0,
+			},
+			pipelineStatus: {
+				rootFinanceRelevantCount: 2,
+				financeHeadCount: 1,
+				financeV2HeadCount: 1,
+				knowledgeMaterialized: false,
+				registryImportedAt: null,
+				jobs: {
+					classify_finance_backlog: { queued: 1, running: 0 },
+					rebuild_finance_knowledge: { queued: 0, running: 0 },
+					rebuild_finance_rollups: { queued: 0, running: 0 },
+				},
+			},
+			summary: {
+				inflowMinor: 0,
+				outflowMinor: 5100,
+				netMinor: -5100,
+				importedStatementCount: 1,
+				extractedTransactionCount: 1,
+				uncategorizedCount: 0,
+			},
+			rollups: [
+				{
+					year: 2026,
+					sourceKind: "pdf",
+					primaryCategory: "software_services",
+					inflowMinor: 0,
+					outflowMinor: 5100,
+					netMinor: -5100,
+					transactionCount: 1,
+					importedStatementCount: 1,
+					extractedTransactionCount: 1,
+					uncategorizedCount: 0,
+				},
+			],
+			subcategoryRollups: [
+				{
+					year: 2026,
+					sourceKind: "pdf",
+					primaryCategory: "software_services",
+					secondaryCategory: "statement_import",
+					inflowMinor: 0,
+					outflowMinor: 5100,
+					netMinor: -5100,
+					transactionCount: 1,
+				},
+			],
+			ledgerPreview: [
+				{
+					sourceKind: "pdf",
+					accountId: null,
+					year: 2026,
+					primaryCategory: "software_services",
+					secondaryCategory: "statement_import",
+					direction: "expense",
+					amountMinor: 5100,
+					occurredAt: "2026-03-20",
+					ownerIdentityId: "owner:pdf",
+					institutionId: "inst:pdf-bank",
+					financialAccountId: "acct:pdf",
+					description: "PDF Services",
+				},
+			],
+			importedDocuments: [
+				{
+					id: "doc-1",
+					documentType: "statement",
+					issuer: "PDF Credit Union",
+					externalId: "statement-mar-2026",
+					statementPeriodStart: "2026-03-01",
+					statementPeriodEnd: "2026-03-31",
+					dueAt: null,
+					taxYear: 2026,
+					ownerIdentityHint: "owner:pdf",
+					financialAccountHint: "acct:pdf",
+					institutionHint: "inst:pdf-bank",
+					evidenceText: "Imported PDF statement for March.",
+				},
+			],
+			registrySuggestions: [],
+			eventCandidates: [],
+			documentCandidates: [],
+		});
+
+		const route = await import("#/app/routes/finance");
+		renderRouteComponent(route);
+
+		expect(
+			screen.getByText("Warning: Registry has not been imported yet."),
+		).toBeTruthy();
+		expect(
+			screen.getByText(
+				"Warning: Finance classifier coverage is incomplete or still contains non-v2 heads.",
+			),
+		).toBeTruthy();
+		expect(
+			screen.getByText("Warning: Finance knowledge tables are still empty."),
+		).toBeTruthy();
+		expect(screen.getByText("Institution filter")).toBeTruthy();
+		expect(screen.getByText("Identity filter")).toBeTruthy();
+		expect(screen.getByText("Source filter")).toBeTruthy();
+		expect(screen.getByRole("link", { name: "Clear filters" })).toBeTruthy();
+		expect(screen.getByRole("link", { name: "Finance Account" })).toBeTruthy();
+		expect(screen.getAllByText("inst:pdf-bank").length).toBeGreaterThan(0);
+		expect(screen.getAllByText("owner:pdf").length).toBeGreaterThan(0);
+		expect(screen.getAllByText("pdf").length).toBeGreaterThan(0);
 	});
 
 	it("renders runs fallbacks when runtime meta is missing", async () => {

@@ -3,22 +3,27 @@ import { createServerFn } from "@tanstack/react-start";
 import {
 	accountIdInputSchema,
 	beginGoogleConnectInputSchema,
+	beginGoogleReconnectInputSchema,
 	classifyOneInputSchema,
 	completeGoogleConnectInputSchema,
 	enqueueOverseerInputSchema,
 	financeArtifactImportInputSchema,
 	financeDataInputSchema,
+	purgeAccountInputSchema,
 	resolveReviewInputSchema,
 } from "#/lib/schemas";
 
 import {
 	beginGoogleConnectCommand,
+	beginGoogleReconnectCommand,
 	classifyOneNowCommand,
 	completeGoogleConnectCommand,
 	disconnectAccountCommand,
 	enqueueOverseerCommand,
 	loadAccountDetailData,
+	loadAccountDeleteData,
 	loadAccountNewData,
+	loadAccountReconnectData,
 	loadAccountsData,
 	loadFinanceData,
 	loadHomeData,
@@ -28,6 +33,7 @@ import {
 	loadReviewData,
 	loadRunsData,
 	pauseAccountSyncCommand,
+	purgeAccountCommand,
 	queueAccountClassifyBacklogCommand,
 	queueAccountDeltaSyncCommand,
 	queueAccountFinanceBacklogCommand,
@@ -108,6 +114,18 @@ export const getAccountDetailData = createServerFn({
 	.inputValidator(accountIdInputSchema)
 	.handler(async ({ data }) => loadAccountDetailData(data));
 
+export const getAccountReconnectData = createServerFn({
+	method: "GET",
+})
+	.inputValidator(accountIdInputSchema)
+	.handler(async ({ data }) => loadAccountReconnectData(data));
+
+export const getAccountDeleteData = createServerFn({
+	method: "GET",
+})
+	.inputValidator(accountIdInputSchema)
+	.handler(async ({ data }) => loadAccountDeleteData(data));
+
 export const beginGoogleConnect = createServerFn({
 	method: "POST",
 })
@@ -119,6 +137,12 @@ export const completeGoogleConnect = createServerFn({
 })
 	.inputValidator(completeGoogleConnectInputSchema)
 	.handler(async ({ data }) => completeGoogleConnectCommand(data));
+
+export const beginGoogleReconnect = createServerFn({
+	method: "POST",
+})
+	.inputValidator(beginGoogleReconnectInputSchema)
+	.handler(async ({ data }) => beginGoogleReconnectCommand(data));
 
 export const queueAccountFullSync = createServerFn({
 	method: "POST",
@@ -201,3 +225,9 @@ export const disconnectAccount = createServerFn({
 })
 	.inputValidator(accountIdInputSchema)
 	.handler(async ({ data }) => disconnectAccountCommand(data));
+
+export const purgeAccount = createServerFn({
+	method: "POST",
+})
+	.inputValidator(purgeAccountInputSchema)
+	.handler(async ({ data }) => purgeAccountCommand(data));

@@ -8,7 +8,7 @@ import {
 	nowIso,
 	PROMPTS_DIR,
 } from "#/lib/config";
-import { getDb, jsonText } from "#/lib/db";
+import { getDb, jsonText, safeJsonParse } from "#/lib/db";
 import { piJson } from "#/lib/pi";
 import {
 	type MessageModerationV1,
@@ -17,6 +17,10 @@ import {
 
 function readPrompt(name: string) {
 	return readFileSync(resolve(PROMPTS_DIR, name), "utf8");
+}
+
+function readPromptByVersion(promptVersion: string) {
+	return readPrompt(`${promptVersion}.md`);
 }
 
 export function buildModerationInput(message: {
@@ -53,13 +57,40 @@ export function topModerationScores(scores: Record<string, number>) {
 		.map(([key, value]) => `${key}:${value.toFixed(3)}`);
 }
 
+export function getStoredModerationPromptVersion(
+	rawResponseJson: string | null,
+) {
+	const parsed = safeJsonParse<{ promptVersion?: unknown } | null>(
+		rawResponseJson,
+		null,
+	);
+	if (!parsed || typeof parsed.promptVersion !== "string") {
+		return null;
+	}
+	return parsed.promptVersion;
+}
+
+export function isModerationResultCurrent(
+	row:
+		| {
+				raw_response_json: string | null;
+		  }
+		| null
+		| undefined,
+) {
+	return (
+		getStoredModerationPromptVersion(row?.raw_response_json ?? null) ===
+		MODERATION_PROMPT_VERSION
+	);
+}
+
 export async function moderateMessageNow(input: {
 	messageId: string;
 	sender: string;
 	subject: string;
 	bodyText: string;
 }) {
-	const prompt = readPrompt("moderate-email-v1.md");
+	const prompt = readPromptByVersion(MODERATION_PROMPT_VERSION);
 	const result = await piJson({
 		schema: messageModerationSchema,
 		modelId: APP_CONFIG.moderationModel,
@@ -137,17 +168,17 @@ export async function ensureModerationForMessage(input: {
 	const db = getDb();
 	const existing = await db
 		.selectFrom("moderation_results")
-		.select(["nsfw_flag", "category_scores_json"])
+		.select(["nsfw_flag", "category_scores_json", "raw_response_json"])
 		.where("message_id", "=", input.messageId)
 		.executeTakeFirst();
 
-	if (existing) {
+	if (existing && isModerationResultCurrent(existing)) {
 		return {
 			nsfwFlag: Boolean(existing.nsfw_flag),
-			scores: JSON.parse(existing.category_scores_json) as Record<
+			scores: safeJsonParse<Record<
 				string,
 				number
-			>,
+			>>(existing.category_scores_json, {}),
 		};
 	}
 

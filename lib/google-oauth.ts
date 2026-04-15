@@ -24,6 +24,14 @@ const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const USERINFO_ENDPOINT = "https://openidconnect.googleapis.com/v1/userinfo";
 const OAUTH_STATE_TOKEN_RE = /^[A-Za-z0-9_-]+$/;
 
+interface GoogleOAuthStateRecord {
+	state: string;
+	codeVerifier: string;
+	label: string;
+	flow?: "connect" | "reconnect";
+	accountId?: string;
+}
+
 export function isOAuthConfigured() {
 	return Boolean(GOOGLE_OAUTH.clientId && GOOGLE_OAUTH.clientSecret);
 }
@@ -51,7 +59,26 @@ function generateCodeChallenge(verifier: string) {
 	return base64url(createHash("sha256").update(verifier).digest());
 }
 
-export function buildAuthUrl(label: string) {
+export function buildAuthUrl(
+	input:
+		| string
+		| {
+				label: string;
+				flow?: "connect" | "reconnect";
+				accountId?: string;
+		  },
+) {
+	const normalizedInput =
+		typeof input === "string"
+			? {
+					label: input,
+					flow: "connect" as const,
+				}
+			: {
+					label: input.label,
+					flow: input.flow ?? "connect",
+					accountId: input.accountId,
+				};
 	const state = base64url(randomBytes(16));
 	const codeVerifier = generateCodeVerifier();
 	const codeChallenge = generateCodeChallenge(codeVerifier);
@@ -71,7 +98,13 @@ export function buildAuthUrl(label: string) {
 	mkdirSync(OAUTH_TMP_DIR, { recursive: true });
 	writeFileSync(
 		resolve(OAUTH_TMP_DIR, `${state}.json`),
-		JSON.stringify({ state, codeVerifier, label }),
+		JSON.stringify({
+			state,
+			codeVerifier,
+			label: normalizedInput.label,
+			flow: normalizedInput.flow,
+			accountId: normalizedInput.accountId,
+		} satisfies GoogleOAuthStateRecord),
 	);
 
 	return {
@@ -89,11 +122,7 @@ export function loadOAuthState(state: string) {
 	if (!existsSync(path)) {
 		return null;
 	}
-	const raw = JSON.parse(readFileSync(path, "utf8")) as {
-		state: string;
-		codeVerifier: string;
-		label: string;
-	};
+	const raw = JSON.parse(readFileSync(path, "utf8")) as GoogleOAuthStateRecord;
 	unlinkSync(path);
 	return raw;
 }
