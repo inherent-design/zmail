@@ -30,6 +30,8 @@ Default routes:
 
 `/healthz` and `/readyz` are shallow probes and must not read org storage.
 `/ops/health` may read active org storage after session and org resolution.
+Its `failedRecentJobs` worker field counts failed jobs whose `finished_at`, or
+`created_at` fallback, is within the last 24 hours.
 
 ## Configuration
 
