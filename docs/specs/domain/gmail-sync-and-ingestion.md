@@ -205,6 +205,8 @@ Successful ingest may queue:
 
 - `classify_account_backlog`
 - `classify_finance_backlog`
+- `classify_finance_messages` only from targeted admin repair workflows with
+  explicit message IDs
 - `rebuild_overseer`
 
 Successful reconnect or bootstrap may start or resume the watcher for that

@@ -95,6 +95,18 @@ const SECONDARY_BUCKET_ALIASES: Record<string, string | null> = {
 	work: null,
 };
 
+const FINANCE_INTEL_REQUIRED_SIGNALS = new Set([
+	"receipt",
+	"invoice",
+	"statement",
+	"banking",
+	"tax",
+	"payroll",
+	"investment",
+	"donation",
+	"transfer",
+]);
+
 function normalizePrimaryBucket(value: unknown) {
 	const raw = stringValue(value, 80);
 	const parsed = rootPrimaryBucketSchema.safeParse(raw);
@@ -112,22 +124,44 @@ function normalizeSecondaryBuckets(value: unknown) {
 	});
 }
 
+function normalizeFinanceGate(value: unknown) {
+	if (!isRecord(value)) {
+		return value;
+	}
+	if (
+		value.relevant === true &&
+		typeof value.signal === "string" &&
+		FINANCE_INTEL_REQUIRED_SIGNALS.has(value.signal)
+	) {
+		return {
+			...value,
+			operational: true,
+			requiresFinanceIntel: true,
+		};
+	}
+	return value;
+}
+
 export function normalizeMessageLabelV3ModelOutput(raw: unknown): unknown {
 	if (!isRecord(raw)) {
 		return raw;
 	}
 	const routing = isRecord(raw.routing) ? raw.routing : null;
-	if (!routing) {
-		return raw;
-	}
 	return {
 		...raw,
-		routing: {
-			...routing,
-			primaryBucket: normalizePrimaryBucket(routing.primaryBucket),
-			secondaryBuckets: normalizeSecondaryBuckets(routing.secondaryBuckets),
-			tags: uniqueStringValues(routing.tags),
-		},
+		finance: normalizeFinanceGate(raw.finance),
+		...(routing
+			? {
+					routing: {
+						...routing,
+						primaryBucket: normalizePrimaryBucket(routing.primaryBucket),
+						secondaryBuckets: normalizeSecondaryBuckets(
+							routing.secondaryBuckets,
+						),
+						tags: uniqueStringValues(routing.tags),
+					},
+				}
+			: {}),
 	};
 }
 

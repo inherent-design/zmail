@@ -54,6 +54,94 @@ describe("classify", () => {
 		expect(parsed.finance.signal).toBe("investment");
 	});
 
+	it("normalizes required finance-intel gates for operational signals", async () => {
+		const runtime = await createTestRuntime();
+		const classify =
+			await runtime.importFresh<typeof import("#/lib/classify")>(
+				"#/lib/classify",
+			);
+		const raw = buildMessageLabelV3({
+			finance: {
+				relevant: true,
+				signal: "receipt",
+				operational: false,
+				bookHint: "business",
+				requiresFinanceIntel: false,
+				confidence: 0.9,
+				evidence: "Apple receipt.",
+			},
+			routing: {
+				primaryBucket: "finance",
+				secondaryBuckets: ["receipt"],
+				tags: ["receipt"],
+			},
+		});
+
+		const parsed = messageLabelWithoutNsfwSchema.parse(
+			classify.normalizeMessageLabelV3ModelOutput(raw),
+		);
+
+		expect(parsed.finance.operational).toBe(true);
+		expect(parsed.finance.requiresFinanceIntel).toBe(true);
+	});
+
+	it("leaves promotion and subscription finance gates unchanged", async () => {
+		const runtime = await createTestRuntime();
+		const classify =
+			await runtime.importFresh<typeof import("#/lib/classify")>(
+				"#/lib/classify",
+			);
+		const promotion = buildMessageLabelV3({
+			finance: {
+				relevant: true,
+				signal: "promotion",
+				operational: false,
+				bookHint: "unknown",
+				requiresFinanceIntel: false,
+				confidence: 0.9,
+				evidence: "Card offer.",
+			},
+		});
+		const subscription = buildMessageLabelV3({
+			finance: {
+				relevant: true,
+				signal: "subscription",
+				operational: false,
+				bookHint: "unknown",
+				requiresFinanceIntel: false,
+				confidence: 0.9,
+				evidence: "Upcoming renewal.",
+			},
+		});
+		const explicitSubscription = buildMessageLabelV3({
+			finance: {
+				relevant: true,
+				signal: "subscription",
+				operational: true,
+				bookHint: "business",
+				requiresFinanceIntel: true,
+				confidence: 0.9,
+				evidence: "Paid subscription receipt.",
+			},
+		});
+
+		expect(
+			messageLabelWithoutNsfwSchema.parse(
+				classify.normalizeMessageLabelV3ModelOutput(promotion),
+			).finance.requiresFinanceIntel,
+		).toBe(false);
+		expect(
+			messageLabelWithoutNsfwSchema.parse(
+				classify.normalizeMessageLabelV3ModelOutput(subscription),
+			).finance.requiresFinanceIntel,
+		).toBe(false);
+		expect(
+			messageLabelWithoutNsfwSchema.parse(
+				classify.normalizeMessageLabelV3ModelOutput(explicitSubscription),
+			).finance.requiresFinanceIntel,
+		).toBe(true);
+	});
+
 	it("builds attachment summaries and prompts with fallbacks", async () => {
 		const runtime = await createTestRuntime();
 		const classify =

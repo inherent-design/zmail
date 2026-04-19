@@ -684,6 +684,20 @@ async function hasReadyFinanceHeads() {
 	return Number(row.count) > 0;
 }
 
+function targetMessageIdsForJob(job: JobRecord) {
+	const meta = parseJobMeta<{ targetMessageIds?: unknown }>(job, {});
+	if (!Array.isArray(meta.targetMessageIds)) {
+		return [];
+	}
+	return Array.from(
+		new Set(
+			meta.targetMessageIds
+				.map((value) => (typeof value === "string" ? value.trim() : ""))
+				.filter((value) => value.length > 0),
+		),
+	);
+}
+
 function maxIsoValue(values: Array<string | null>) {
 	return values.reduce<string | null>((current, value) => {
 		if (!value) {
@@ -1249,13 +1263,41 @@ async function classifyAccountBacklogJob(job: JobRecord, trace: LogTrace) {
 }
 
 async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
+	const isTargeted = job.kind === "classify_finance_messages";
+	const operation = isTargeted
+		? "classify_finance_messages"
+		: "classify_finance_backlog";
+	const targetMessageIds = isTargeted ? targetMessageIdsForJob(job) : [];
 	const backlogTrace = trace.child({
 		kind: "worker",
-		operation: "classify_finance_backlog",
+		operation,
 		job_id: job.id,
 		job_kind: job.kind,
 		account_id: job.scope_id,
 	});
+
+	if (isTargeted && targetMessageIds.length === 0) {
+		await completeJob({
+			id: job.id,
+			successCount: 0,
+			errorCount: 0,
+			meta: {
+				mode: "live",
+				processed: 0,
+				total: 0,
+				targetMessageIds,
+				skipped: [],
+			},
+		});
+		backlogTrace.complete(`worker.${operation}.complete`, {
+			processed: 0,
+			success_count: 0,
+			error_count: 0,
+			total: 0,
+		});
+		return;
+	}
+
 	const db = getDb();
 	const account = await db
 		.selectFrom("accounts")
@@ -1263,9 +1305,9 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 		.where("id", "=", job.scope_id)
 		.executeTakeFirstOrThrow();
 
-	const rows = await db
+	let rowsQuery = db
 		.selectFrom("messages")
-		.innerJoin("message_labels", "message_labels.message_id", "messages.id")
+		.leftJoin("message_labels", "message_labels.message_id", "messages.id")
 		.leftJoin("message_secondary_heads", (join) =>
 			join
 				.onRef("message_secondary_heads.message_id", "=", "messages.id")
@@ -1288,19 +1330,53 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 			"message_secondary_heads.status as head_status",
 			"message_secondary_results.schema_version as result_schema_version",
 		])
-		.where("messages.account_id", "=", job.scope_id)
+		.where("messages.account_id", "=", job.scope_id);
+
+	if (isTargeted) {
+		rowsQuery = rowsQuery.where("messages.id", "in", targetMessageIds);
+	}
+
+	const rows = await rowsQuery
 		.orderBy("messages.received_at", "desc")
 		.orderBy("messages.id", "desc")
 		.execute();
 
+	const skipped: Array<{ messageId: string; reason: string }> = [];
+	if (isTargeted) {
+		const foundIds = new Set(rows.map((row) => row.id));
+		for (const messageId of targetMessageIds) {
+			if (!foundIds.has(messageId)) {
+				skipped.push({ messageId, reason: "not_found" });
+			}
+		}
+	}
 	const rootFinanceRows = rows.flatMap((row) => {
 		const rootLabel = parseCurrentMessageLabel(
 			safeJsonParse(row.label_json, null),
 		);
-		if (
-			!rootLabel?.finance?.relevant ||
-			!rootLabel.finance.requiresFinanceIntel
-		) {
+		if (isTargeted && row.parse_status !== "parsed") {
+			skipped.push({ messageId: row.id, reason: "parse_status_not_parsed" });
+			return [];
+		}
+		if (!rootLabel) {
+			if (isTargeted) {
+				skipped.push({ messageId: row.id, reason: "missing_current_label" });
+			}
+			return [];
+		}
+		if (!rootLabel.finance?.relevant) {
+			if (isTargeted) {
+				skipped.push({ messageId: row.id, reason: "finance_not_relevant" });
+			}
+			return [];
+		}
+		if (!rootLabel.finance.requiresFinanceIntel) {
+			if (isTargeted) {
+				skipped.push({
+					messageId: row.id,
+					reason: "finance_intel_not_required",
+				});
+			}
 			return [];
 		}
 		return [
@@ -1316,9 +1392,14 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 			id: job.id,
 			successCount: 0,
 			errorCount: 0,
-			meta: { mode: "live", processed: 0, total: 0 },
+			meta: {
+				mode: "live",
+				processed: 0,
+				total: 0,
+				...(isTargeted ? { targetMessageIds, skipped } : {}),
+			},
 		});
-		backlogTrace.complete("worker.classify_finance_backlog.complete", {
+		backlogTrace.complete(`worker.${operation}.complete`, {
 			processed: 0,
 			success_count: 0,
 			error_count: 0,
@@ -1380,26 +1461,29 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 	const workItems = rootFinanceRows
 		.filter((row) => {
 			const head = headsByMessage.get(row.id);
+			let shouldProcess = false;
 			if (row.parse_status === "error") {
-				return (
+				shouldProcess =
 					!head ||
 					head.status !== "blocked_parse_error" ||
 					head.content_sha256 !== row.content_sha256 ||
 					head.registry_sha256 !== registry.sha256 ||
 					head.prompt_version !== FINANCE_INTEL_PROMPT_VERSION ||
-					head.prompt_sha256 !== financePromptSha256
-				);
+					head.prompt_sha256 !== financePromptSha256;
+			} else {
+				shouldProcess =
+					head?.result_schema_version !== "finance-intel.v3" ||
+					!isSecondaryHeadCurrent(head, {
+						contentSha256: row.content_sha256,
+						registrySha256: registry.sha256,
+						promptVersion: FINANCE_INTEL_PROMPT_VERSION,
+						promptSha256: financePromptSha256,
+					});
 			}
-
-			return (
-				head?.result_schema_version !== "finance-intel.v3" ||
-				!isSecondaryHeadCurrent(head, {
-					contentSha256: row.content_sha256,
-					registrySha256: registry.sha256,
-					promptVersion: FINANCE_INTEL_PROMPT_VERSION,
-					promptSha256: financePromptSha256,
-				})
-			);
+			if (isTargeted && !shouldProcess) {
+				skipped.push({ messageId: row.id, reason: "finance_head_current" });
+			}
+			return shouldProcess;
 		})
 		.slice(0, FINANCE_BACKLOG_BATCH_SIZE);
 
@@ -1418,9 +1502,10 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 				total: 0,
 				registrySha256: registry.sha256,
 				blockedModelOutputCount: 0,
+				...(isTargeted ? { targetMessageIds, skipped } : {}),
 			},
 		});
-		backlogTrace.complete("worker.classify_finance_backlog.complete", {
+		backlogTrace.complete(`worker.${operation}.complete`, {
 			processed: 0,
 			success_count: 0,
 			error_count: 0,
@@ -1444,9 +1529,10 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 			total: workItems.length,
 			registrySha256: registry.sha256,
 			blockedModelOutputCount,
+			...(isTargeted ? { targetMessageIds, skipped } : {}),
 		},
 	});
-	backlogTrace.info("worker.classify_finance_backlog.start", {
+	backlogTrace.info(`worker.${operation}.start`, {
 		total: workItems.length,
 		registry_sha256: registry.sha256,
 	});
@@ -1573,6 +1659,7 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 					total: workItems.length,
 					registrySha256: registry.sha256,
 					blockedModelOutputCount,
+					...(isTargeted ? { targetMessageIds, skipped } : {}),
 				},
 			});
 		},
@@ -1584,6 +1671,7 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 		total: workItems.length,
 		registrySha256: registry.sha256,
 		blockedModelOutputCount,
+		...(isTargeted ? { targetMessageIds, skipped } : {}),
 	};
 
 	if (errorCount > 0) {
@@ -1604,7 +1692,7 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 		errorCount,
 		meta: finalMeta,
 	});
-	backlogTrace.complete("worker.classify_finance_backlog.complete", {
+	backlogTrace.complete(`worker.${operation}.complete`, {
 		processed: successCount + errorCount,
 		success_count: successCount,
 		error_count: errorCount,
@@ -1615,7 +1703,7 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 		await queueFinanceKnowledgeRebuild();
 		await queueFinanceRollupsRebuild();
 	}
-	if (await hasPendingFinanceBacklog(account.id)) {
+	if (!isTargeted && (await hasPendingFinanceBacklog(account.id))) {
 		await queueAccountFinanceBacklog(account.id);
 	}
 }
@@ -1662,6 +1750,9 @@ async function processJob(job: JobRecord, trace: LogTrace) {
 			await classifyAccountBacklogJob(job, trace);
 			return;
 		case "classify_finance_backlog":
+			await classifyFinanceBacklogJob(job, trace);
+			return;
+		case "classify_finance_messages":
 			await classifyFinanceBacklogJob(job, trace);
 			return;
 		default:

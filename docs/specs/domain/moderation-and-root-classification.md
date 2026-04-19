@@ -135,6 +135,13 @@ Rules:
 - financial promotions and generic product notices may be relevant but usually
   are not operational
 - only operational finance messages require `finance-intel.v3`
+- root-label normalization forces `operational = true` and
+  `requiresFinanceIntel = true` when `relevant = true` and `signal` is one of
+  `receipt`, `invoice`, `statement`, `banking`, `tax`, `payroll`,
+  `investment`, `donation`, or `transfer`
+- `none`, `promotion`, `other`, and `subscription` are not force-gated by
+  normalization; subscription notices can be future reminders without
+  transaction evidence
 - `bookHint` is a routing hint; final personal/business/mixed export handling
   belongs to `finance-intel.v3` and ledger staging
 
