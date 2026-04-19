@@ -18,6 +18,22 @@ function createDom(url = "http://localhost/") {
 	);
 }
 
+function createFinanceDom() {
+	return new JSDOM(
+		`<!DOCTYPE html>
+		<html data-zmail-base-path="/" data-zmail-event-cursor="5">
+			<head><title>Finance</title></head>
+			<body>
+				<main id="app-main" class="page" data-page="finance" data-event-cursor="5">
+					<section data-zmail-island="finance.summary">Old summary</section>
+					<section data-zmail-island="finance.cashflow">Old chart</section>
+				</main>
+			</body>
+		</html>`,
+		{ url: "http://localhost/finance" },
+	);
+}
+
 function partialResponse(input: {
 	page: string;
 	title: string;
@@ -32,6 +48,29 @@ function partialResponse(input: {
 				"X-Zmail-Title": input.title,
 				"X-Zmail-Page": input.page,
 				"X-Zmail-Event-Cursor": String(input.cursor),
+			},
+		},
+	);
+}
+
+function islandResponse(input: {
+	page: string;
+	cursor: number;
+	islands: string[];
+	body: string;
+	missing?: string[];
+}) {
+	return new Response(
+		`<div data-zmail-island-fragments="${input.page}" data-event-cursor="${String(input.cursor)}">${input.body}</div>`,
+		{
+			status: 200,
+			headers: {
+				"X-Zmail-Page": input.page,
+				"X-Zmail-Event-Cursor": String(input.cursor),
+				"X-Zmail-Islands": input.islands.join(","),
+				...(input.missing
+					? { "X-Zmail-Island-Missing": input.missing.join(",") }
+					: {}),
 			},
 		},
 	);
@@ -321,6 +360,95 @@ describe("shell nav", () => {
 			expect(fetchImpl).toHaveBeenCalledTimes(1);
 			expect(dom.window.location.pathname).toBe("/accounts");
 			expect(dom.window.document.body.textContent).toContain("Accounts page");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("swaps requested island fragments without replacing app main", async () => {
+		const dom = createFinanceDom();
+		vi.stubGlobal("DOMParser", dom.window.DOMParser);
+		const onBeforeIslandSwap = vi.fn(() => ({ zoom: true }));
+		const onAfterIslandSwap = vi.fn();
+		const fetchImpl = vi.fn(async () =>
+			islandResponse({
+				page: "finance",
+				cursor: 14,
+				islands: ["finance.summary"],
+				body: '<section data-zmail-island="finance.summary">New summary</section>',
+			}),
+		);
+		const shellNav = createShellNav({
+			documentRef: dom.window.document,
+			windowRef: dom.window as unknown as Window,
+			fetchImpl: fetchImpl as typeof fetch,
+			onBeforeIslandSwap,
+			onAfterIslandSwap,
+		});
+
+		await shellNav.refresh({ islands: ["finance.summary"] });
+
+		expect(fetchImpl).toHaveBeenCalledWith(
+			"/finance",
+			expect.objectContaining({
+				headers: expect.objectContaining({
+					"X-Zmail-Partial": "islands",
+					"X-Zmail-Islands": "finance.summary",
+				}),
+			}),
+		);
+		expect(dom.window.document.getElementById("app-main")?.dataset.page).toBe(
+			"finance",
+		);
+		expect(dom.window.document.body.textContent).toContain("New summary");
+		expect(dom.window.document.body.textContent).toContain("Old chart");
+		expect(dom.window.document.documentElement.dataset.zmailEventCursor).toBe(
+			"14",
+		);
+		expect(onBeforeIslandSwap).toHaveBeenCalledWith(
+			"finance.summary",
+			expect.any(dom.window.Element),
+		);
+		expect(onAfterIslandSwap).toHaveBeenCalledWith(
+			"finance.summary",
+			expect.any(dom.window.Element),
+			{ zoom: true },
+		);
+	});
+
+	it("drops scheduled island refresh when route changes before it runs", async () => {
+		vi.useFakeTimers();
+		try {
+			const dom = createFinanceDom();
+			vi.stubGlobal("DOMParser", dom.window.DOMParser);
+			const fetchImpl = vi.fn(async () =>
+				islandResponse({
+					page: "finance",
+					cursor: 14,
+					islands: ["finance.summary"],
+					body: '<section data-zmail-island="finance.summary">New summary</section>',
+				}),
+			);
+			const shellNav = createShellNav({
+				documentRef: dom.window.document,
+				windowRef: dom.window as unknown as Window,
+				fetchImpl: fetchImpl as typeof fetch,
+			});
+
+			await shellNav.scheduleRefresh({
+				islands: ["finance.summary"],
+				debounceMs: 1000,
+				maxWaitMs: 5000,
+			});
+			dom.window.history.pushState({}, "", "/messages");
+			const main = dom.window.document.getElementById("app-main");
+			if (main) {
+				main.dataset.page = "messages";
+			}
+			await vi.advanceTimersByTimeAsync(5000);
+
+			expect(fetchImpl).not.toHaveBeenCalled();
+			expect(dom.window.document.body.textContent).toContain("Old summary");
 		} finally {
 			vi.useRealTimers();
 		}

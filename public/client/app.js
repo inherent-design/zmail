@@ -72,7 +72,8 @@ const app = {
 	reconnect: syncProvider.reconnect,
 	close: syncProvider.close,
 	postJson: rpcClient.postJson,
-	refresh: () => shellNav.refresh(),
+	refresh: (options) => shellNav.refresh(options),
+	refreshIsland: (ids, options) => shellNav.refreshIsland(ids, options),
 	scheduleRefresh: (options) => shellNav.scheduleRefresh(options),
 	navigate: (url, options) => shellNav.navigate(url, options),
 	currentPage: () => pageRegistry.currentPage(),
@@ -83,6 +84,11 @@ const shellNav = createShellNav({
 	onAfterSwap: async (page) => {
 		syncProvider.setCursor(readEventCursor());
 		await pageRegistry.mount(page, app);
+	},
+	onBeforeIslandSwap: (id, root) => pageRegistry.beforeIslandSwap(id, root),
+	onAfterIslandSwap: async (id, root, state) => {
+		syncProvider.setCursor(readEventCursor());
+		await pageRegistry.afterIslandSwap(id, root, state, app);
 	},
 });
 
