@@ -255,7 +255,12 @@ async function refreshDbGauges() {
 
 	const activeRows = await db
 		.selectFrom("jobs")
-		.select(["kind", "status", "scope_type", (eb) => eb.fn.countAll().as("count")])
+		.select([
+			"kind",
+			"status",
+			"scope_type",
+			(eb) => eb.fn.countAll().as("count"),
+		])
 		.where("status", "in", ["queued", "running"])
 		.groupBy(["kind", "status", "scope_type"])
 		.execute();
@@ -353,4 +358,3 @@ export async function metricsText(): Promise<string> {
 export function metricsContentType(): string {
 	return registry.contentType;
 }
-

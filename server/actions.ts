@@ -1052,13 +1052,11 @@ function parseJobProgressFields(metaJson: string | null) {
 	try {
 		const parsed = JSON.parse(metaJson) as Record<string, unknown>;
 		return {
-			processed:
-				typeof parsed.processed === "number" ? parsed.processed : null,
+			processed: typeof parsed.processed === "number" ? parsed.processed : null,
 			total: typeof parsed.total === "number" ? parsed.total : null,
 			etaSeconds:
 				typeof parsed.etaSeconds === "number" ? parsed.etaSeconds : null,
-			updatedAt:
-				typeof parsed.updatedAt === "string" ? parsed.updatedAt : null,
+			updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : null,
 			phase: typeof parsed.phase === "string" ? parsed.phase : null,
 		};
 	} catch {
@@ -1967,41 +1965,40 @@ export async function loadAccountDetailData(input: { accountId: string }) {
 				tombCount,
 				financeCoverage,
 				syncProgress,
-			] =
-				await Promise.all([
-					db
-						.selectFrom("account_sync_state")
-						.selectAll()
-						.where("account_id", "=", input.accountId)
-						.executeTakeFirst(),
-					db
-						.selectFrom("jobs")
-						.select(["id", "kind", "status", "created_at", "last_error"])
-						.where("scope_type", "=", "account")
-						.where("scope_id", "=", input.accountId)
-						.orderBy("created_at", "desc")
-						.limit(10)
-						.execute(),
-					db
-						.selectFrom("messages")
-						.select((eb) => eb.fn.countAll<number>().as("count"))
-						.where("account_id", "=", input.accountId)
-						.executeTakeFirstOrThrow(),
-					db
-						.selectFrom("message_sources")
-						.select((eb) => eb.fn.countAll<number>().as("count"))
-						.where("account_id", "=", input.accountId)
-						.where("state", "=", "tombstoned")
-						.executeTakeFirstOrThrow(),
-					loadFinanceCoverageSummary({
-						db,
-						safeJsonParse,
-						accountId: input.accountId,
-					}),
-					import("#/lib/sync-progress").then((module) =>
-						module.loadAccountSyncProgress(input.accountId),
-					),
-				]);
+			] = await Promise.all([
+				db
+					.selectFrom("account_sync_state")
+					.selectAll()
+					.where("account_id", "=", input.accountId)
+					.executeTakeFirst(),
+				db
+					.selectFrom("jobs")
+					.select(["id", "kind", "status", "created_at", "last_error"])
+					.where("scope_type", "=", "account")
+					.where("scope_id", "=", input.accountId)
+					.orderBy("created_at", "desc")
+					.limit(10)
+					.execute(),
+				db
+					.selectFrom("messages")
+					.select((eb) => eb.fn.countAll<number>().as("count"))
+					.where("account_id", "=", input.accountId)
+					.executeTakeFirstOrThrow(),
+				db
+					.selectFrom("message_sources")
+					.select((eb) => eb.fn.countAll<number>().as("count"))
+					.where("account_id", "=", input.accountId)
+					.where("state", "=", "tombstoned")
+					.executeTakeFirstOrThrow(),
+				loadFinanceCoverageSummary({
+					db,
+					safeJsonParse,
+					accountId: input.accountId,
+				}),
+				import("#/lib/sync-progress").then((module) =>
+					module.loadAccountSyncProgress(input.accountId),
+				),
+			]);
 
 			return {
 				account: {

@@ -89,9 +89,8 @@ describe("health and metrics routes", () => {
 			subject: "Private Subject",
 			snippet: "private snippet",
 		});
-		const jobs = await runtime.importFresh<typeof import("#/lib/jobs")>(
-			"#/lib/jobs",
-		);
+		const jobs =
+			await runtime.importFresh<typeof import("#/lib/jobs")>("#/lib/jobs");
 		await jobs.queueJob({
 			kind: "sync_account_delta",
 			scopeType: "account",
@@ -136,4 +135,3 @@ describe("health and metrics routes", () => {
 		});
 	});
 });
-

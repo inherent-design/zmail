@@ -88,11 +88,15 @@ function computeRunningProgress(input: {
 	return {
 		accountId: input.accountId,
 		status: input.status,
-		phase: phaseOrUnknown(meta.phase ?? PHASE_BY_JOB_KIND[input.runningJob.kind]),
+		phase: phaseOrUnknown(
+			meta.phase ?? PHASE_BY_JOB_KIND[input.runningJob.kind],
+		),
 		processed,
 		total,
 		remaining:
-			processed !== null && total !== null ? Math.max(0, total - processed) : null,
+			processed !== null && total !== null
+				? Math.max(0, total - processed)
+				: null,
 		ratePerSecond,
 		etaSeconds,
 		updatedAt: typeof meta.updatedAt === "string" ? meta.updatedAt : null,
@@ -267,4 +271,3 @@ export async function loadAllAccountSyncProgress(): Promise<
 > {
 	return loadProgressSnapshots();
 }
-

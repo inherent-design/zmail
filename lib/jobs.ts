@@ -3,11 +3,11 @@ import { randomUUID } from "node:crypto";
 import { APP_CONFIG, nowIso } from "#/lib/config";
 import { getDb, getSqlite, jsonText, safeJsonParse } from "#/lib/db";
 import { startTrace } from "#/lib/log";
+import { recordJobClaim } from "#/lib/observability";
 import {
 	publishActionEvent,
 	trackRuntimeEventTask,
 } from "#/lib/runtime-events";
-import { recordJobClaim } from "#/lib/observability";
 
 export type JobKind =
 	| "rebuild_overseer"

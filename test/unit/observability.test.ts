@@ -10,17 +10,16 @@ describe("observability", () => {
 
 	it("normalizes HTTP routes without raw identifiers", async () => {
 		const runtime = await createTestRuntime();
-		const observability =
-			await runtime.importFresh<typeof import("#/lib/observability")>(
-				"#/lib/observability",
-			);
+		const observability = await runtime.importFresh<
+			typeof import("#/lib/observability")
+		>("#/lib/observability");
 
 		expect(observability.normalizeHttpRoute("/messages/msg-123")).toBe(
 			"/messages/:messageId",
 		);
-		expect(
-			observability.normalizeHttpRoute("/accounts/acct-1/reconnect"),
-		).toBe("/accounts/:accountId/reconnect");
+		expect(observability.normalizeHttpRoute("/accounts/acct-1/reconnect")).toBe(
+			"/accounts/:accountId/reconnect",
+		);
 		expect(
 			observability.normalizeHttpRoute("/rpc/accounts/acct-1/sync/full"),
 		).toBe("/rpc/accounts/:accountId/sync/full");
@@ -43,18 +42,16 @@ describe("observability", () => {
 			emailAddress: "private@example.com",
 			syncStatus: "backfilling",
 		});
-		const jobs = await runtime.importFresh<typeof import("#/lib/jobs")>(
-			"#/lib/jobs",
-		);
+		const jobs =
+			await runtime.importFresh<typeof import("#/lib/jobs")>("#/lib/jobs");
 		await jobs.queueJob({
 			kind: "sync_account_backfill",
 			scopeType: "account",
 			scopeId: "acct-metrics",
 		});
-		const observability =
-			await runtime.importFresh<typeof import("#/lib/observability")>(
-				"#/lib/observability",
-			);
+		const observability = await runtime.importFresh<
+			typeof import("#/lib/observability")
+		>("#/lib/observability");
 
 		observability.recordHttpRequest({
 			method: "GET",
@@ -71,4 +68,3 @@ describe("observability", () => {
 		expect(metrics).not.toContain("acct-1/reconnect");
 	});
 });
-

@@ -2,9 +2,9 @@ import { existsSync, readdirSync } from "node:fs";
 
 import { loadResolvedConfig } from "#/lib/app-config";
 import { MIGRATIONS_DIR } from "#/lib/config";
-import { getActiveWatcherCount } from "#/lib/watchers";
 import { getDb, getSqlite } from "#/lib/db";
 import { dataRootDir, orgRootDir, runtimePaths } from "#/lib/runtime";
+import { getActiveWatcherCount } from "#/lib/watchers";
 
 export async function loadOpsHealth(input: {
 	orgId: string;
@@ -26,7 +26,7 @@ export async function loadOpsHealth(input: {
 	let syncingAccounts = 0;
 	let backfillingAccounts = 0;
 	let needsReconnectAccounts = 0;
-	let accountDetails: Array<{ accountId: string; syncStatus: string }> = [];
+	const accountDetails: Array<{ accountId: string; syncStatus: string }> = [];
 
 	try {
 		const sqlite = getSqlite(input.orgId);

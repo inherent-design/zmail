@@ -262,8 +262,7 @@ function normalizeMetricsPath(input: string) {
 	if (trimmed.includes("?") || trimmed.includes("#")) {
 		throw new Error(`Invalid ZMAIL metrics_path: ${input}`);
 	}
-	const normalized =
-		trimmed.length > 1 ? trimmed.replace(/\/+$/, "") : trimmed;
+	const normalized = trimmed.length > 1 ? trimmed.replace(/\/+$/, "") : trimmed;
 	if (normalized === "/healthz" || normalized === "/readyz") {
 		throw new Error(`Invalid ZMAIL metrics_path: ${input}`);
 	}

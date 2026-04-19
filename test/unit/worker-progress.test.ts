@@ -8,26 +8,27 @@ describe("worker progress", () => {
 		const runtime = await createTestRuntime();
 		const { db } = await bootDb();
 		await seedTestAccount(db, { id: "acct-progress" });
-		const jobs = await runtime.importFresh<typeof import("#/lib/jobs")>(
-			"#/lib/jobs",
-		);
+		const jobs =
+			await runtime.importFresh<typeof import("#/lib/jobs")>("#/lib/jobs");
 		const jobId = await jobs.queueJob({
 			kind: "sync_account_backfill",
 			scopeType: "account",
 			scopeId: "acct-progress",
 		});
 		const claimed = jobs.claimNextJob();
-		expect(claimed?.id).toBe(jobId);
+		if (!claimed) {
+			throw new Error("Expected queued job to be claimed");
+		}
+		expect(claimed.id).toBe(jobId);
 		await db
 			.updateTable("jobs")
 			.set({ lease_expires_at: "2026-01-01T00:00:00.000Z" })
 			.where("id", "=", jobId)
 			.execute();
-		const worker = await runtime.importFresh<typeof import("#/lib/worker")>(
-			"#/lib/worker",
-		);
+		const worker =
+			await runtime.importFresh<typeof import("#/lib/worker")>("#/lib/worker");
 
-		await worker.createJobProgressSink(claimed!, "backfill").onProgress({
+		await worker.createJobProgressSink(claimed, "backfill").onProgress({
 			phase: "backfill",
 			fetched: 25,
 			total: 100,
@@ -59,4 +60,3 @@ describe("worker progress", () => {
 		);
 	});
 });
-
