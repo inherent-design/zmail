@@ -100,6 +100,8 @@ describe("Hono web routes", () => {
 		expect(home.status).toBe(200);
 		const homeHtml = await home.text();
 		expect(homeHtml).toContain("Gmail live-sync analysis workspace.");
+		expect(homeHtml).toContain('"echarts/":"/vendor/echarts/"');
+		expect(homeHtml).not.toContain("&quot;echarts/&quot;");
 		expect(homeHtml).toContain(
 			`data-zmail-event-cursor="${String(latestEvent.id)}"`,
 		);
@@ -184,6 +186,64 @@ describe("Hono web routes", () => {
 		expect(html).toContain('id="app-main"');
 		expect(html).toContain(`data-event-cursor="${String(latestEvent.id)}"`);
 		expect(html).not.toContain("<html");
+	});
+
+	it("returns requested finance island fragments only", async () => {
+		const { app } = await loadServerApp();
+		await bootDb({ seedDefaultAccount: true });
+		const runtimeEvents = await import("#/lib/runtime-events");
+		const latestEvent = await runtimeEvents.publishActionEvent({
+			topic: "finance",
+			eventType: "finance.ledger_rebuilt",
+			entityKind: "finance",
+			entityId: "ledger",
+			payload: {
+				status: "complete",
+			},
+		});
+
+		const response = await app.request("http://localhost/finance", {
+			headers: {
+				"X-Zmail-Partial": "islands",
+				"X-Zmail-Islands": "finance.summary,finance.cashflow",
+			},
+		});
+
+		expect(response.status).toBe(200);
+		expect(response.headers.get("X-Zmail-Page")).toBe("finance");
+		expect(response.headers.get("X-Zmail-Event-Cursor")).toBe(
+			String(latestEvent.id),
+		);
+		expect(response.headers.get("X-Zmail-Islands")).toBe(
+			"finance.summary,finance.cashflow",
+		);
+		const html = await response.text();
+		expect(html).toContain('data-zmail-island-fragments="finance"');
+		expect(html).toContain('data-zmail-island="finance.summary"');
+		expect(html).toContain('data-zmail-island="finance.cashflow"');
+		expect(html).not.toContain('id="app-main"');
+		expect(html).not.toContain('data-zmail-island="finance.filters"');
+	});
+
+	it("marks missing finance islands for same-page fallback", async () => {
+		const { app } = await loadServerApp();
+		await bootDb({ seedDefaultAccount: true });
+
+		const response = await app.request("http://localhost/finance", {
+			headers: {
+				"X-Zmail-Partial": "islands",
+				"X-Zmail-Islands": "finance.unknown",
+			},
+		});
+
+		expect(response.status).toBe(200);
+		expect(response.headers.get("X-Zmail-Islands")).toBe("");
+		expect(response.headers.get("X-Zmail-Island-Missing")).toBe(
+			"finance.unknown",
+		);
+		const html = await response.text();
+		expect(html).toContain('data-zmail-island-fragments="finance"');
+		expect(html).not.toContain("finance.unknown");
 	});
 
 	it("mounts browser pages under a non-root base path", async () => {

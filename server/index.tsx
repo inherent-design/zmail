@@ -83,11 +83,14 @@ import {
 import { loadOpsHealth } from "#/server/ops-health";
 import {
 	DocumentShell,
+	IslandFragmentEnvelope,
+	type IslandRenderMap,
 	PartialMain,
 	renderAccountDeletePage,
 	renderAccountDetailPage,
 	renderAccountFormPage,
 	renderAccountsPage,
+	renderFinanceIslandMap,
 	renderFinancePage,
 	renderHomePage,
 	renderMessageDetailPage,
@@ -126,11 +129,39 @@ function renderPage(
 		title: string;
 		page: string;
 		children: unknown;
+		islands?: IslandRenderMap;
 	},
 ) {
 	const eventCursor = latestRuntimeEventId(c.get("orgId"));
+	const url = new URL(c.req.url);
+	if (c.req.header("X-Zmail-Partial") === "islands") {
+		const requested = (c.req.header("X-Zmail-Islands") ?? "")
+			.split(",")
+			.map((value) => value.trim())
+			.filter(Boolean);
+		const knownIslands = input.islands ?? {};
+		const targetIds = requested.length ? requested : Object.keys(knownIslands);
+		const availableIds = targetIds.filter((id) =>
+			Object.hasOwn(knownIslands, id),
+		);
+		const missingIds = targetIds.filter(
+			(id) => !Object.hasOwn(knownIslands, id),
+		);
+		c.header("X-Zmail-Title", input.title);
+		c.header("X-Zmail-Url", `${url.pathname}${url.search}`);
+		c.header("X-Zmail-Page", input.page);
+		c.header("X-Zmail-Event-Cursor", String(eventCursor));
+		c.header("X-Zmail-Islands", availableIds.join(","));
+		if (missingIds.length > 0) {
+			c.header("X-Zmail-Island-Missing", missingIds.join(","));
+		}
+		return c.html(
+			<IslandFragmentEnvelope page={input.page} eventCursor={eventCursor}>
+				{availableIds.map((id) => knownIslands[id])}
+			</IslandFragmentEnvelope>,
+		);
+	}
 	if (c.req.header("X-Zmail-Partial") === "main") {
-		const url = new URL(c.req.url);
 		c.header("X-Zmail-Title", input.title);
 		c.header("X-Zmail-Url", `${url.pathname}${url.search}`);
 		c.header("X-Zmail-Page", input.page);
@@ -389,6 +420,20 @@ app.get(config.observability.metricsPath, async (c) => {
 
 webApp.use("/client/*", serveStatic({ root: "./public" }));
 webApp.use("/assets/*", serveStatic({ root: "./public" }));
+webApp.use(
+	"/vendor/echarts/*",
+	serveStatic({
+		root: "./node_modules/echarts",
+		rewriteRequestPath: (path) => path.replace(/^\/vendor\/echarts/, ""),
+	}),
+);
+webApp.use(
+	"/vendor/zrender/*",
+	serveStatic({
+		root: "./node_modules/zrender",
+		rewriteRequestPath: (path) => path.replace(/^\/vendor\/zrender/, ""),
+	}),
+);
 
 webApp.get("/auth/login", handleLogin);
 webApp.get("/auth/callback", handleAuthCallback);
@@ -776,10 +821,12 @@ webApp.get(
 			ownerIdentityId: c.req.query("ownerIdentityId") ?? undefined,
 			sourceKind,
 		});
+		const searchParams = new URL(c.req.url).searchParams;
 		return renderPage(c, {
 			title: "Finance",
 			page: "finance",
-			children: renderFinancePage(data, new URL(c.req.url).searchParams),
+			children: renderFinancePage(data, searchParams),
+			islands: renderFinanceIslandMap(data, searchParams),
 		});
 	},
 );
