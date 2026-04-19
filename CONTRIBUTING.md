@@ -63,6 +63,7 @@ Current local commands remain available while the rewrite is underway:
 pnpm install
 mise trust mise.toml
 mise run dev
+mise run dev:obs
 mise run test
 mise run test:quick
 mise run test:coverage
@@ -95,13 +96,12 @@ For local server startup, `mise run dev` is the supported entrypoint when you
 rely on repo-managed WorkOS or Google bootstrap secrets. Plain `pnpm raw:dev`
 is the raw runtime entrypoint and does not load `secrets.enc.yaml`.
 
-For local observability, enable metrics and the JSON log file sink explicitly:
+For local observability, start the stack and run the app with metrics and the
+JSON log file sink enabled:
 
 ```bash
-mkdir -p .observability/logs
-ZMAIL_METRICS_ENABLED=true \
-ZMAIL_LOG_FILE=.observability/logs/zmail.ndjson \
-mise run dev
+mise run obs:up
+mise run dev:obs
 ```
 
 `mise run obs:up` starts the local Grafana, Loki, Prometheus, and Alloy stack.

@@ -3,6 +3,14 @@ description = "Start the local app with repo-managed secrets loaded through mise
 env = { _.file = ["secrets.enc.yaml", ".env"] }
 run = "pnpm raw:dev"
 
+[tasks."dev:obs"]
+description = "Start the local app with metrics and file logs enabled"
+env = { _.file = ["secrets.enc.yaml", ".env"], ZMAIL_METRICS_ENABLED = "true", ZMAIL_LOG_FILE = ".observability/logs/zmail.ndjson" }
+run = '''
+mkdir -p .observability/logs
+pnpm raw:dev
+'''
+
 [tasks.preview]
 description = "Start the preview server with repo-managed secrets loaded through mise"
 env = { _.file = ["secrets.enc.yaml", ".env"] }

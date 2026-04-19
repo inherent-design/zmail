@@ -10,17 +10,15 @@ zmail keeps Pino JSON logs as the canonical log format. By default logs go to
 stdout only. A local file sink can be enabled for Loki ingestion:
 
 ```bash
-mkdir -p .observability/logs
-ZMAIL_METRICS_ENABLED=true \
-ZMAIL_LOG_FILE=.observability/logs/zmail.ndjson \
-mise run dev
+mise run dev:obs
 ```
 
 The Prometheus metrics endpoint is disabled by default. Enable it only on a
-local or private bind address:
+local or private bind address. The local observability app task enables it and
+the Loki-tailored JSON log file together:
 
 ```bash
-ZMAIL_METRICS_ENABLED=true mise run dev
+mise run dev:obs
 ```
 
 Default routes:
@@ -69,6 +67,7 @@ Commands:
 
 ```bash
 mise run obs:up
+mise run dev:obs
 mise run obs:logs
 mise run obs:down
 ```

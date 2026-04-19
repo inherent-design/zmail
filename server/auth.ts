@@ -45,6 +45,7 @@ export type SessionPrincipal = BrowserPrincipal | MachinePrincipal;
 
 const SESSION_COOKIE = "zmail_session";
 const WORKOS_STATE_DIR = resolve(OAUTH_TMP_DIR, "..", "workos");
+const WORKOS_STATE_TOKEN_RE = /^[A-Za-z0-9_-]{8,256}$/;
 const ORG_ROLE_ORDER: Record<OrgRole, number> = {
 	org_viewer: 0,
 	org_operator: 1,
@@ -260,6 +261,35 @@ function orgRoutePath(pathname: string, c: Context) {
 	);
 }
 
+function safeReturnTo(input: string | null | undefined) {
+	const fallback = appPath("/");
+	const raw = input?.trim();
+	if (
+		!raw ||
+		!raw.startsWith("/") ||
+		raw.startsWith("//") ||
+		raw.includes("\\") ||
+		containsControlCharacter(raw)
+	) {
+		return fallback;
+	}
+	const { basePath } = loadResolvedConfig().server;
+	if (basePath !== "/" && raw !== basePath && !raw.startsWith(`${basePath}/`)) {
+		return fallback;
+	}
+	return raw;
+}
+
+function containsControlCharacter(value: string) {
+	for (let index = 0; index < value.length; index += 1) {
+		const charCode = value.charCodeAt(index);
+		if (charCode < 32 || charCode === 127) {
+			return true;
+		}
+	}
+	return false;
+}
+
 function redirectToOrgSelect(c: Context) {
 	return structuredFailure(
 		c,
@@ -288,6 +318,9 @@ function redirectToLegacyClaim(c: Context) {
 }
 
 function writeWorkOsState(state: WorkOsState) {
+	if (!WORKOS_STATE_TOKEN_RE.test(state.state)) {
+		throw new Error("Invalid WorkOS login state token.");
+	}
 	mkdirSync(WORKOS_STATE_DIR, { recursive: true });
 	writeFileSync(
 		resolve(WORKOS_STATE_DIR, `${state.state}.json`),
@@ -297,6 +330,9 @@ function writeWorkOsState(state: WorkOsState) {
 }
 
 function readWorkOsState(state: string) {
+	if (!WORKOS_STATE_TOKEN_RE.test(state)) {
+		return null;
+	}
 	try {
 		const path = resolve(WORKOS_STATE_DIR, `${state}.json`);
 		const parsed = JSON.parse(readFileSync(path, "utf8")) as WorkOsState;
@@ -657,7 +693,7 @@ export async function handleLogin(c: Context) {
 	}
 
 	const workos = getWorkOS();
-	const returnTo = c.req.query("returnTo") ?? appPath("/");
+	const returnTo = safeReturnTo(c.req.query("returnTo"));
 	const redirectUri = workosRedirectUri();
 	const { url, state, codeVerifier } =
 		await workos.userManagement.getAuthorizationUrlWithPKCE({
@@ -707,7 +743,7 @@ export async function handleAuthCallback(c: Context) {
 		operation: "workos_callback",
 		org_id: authResponse.organizationId ?? undefined,
 	}).complete("auth.workos.callback.complete");
-	return c.redirect(stored.returnTo);
+	return c.redirect(safeReturnTo(stored.returnTo));
 }
 
 export async function handleLogout(c: Context) {
@@ -747,7 +783,7 @@ export async function loadOrgSelectionData(c: Context) {
 	return {
 		principal,
 		memberships,
-		returnTo: c.req.query("returnTo") ?? appPath("/"),
+		returnTo: safeReturnTo(c.req.query("returnTo")),
 	};
 }
 
@@ -790,11 +826,11 @@ export async function selectOrganizationForBrowserSession(
 	if (promoted.role === "org_admin" && orgNeedsLegacyClaim(organizationId)) {
 		return c.redirect(
 			appPath(
-				`/org/claim-legacy?returnTo=${encodeURIComponent(c.req.query("returnTo") ?? appPath("/"))}`,
+				`/org/claim-legacy?returnTo=${encodeURIComponent(safeReturnTo(c.req.query("returnTo")))}`,
 			),
 		);
 	}
-	return c.redirect(c.req.query("returnTo") ?? appPath("/"));
+	return c.redirect(safeReturnTo(c.req.query("returnTo")));
 }
 
 export async function createOrganizationForBrowserSession(
@@ -838,11 +874,11 @@ export async function createOrganizationForBrowserSession(
 	if (orgNeedsLegacyClaim(organization.id)) {
 		return c.redirect(
 			appPath(
-				`/org/claim-legacy?returnTo=${encodeURIComponent(c.req.query("returnTo") ?? appPath("/"))}`,
+				`/org/claim-legacy?returnTo=${encodeURIComponent(safeReturnTo(c.req.query("returnTo")))}`,
 			),
 		);
 	}
-	return c.redirect(c.req.query("returnTo") ?? appPath("/"));
+	return c.redirect(safeReturnTo(c.req.query("returnTo")));
 }
 
 export async function claimLegacyRuntimeForActiveOrg(c: Context) {
@@ -860,7 +896,7 @@ export async function claimLegacyRuntimeForActiveOrg(c: Context) {
 		);
 	}
 	claimLegacyRuntime(principal.orgId);
-	return c.redirect(c.req.query("returnTo") ?? appPath("/"));
+	return c.redirect(safeReturnTo(c.req.query("returnTo")));
 }
 
 export function isOrgSelectionPath(pathname: string) {

@@ -115,16 +115,15 @@ Local observability is optional and disabled by default. To run with Prometheus
 metrics and a Loki-tailored JSON log file:
 
 ```bash
-mkdir -p .observability/logs
-ZMAIL_METRICS_ENABLED=true \
-ZMAIL_LOG_FILE=.observability/logs/zmail.ndjson \
-mise run dev
+mise run dev:obs
 ```
 
-Start the local Grafana, Loki, Prometheus, and Alloy stack with:
+Start the local Grafana, Loki, Prometheus, and Alloy stack before the
+observability-enabled app when you want dashboards and log ingestion:
 
 ```bash
 mise run obs:up
+mise run dev:obs
 ```
 
 Grafana is available at `http://127.0.0.1:3000`.
@@ -171,6 +170,7 @@ underway. Treat them as transitional tooling, not architecture truth.
 
 ```bash
 mise run dev
+mise run dev:obs
 mise run test
 mise run test:quick
 mise run test:coverage
