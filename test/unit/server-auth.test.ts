@@ -1,4 +1,9 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { createTestRuntime } from "#/test/helpers/runtime";
 
 const ENVIRONMENT_ROLE_DEFS = [
 	{
@@ -57,6 +62,158 @@ describe("server auth bootstrap", () => {
 		process.env.ZMAIL_TEST_AUTH_BYPASS = "true";
 		const auth = await import("#/server/auth");
 		expect(() => auth.assertWorkOsBootstrapEnv()).not.toThrow();
+	});
+
+	it("rejects traversal-like WorkOS callback state without touching files outside auth state storage", async () => {
+		const runtime = await createTestRuntime();
+		const auth =
+			await runtime.importFresh<typeof import("#/server/auth")>(
+				"#/server/auth",
+			);
+		const { Hono } = await import("hono");
+		const app = new Hono();
+		app.get("/", auth.handleAuthCallback);
+		const victimPath = resolve(runtime.root, "victim.json");
+		writeFileSync(
+			victimPath,
+			JSON.stringify({
+				state: "victim",
+				codeVerifier: "secret",
+				returnTo: "/private",
+			}),
+			"utf8",
+		);
+
+		const response = await app.request(
+			"http://localhost/?code=code&state=../../../../victim",
+		);
+
+		expect(response.status).toBe(400);
+		expect(existsSync(victimPath)).toBe(true);
+		expect(JSON.parse(readFileSync(victimPath, "utf8"))).toMatchObject({
+			state: "victim",
+			returnTo: "/private",
+		});
+	});
+
+	it("stores only internal return targets during WorkOS login", async () => {
+		const runtime = await createTestRuntime();
+		process.env.WORKOS_API_KEY = "workos_api_key";
+		process.env.WORKOS_CLIENT_ID = "workos_client_id";
+		process.env.WORKOS_COOKIE_PASSWORD =
+			"workos_cookie_password_minimum_length_value";
+		const getAuthorizationUrlWithPKCE = vi.fn(async () => ({
+			url: "https://auth.workos.test/login",
+			state: "safe_state-123",
+			codeVerifier: "code-verifier",
+		}));
+
+		vi.doMock("@workos-inc/node", () => ({
+			WorkOS: vi.fn().mockImplementation(() => ({
+				userManagement: {
+					getAuthorizationUrlWithPKCE,
+				},
+			})),
+		}));
+
+		try {
+			const { Hono } = await import("hono");
+			const auth =
+				await runtime.importFresh<typeof import("#/server/auth")>(
+					"#/server/auth",
+				);
+			const app = new Hono();
+			app.get("/", auth.handleLogin);
+
+			const response = await app.request(
+				"http://localhost/?returnTo=https://evil.test/phish",
+			);
+
+			const statePath = resolve(
+				runtime.dataDir,
+				"tmp",
+				"oauth",
+				"workos",
+				"safe_state-123.json",
+			);
+			expect(response.headers.get("location")).toBe(
+				"https://auth.workos.test/login",
+			);
+			expect(JSON.parse(readFileSync(statePath, "utf8"))).toMatchObject({
+				state: "safe_state-123",
+				codeVerifier: "code-verifier",
+				returnTo: "/",
+			});
+		} finally {
+			vi.doUnmock("@workos-inc/node");
+		}
+	});
+
+	it("falls back to app root when stored WorkOS return target is external", async () => {
+		const runtime = await createTestRuntime();
+		process.env.WORKOS_API_KEY = "workos_api_key";
+		process.env.WORKOS_CLIENT_ID = "workos_client_id";
+		process.env.WORKOS_COOKIE_PASSWORD =
+			"workos_cookie_password_minimum_length_value";
+		const authenticateWithCode = vi.fn(async () => ({
+			sealedSession: "sealed-session-value",
+			organizationId: "org-1",
+		}));
+
+		vi.doMock("@workos-inc/node", () => ({
+			WorkOS: vi.fn().mockImplementation(() => ({
+				userManagement: {
+					authenticateWithCode,
+				},
+			})),
+		}));
+
+		try {
+			const { Hono } = await import("hono");
+			const auth =
+				await runtime.importFresh<typeof import("#/server/auth")>(
+					"#/server/auth",
+				);
+			const statePath = resolve(
+				runtime.dataDir,
+				"tmp",
+				"oauth",
+				"workos",
+				"safe_state-123.json",
+			);
+			mkdirSync(resolve(runtime.dataDir, "tmp", "oauth", "workos"), {
+				recursive: true,
+			});
+			writeFileSync(
+				statePath,
+				JSON.stringify({
+					state: "safe_state-123",
+					codeVerifier: "code-verifier",
+					returnTo: "https://evil.test/phish",
+				}),
+				"utf8",
+			);
+			const app = new Hono();
+			app.get("/", auth.handleAuthCallback);
+
+			const response = await app.request(
+				"http://localhost/?code=code&state=safe_state-123",
+			);
+
+			expect(authenticateWithCode).toHaveBeenCalledWith(
+				expect.objectContaining({
+					code: "code",
+					codeVerifier: "code-verifier",
+				}),
+			);
+			expect(response.headers.get("location")).toBe("/");
+			expect(response.headers.get("set-cookie")).toContain(
+				"zmail_session=sealed-session-value",
+			);
+			expect(existsSync(statePath)).toBe(false);
+		} finally {
+			vi.doUnmock("@workos-inc/node");
+		}
 	});
 
 	it("promotes configured bootstrap admins to org_admin during org-bound refresh", async () => {
@@ -212,12 +369,15 @@ describe("server auth bootstrap", () => {
 				return auth.createOrganizationForBrowserSession(c, "Inherent");
 			});
 
-			const response = await app.request("http://localhost/", {
-				method: "POST",
-				headers: {
-					cookie: "zmail_session=sealed-session-viewer",
+			const response = await app.request(
+				"http://localhost/?returnTo=https://evil.test/phish",
+				{
+					method: "POST",
+					headers: {
+						cookie: "zmail_session=sealed-session-viewer",
+					},
 				},
-			});
+			);
 
 			expect(createOrganization).toHaveBeenCalledWith({
 				name: "Inherent",
@@ -312,6 +472,79 @@ describe("server auth bootstrap", () => {
 				"membership-1",
 				{ roleSlug: "org_admin" },
 			);
+		} finally {
+			vi.doUnmock("@workos-inc/node");
+		}
+	});
+
+	it("falls back to app root when org selection return target is external", async () => {
+		process.env.WORKOS_API_KEY = "workos_api_key";
+		process.env.WORKOS_CLIENT_ID = "workos_client_id";
+		process.env.WORKOS_COOKIE_PASSWORD =
+			"workos_cookie_password_minimum_length_value";
+
+		const listOrganizationMemberships = vi.fn(async () => ({
+			autoPagination: async () => [
+				{
+					id: "membership-1",
+					organizationId: "org-1",
+					organizationName: "Inherent",
+					role: { slug: "org_viewer" },
+				},
+			],
+		}));
+		const refresh = vi.fn(async () => ({
+			authenticated: true,
+			sealedSession: "sealed-session-viewer",
+			organizationId: "org-1",
+			role: "org_viewer",
+			permissions: [],
+		}));
+		const loadSealedSession = vi.fn(() => ({
+			refresh,
+		}));
+
+		vi.doMock("@workos-inc/node", () => ({
+			WorkOS: vi.fn().mockImplementation(() => ({
+				userManagement: {
+					listOrganizationMemberships,
+					loadSealedSession,
+				},
+			})),
+		}));
+
+		try {
+			const { Hono } = await import("hono");
+			const auth = await import("#/server/auth");
+			const app = new Hono();
+			app.post("/", async (c) => {
+				c.set("principal", {
+					kind: "browser",
+					sub: "user-1",
+					email: "viewer@inherent.design",
+					orgId: null,
+					role: null,
+					permissions: [],
+					authMode: "workos",
+				});
+				return auth.selectOrganizationForBrowserSession(c, "org-1");
+			});
+
+			const response = await app.request(
+				"http://localhost/?returnTo=https://evil.test/phish",
+				{
+					method: "POST",
+					headers: {
+						cookie: "zmail_session=sealed-session-viewer",
+					},
+				},
+			);
+
+			expect(response.headers.get("location")).toBe("/");
+			expect(refresh).toHaveBeenCalledWith({
+				organizationId: "org-1",
+				cookiePassword: "workos_cookie_password_minimum_length_value",
+			});
 		} finally {
 			vi.doUnmock("@workos-inc/node");
 		}
