@@ -21,6 +21,12 @@ declare module "#/public/client/core/shell-nav.js" {
 		windowRef?: Window;
 		fetchImpl?: typeof fetch;
 		onAfterSwap?: (page: string, nextUrl: string) => void | Promise<void>;
+		onBeforeIslandSwap?: (id: string, root: Element) => unknown;
+		onAfterIslandSwap?: (
+			id: string,
+			root: Element,
+			state: unknown,
+		) => void | Promise<void>;
 	}): {
 		navigate(
 			url: string | URL,
@@ -30,11 +36,25 @@ declare module "#/public/client/core/shell-nav.js" {
 				source?: "user" | "refresh" | "popstate" | "action";
 			},
 		): Promise<void>;
-		refresh(): Promise<void>;
+		refresh(options?: {
+			islands?: string | string[];
+			originPage?: string;
+			originUrl?: string;
+		}): Promise<void>;
+		refreshIsland(
+			ids: string | string[],
+			options?: {
+				originPage?: string;
+				originUrl?: string;
+			},
+		): Promise<void>;
 		scheduleRefresh(options?: {
 			immediate?: boolean;
 			debounceMs?: number;
 			maxWaitMs?: number;
+			islands?: string | string[];
+			originPage?: string;
+			originUrl?: string;
 		}): Promise<void>;
 		bindLinkClicks(): () => void;
 		bindPopState(): () => void;
@@ -45,6 +65,10 @@ declare module "#/public/client/core/shell-nav.js" {
 		html: string,
 		parser?: DOMParser,
 	): HTMLElement | null;
+	export function extractIslandFragments(
+		html: string,
+		parser?: DOMParser,
+	): { envelope: Element | null; roots: Map<string, Element> };
 }
 
 declare module "#/public/client/core/sync-provider.js" {
