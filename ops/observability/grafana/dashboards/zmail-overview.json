@@ -1,0 +1,173 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "targets": [
+        {
+          "expr": "sum by (route,status_class) (rate(zmail_http_requests_total[5m]))",
+          "legendFormat": "{{route}} {{status_class}}"
+        }
+      ],
+      "title": "HTTP request rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le,route) (rate(zmail_http_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{route}}"
+        }
+      ],
+      "title": "HTTP p95 latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "id": 3,
+      "targets": [
+        {
+          "expr": "sum by (level,event) (rate({service=\"zmail\"}[5m]))",
+          "legendFormat": "{{level}} {{event}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Log volume",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "id": 4,
+      "targets": [
+        {
+          "expr": "{service=\"zmail\",level=\"error\"}",
+          "refId": "A"
+        }
+      ],
+      "title": "Recent errors",
+      "type": "logs"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 16 },
+      "id": 5,
+      "targets": [
+        {
+          "expr": "sum by (job_kind,status) (zmail_jobs_active)",
+          "legendFormat": "{{job_kind}} {{status}}"
+        }
+      ],
+      "title": "Active jobs",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 16 },
+      "id": 6,
+      "targets": [
+        {
+          "expr": "zmail_jobs_oldest_queued_age_seconds",
+          "legendFormat": "{{job_kind}}"
+        }
+      ],
+      "title": "Oldest queued job age",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 16 },
+      "id": 7,
+      "targets": [
+        {
+          "expr": "zmail_sync_backfill_eta_seconds",
+          "legendFormat": "{{account_id}}"
+        }
+      ],
+      "title": "Backfill ETA",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percentunit" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 24 },
+      "id": 8,
+      "targets": [
+        {
+          "expr": "zmail_sync_backfill_progress_ratio",
+          "legendFormat": "{{account_id}}"
+        }
+      ],
+      "title": "Backfill progress",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 24 },
+      "id": 9,
+      "targets": [
+        {
+          "expr": "sum by (phase) (rate(zmail_sync_messages_fetched_total[5m]))",
+          "legendFormat": "{{phase}}"
+        }
+      ],
+      "title": "Messages fetched",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 24 },
+      "id": 10,
+      "targets": [
+        {
+          "expr": "zmail_watchers_active",
+          "legendFormat": "{{org_id}}"
+        }
+      ],
+      "title": "Active watchers",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 32 },
+      "id": 11,
+      "targets": [
+        {
+          "expr": "zmail_sync_account_status == 1",
+          "legendFormat": "{{account_id}} {{status}}"
+        }
+      ],
+      "title": "Account sync states",
+      "type": "timeseries"
+    }
+  ],
+  "preload": false,
+  "schemaVersion": 40,
+  "tags": ["zmail"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "zmail overview",
+  "uid": "zmail-overview",
+  "version": 1,
+  "weekStart": ""
+}
+

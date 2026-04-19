@@ -115,9 +115,8 @@ describe("moderation", () => {
 		const runtime = await createTestRuntime();
 		const { db } = await bootDb({ seedDefaultAccount: true });
 		const messageId = await insertMessageRow(db);
-		const { nowIso } = await runtime.importFresh<typeof import("#/lib/config")>(
-			"#/lib/config",
-		);
+		const { nowIso } =
+			await runtime.importFresh<typeof import("#/lib/config")>("#/lib/config");
 		const piJson = vi.fn(async () => ({
 			backend: "openai-api",
 			modelId: "gpt-5.4-mini",
@@ -208,9 +207,8 @@ describe("moderation", () => {
 		const runtime = await createTestRuntime();
 		const { db } = await bootDb({ seedDefaultAccount: true });
 		const messageId = await insertMessageRow(db);
-		const { nowIso } = await runtime.importFresh<typeof import("#/lib/config")>(
-			"#/lib/config",
-		);
+		const { nowIso } =
+			await runtime.importFresh<typeof import("#/lib/config")>("#/lib/config");
 		const piJson = vi.fn(async () => ({
 			backend: "openai-api",
 			modelId: "gpt-5.4-mini",

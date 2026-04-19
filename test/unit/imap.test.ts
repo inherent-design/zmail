@@ -147,6 +147,35 @@ describe("imap", () => {
 		);
 	});
 
+	it("parseRawMessage ignores absurd future Date headers and uses Received date", async () => {
+		const runtime = await createTestRuntime();
+		vi.resetModules();
+
+		const mod =
+			await runtime.importFresh<typeof import("#/lib/imap")>("#/lib/imap");
+		const rawEmail = Buffer.from(
+			[
+				"From: no-reply@accounts.google.com",
+				"To: recipient@example.com",
+				"Subject: Pally's access to your Google Account data will expire soon",
+				"Date: Fri, 27 Sep 2611 03:45:20 +0000",
+				"Received: by 2002:a05:6902:100d:b0:e6b:9b5a:e5d0 with SMTP id; Tue, 23 Dec 2025 19:47:47 -0800 (PST)",
+				"Message-ID: <bad-future-date@example.com>",
+				"",
+				"Access notice",
+			].join("\r\n"),
+		);
+
+		const parsed = await mod.parseRawMessage(
+			rawEmail,
+			"sha-bad-date",
+			"2026-01-01T00:00:00.000Z",
+		);
+
+		expect(parsed.parseStatus).toBe("parsed");
+		expect(parsed.receivedAt).toBe("2025-12-24T03:47:47.000Z");
+	});
+
 	it("parseRawMessage handles parse errors gracefully", async () => {
 		const runtime = await createTestRuntime();
 		vi.resetModules();

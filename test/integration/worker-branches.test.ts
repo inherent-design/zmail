@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { bootDb, insertMessageRow } from "#/test/helpers/db";
+import { buildMessageLabelV3 } from "#/test/helpers/labels";
 import { createTestRuntime } from "#/test/helpers/runtime";
 
 function mockSelectivePi(errorMode: "string" | "error" = "string") {
@@ -21,36 +22,33 @@ function mockSelectivePi(errorMode: "string" | "error" = "string") {
 				return {
 					backend: "openai-subscription",
 					modelId: "gpt-5.4-mini",
-					parsed: {
+					parsed: buildMessageLabelV3({
 						finance: {
 							relevant: true,
-							direction: "expense",
-							owner: "business",
-							accountHint: "amex",
-							purpose: "client lunch",
-						},
-						social: {
-							personal: false,
-							private: false,
-							social: false,
-							business: true,
-						},
-						risk: {
-							businessSensitive: false,
-							leakRisk: false,
+							signal: "receipt",
+							operational: true,
+							bookHint: "business",
+							requiresFinanceIntel: true,
+							confidence: 0.95,
+							evidence: "Client lunch receipt.",
 						},
 						routing: {
 							primaryBucket: "finance",
+							secondaryBuckets: ["receipt"],
 							tags: ["receipt"],
 						},
 						confidence: {
 							overall: 0.95,
 							finance: 0.95,
-							social: 0.95,
+							people: 0.95,
+							commerce: 0.95,
+							knowledge: 0.95,
+							assets: 0.95,
+							entertainment: 0.95,
 							risk: 0.95,
 						},
 						explanation: "ok",
-					},
+					}),
 					rawText: "{}",
 					usage: null,
 				};
@@ -150,7 +148,7 @@ describe("worker branch coverage", () => {
 			scopeType: "account",
 			scopeId: "acct-1",
 			model: "gpt-5.4-mini",
-			promptVersion: "classify-email-v1",
+			promptVersion: "classify-email-v3",
 		});
 	});
 
@@ -223,7 +221,7 @@ describe("worker branch coverage", () => {
 			scopeType: "account",
 			scopeId: "acct-1",
 			model: "gpt-5.4-mini",
-			promptVersion: "classify-email-v1",
+			promptVersion: "classify-email-v3",
 		});
 	});
 
@@ -284,7 +282,7 @@ describe("worker branch coverage", () => {
 			scopeType: "account",
 			scopeId: "acct-1",
 		});
-		await worker.drainWorkerUntilIdle();
+		await worker.runWorkerIteration({ waitOnIdle: false });
 
 		const backlogJob = await db
 			.selectFrom("jobs")
@@ -319,6 +317,6 @@ describe("worker branch coverage", () => {
 			.orderBy("created_at")
 			.execute();
 		expect(rows.some((row) => row.kind === "rebuild_overseer")).toBe(true);
-		expect(buildOverseerProfile).toHaveBeenCalledWith("acct-1");
+		expect(buildOverseerProfile).not.toHaveBeenCalled();
 	});
 });

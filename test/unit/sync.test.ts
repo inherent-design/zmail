@@ -132,6 +132,14 @@ function mockFreshToken(accessToken: string | null) {
 	}));
 }
 
+function mockFreshTokenError(message: string) {
+	vi.doMock("#/lib/google-oauth", () => ({
+		ensureFreshToken: vi.fn(async () => {
+			throw new Error(message);
+		}),
+	}));
+}
+
 function mockQueueJobIdempotent(
 	impl: (input: {
 		kind: string;
@@ -760,15 +768,49 @@ describe("sync", () => {
 		const sync =
 			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
 		await expect(sync.runFullSync("acct-full-token")).rejects.toThrow(
-			"No valid OAuth token for account",
+			"Gmail OAuth token is missing or no longer valid. Reconnect this Gmail account.",
 		);
 
 		const account = await db
 			.selectFrom("accounts")
-			.select(["sync_status"])
+			.select(["sync_status", "last_error"])
 			.where("id", "=", "acct-full-token")
 			.executeTakeFirstOrThrow();
 		expect(account.sync_status).toBe("needs_reconnect");
+		expect(account.last_error).toBe(
+			"Gmail OAuth token is missing or no longer valid. Reconnect this Gmail account.",
+		);
+	});
+
+	it("preserves account status and records bootstrap config failure when token refresh throws", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-full-bootstrap-error",
+			syncEnabled: 1,
+			syncStatus: "idle",
+		});
+
+		mockFreshTokenError(
+			"Google OAuth client credentials were rejected by Google. Verify GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET for redirect URL http://127.0.0.1:56711/oauth/google/callback. Start local server with mise run dev.",
+		);
+		mockQueueJobIdempotent();
+
+		const sync =
+			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
+		await expect(sync.runFullSync("acct-full-bootstrap-error")).rejects.toThrow(
+			"Google OAuth client credentials were rejected by Google.",
+		);
+
+		const account = await db
+			.selectFrom("accounts")
+			.select(["sync_status", "last_error"])
+			.where("id", "=", "acct-full-bootstrap-error")
+			.executeTakeFirstOrThrow();
+		expect(account.sync_status).toBe("idle");
+		expect(account.last_error).toContain(
+			"Google OAuth client credentials were rejected by Google.",
+		);
 	});
 
 	it("ignores logout errors after a successful bootstrap", async () => {
@@ -918,15 +960,18 @@ describe("sync", () => {
 		const sync =
 			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
 		await expect(sync.runDeltaSync("acct-delta-token")).rejects.toThrow(
-			"No valid OAuth token for account",
+			"Gmail OAuth token is missing or no longer valid. Reconnect this Gmail account.",
 		);
 
 		const account = await db
 			.selectFrom("accounts")
-			.select(["sync_status"])
+			.select(["sync_status", "last_error"])
 			.where("id", "=", "acct-delta-token")
 			.executeTakeFirstOrThrow();
 		expect(account.sync_status).toBe("needs_reconnect");
+		expect(account.last_error).toBe(
+			"Gmail OAuth token is missing or no longer valid. Reconnect this Gmail account.",
+		);
 	});
 
 	it("ignores logout errors after delta sync succeeds", async () => {
@@ -1119,15 +1164,18 @@ describe("sync", () => {
 		const sync =
 			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
 		await expect(sync.runBackfillSync("acct-backfill-token")).rejects.toThrow(
-			"No valid OAuth token for account",
+			"Gmail OAuth token is missing or no longer valid. Reconnect this Gmail account.",
 		);
 
 		const account = await db
 			.selectFrom("accounts")
-			.select(["sync_status"])
+			.select(["sync_status", "last_error"])
 			.where("id", "=", "acct-backfill-token")
 			.executeTakeFirstOrThrow();
 		expect(account.sync_status).toBe("needs_reconnect");
+		expect(account.last_error).toBe(
+			"Gmail OAuth token is missing or no longer valid. Reconnect this Gmail account.",
+		);
 	});
 
 	it("requeues a fresh bootstrap when backfill sees uidvalidity drift", async () => {
@@ -1278,15 +1326,18 @@ describe("sync", () => {
 		const sync =
 			await runtime.importFresh<typeof import("#/lib/sync")>("#/lib/sync");
 		await expect(sync.runReconcile("acct-reconcile-token")).rejects.toThrow(
-			"No valid OAuth token for account",
+			"Gmail OAuth token is missing or no longer valid. Reconnect this Gmail account.",
 		);
 
 		const account = await db
 			.selectFrom("accounts")
-			.select(["sync_status"])
+			.select(["sync_status", "last_error"])
 			.where("id", "=", "acct-reconcile-token")
 			.executeTakeFirstOrThrow();
 		expect(account.sync_status).toBe("needs_reconnect");
+		expect(account.last_error).toBe(
+			"Gmail OAuth token is missing or no longer valid. Reconnect this Gmail account.",
+		);
 	});
 
 	it("skips reconcile when the tracked sync window is unavailable", async () => {

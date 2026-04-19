@@ -1,0 +1,48 @@
+[server]
+bind_host = "127.0.0.1"
+bind_port = 56711
+public_origin = "http://127.0.0.1:56711"
+base_path = "/"
+
+[data]
+root_dir = "data"
+default_org_id = "local"
+force_org_layout = false
+
+[worker]
+enabled = true
+poll_ms = 1000
+live_heartbeat_ms = 30000
+
+[logging]
+level = "info"
+format = "json"
+request_logs = true
+server_timing = true
+
+[observability]
+metrics_enabled = false
+metrics_path = "/metrics"
+log_file = ""
+otlp_enabled = false
+otlp_endpoint = ""
+service_instance_id = ""
+
+[models]
+classifier = "gpt-5.4-mini"
+fallback = "gpt-5-mini"
+moderation = "gpt-5.4-mini"
+pi_backend = "auto"
+
+[sync]
+live_concurrency = 2
+imap_fetch_window = 250
+imap_poll_ms = 300000
+imap_max_idle_ms = 600000
+reconcile_ms = 86400000
+
+[auth.workos]
+api_hostname = ""
+api_port = 0
+api_https = true
+bootstrap_admin_emails = ["mannie@inherent.design"]

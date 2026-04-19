@@ -1,0 +1,5 @@
+-- 002: Stable history stamp for connection_state promotion.
+--
+-- The accounts.connection_state column is now part of the canonical 001
+-- baseline. Existing databases are repaired through adopt-history guarded DDL,
+-- not by replaying column-add statements during normal migration.

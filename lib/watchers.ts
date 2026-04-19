@@ -5,6 +5,10 @@ import { ensureFreshToken } from "#/lib/google-oauth";
 import { createImapClient } from "#/lib/imap";
 import { queueJobIdempotent } from "#/lib/jobs";
 import { type LogTrace, startTrace } from "#/lib/log";
+import { publishActionEvent } from "#/lib/runtime-events";
+
+const OAUTH_RECONNECT_REQUIRED_MESSAGE =
+	"Gmail OAuth token is missing or no longer valid. Reconnect this Gmail account.";
 
 interface AccountWatcher {
 	accountId: string;
@@ -143,22 +147,43 @@ async function connectAndWatch(watcher: AccountWatcher, trace?: LogTrace) {
 		mailbox: account.selected_mailbox,
 	});
 
-	const token = await ensureFreshToken(watcher.accountId);
+	let token: Awaited<ReturnType<typeof ensureFreshToken>>;
+	try {
+		token = await ensureFreshToken(watcher.accountId);
+	} catch (error) {
+		if (error instanceof Error && error.name === "GoogleOAuthBootstrapError") {
+			await db
+				.updateTable("accounts")
+				.set({
+					last_error: error.message,
+					updated_at: nowIso(),
+				})
+				.where("id", "=", watcher.accountId)
+				.execute();
+			watcher.running = false;
+			await updateWatcherStatus(watcher.accountId, "error");
+			trace?.fail("watcher.error", error, {
+				watcher_status: "error",
+			});
+			return;
+		}
+		throw error;
+	}
 	if (!token) {
 		await db
 			.updateTable("accounts")
-			.set({ sync_status: "needs_reconnect", updated_at: nowIso() })
+			.set({
+				sync_status: "needs_reconnect",
+				last_error: OAUTH_RECONNECT_REQUIRED_MESSAGE,
+				updated_at: nowIso(),
+			})
 			.where("id", "=", watcher.accountId)
 			.execute();
 		watcher.running = false;
 		await updateWatcherStatus(watcher.accountId, "error");
-		trace?.fail(
-			"watcher.error",
-			new Error("No valid OAuth token for account"),
-			{
-				watcher_status: "error",
-			},
-		);
+		trace?.fail("watcher.error", new Error(OAUTH_RECONNECT_REQUIRED_MESSAGE), {
+			watcher_status: "error",
+		});
 		return;
 	}
 
@@ -230,6 +255,11 @@ async function connectAndWatch(watcher: AccountWatcher, trace?: LogTrace) {
 		.updateTable("account_sync_state")
 		.set({ consecutive_failures: 0, backoff_until: null, updated_at: nowIso() })
 		.where("account_id", "=", watcher.accountId)
+		.execute();
+	await db
+		.updateTable("accounts")
+		.set({ last_error: null, updated_at: nowIso() })
+		.where("id", "=", watcher.accountId)
 		.execute();
 }
 
@@ -392,6 +422,26 @@ async function updateWatcherStatus(accountId: string, status: string) {
 			.set({ watcher_status: status, updated_at: nowIso() })
 			.where("account_id", "=", accountId)
 			.execute();
+		await publishActionEvent({
+			topic: `account:${accountId}`,
+			eventType: "account.watcher_status",
+			entityKind: "account",
+			entityId: accountId,
+			payload: {
+				accountId,
+				watcherStatus: status,
+			},
+		});
+		await publishActionEvent({
+			topic: "accounts",
+			eventType: "account.watcher_status",
+			entityKind: "account",
+			entityId: accountId,
+			payload: {
+				accountId,
+				watcherStatus: status,
+			},
+		});
 		/* c8 ignore next 3 */
 	} catch {
 		// ignore if sync state doesn't exist yet

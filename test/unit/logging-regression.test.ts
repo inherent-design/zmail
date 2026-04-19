@@ -7,11 +7,20 @@ const ROOT_DIR = process.cwd();
 const ALLOWED_CONSOLE_FILES = new Set([
 	"scripts/pi-connect-subscription.ts",
 	"scripts/audit-corpus.ts",
+	"scripts/bench-http.ts",
+	"scripts/bench-sse.ts",
 	"scripts/db-reset.ts",
+	"scripts/import-finance-artifact.ts",
+	"scripts/reextract-bad-bodies.ts",
 	"scripts/reextract-parse-errors.ts",
+	"scripts/test-fuzz.ts",
+	"scripts/test-stress.ts",
 ]);
 const LOGGER_BOUNDARY_FILES = [
-	"app/server/actions.server.ts",
+	"server/actions.ts",
+	"server/index.tsx",
+	"server/auth.ts",
+	"server/machine-auth.ts",
 	"lib/jobs.ts",
 	"lib/worker.ts",
 	"lib/sync.ts",
@@ -21,7 +30,6 @@ const LOGGER_BOUNDARY_FILES = [
 	"scripts/_shared.ts",
 	"scripts/migrate.ts",
 	"scripts/worker-drain.ts",
-	"scripts/generate-route-tree.ts",
 	"scripts/db-reset.ts",
 	"scripts/pi-connect-subscription.ts",
 	"scripts/reextract-parse-errors.ts",
@@ -40,7 +48,11 @@ function listSourceFiles(directory: string, root = directory): string[] {
 			continue;
 		}
 
-		if (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx")) {
+		if (
+			entry.name.endsWith(".ts") ||
+			entry.name.endsWith(".tsx") ||
+			entry.name.endsWith(".js")
+		) {
 			files.push(relativePath);
 		}
 	}
@@ -51,9 +63,10 @@ function listSourceFiles(directory: string, root = directory): string[] {
 describe("logging regression guardrails", () => {
 	it("keeps console usage out of active runtime code except the interactive pi-connect script", () => {
 		const sourceFiles = [
-			...listSourceFiles("app"),
+			...listSourceFiles("server"),
 			...listSourceFiles("lib"),
 			...listSourceFiles("scripts"),
+			...listSourceFiles("public/client"),
 		];
 
 		const unexpectedConsoleUsage: string[] = [];

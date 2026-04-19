@@ -8,8 +8,8 @@ import {
 	seedTestAccount,
 } from "#/test/helpers/db";
 import {
-	buildFinanceIntelV2,
-	buildMessageLabelV2,
+	buildFinanceIntelV3,
+	buildMessageLabelV3,
 } from "#/test/helpers/labels";
 import { createTestRuntime } from "#/test/helpers/runtime";
 
@@ -38,13 +38,15 @@ describe("loadFinanceData filter contract", () => {
 			messageId: emailMessageId,
 			contentSha256: "sha-finance-email",
 			primaryBucket: "finance",
-			label: buildMessageLabelV2({
+			label: buildMessageLabelV3({
 				finance: {
 					relevant: true,
-					direction: "expense",
-					owner: "business",
-					accountHint: "acct:finance",
-					purpose: "software",
+					signal: "receipt",
+					operational: true,
+					bookHint: "business",
+					requiresFinanceIntel: true,
+					confidence: 0.95,
+					evidence: "Acme Cloud receipt.",
 				},
 				routing: {
 					primaryBucket: "finance",
@@ -56,7 +58,7 @@ describe("loadFinanceData filter contract", () => {
 		await insertSecondaryResultRow(db, {
 			messageId: emailMessageId,
 			contentSha256: "sha-finance-email",
-			result: buildFinanceIntelV2({
+			result: buildFinanceIntelV3({
 				transactionCandidates: [
 					{
 						kind: "card_charge",
@@ -73,6 +75,34 @@ describe("loadFinanceData filter contract", () => {
 						statementRefHint: null,
 						taxRelevanceHint: "business expense",
 						evidence: "Acme email charge.",
+						externalTransactionId: null,
+						postedAt: null,
+						clearedAt: null,
+						book: "business",
+						businessUsePercent: null,
+						fieldConfidence: {
+							amount: 0.95,
+							date: 0.95,
+							counterparty: 0.95,
+							accountMapping: 0.95,
+							book: 0.95,
+							category: 0.95,
+							dedupe: 0.95,
+						},
+						dedupe: {
+							externalTransactionId: null,
+							statementRowId: null,
+							normalizedComposite: null,
+							emailEvidenceKey: "msg-finance-email:42:2026-03-15",
+						},
+						beancount: {
+							debitAccount: "Expenses:Business:Software",
+							creditAccount: "Assets:Business:Bank:Checking",
+							currency: "USD",
+							mappingKey: "acct:finance",
+							confidence: 0.95,
+							metadata: {},
+						},
 					},
 				],
 			}),
@@ -92,7 +122,9 @@ describe("loadFinanceData filter contract", () => {
 				extractor_prompt_version: "finance-source-import.v1",
 				extracted_text_hash: "text-sha",
 				status: "imported",
-				raw_artifact_json: JSON.stringify({ schemaVersion: "finance-source-import.v1" }),
+				raw_artifact_json: JSON.stringify({
+					schemaVersion: "finance-source-import.v1",
+				}),
 				imported_at: "2026-03-31T00:00:00.000Z",
 			})
 			.execute();
@@ -143,6 +175,102 @@ describe("loadFinanceData filter contract", () => {
 			})
 			.execute();
 		await db
+			.insertInto("finance_ledger_entries")
+			.values([
+				{
+					id: "ledger-email-1",
+					canonical_key: "email:msg-finance-email:42.00:2026-03-15",
+					status: "ready",
+					source_authority: "email",
+					occurred_at: "2026-03-15",
+					posted_at: null,
+					cleared_at: null,
+					description: "Acme Cloud",
+					counterparty: "Acme Cloud",
+					direction: "expense",
+					amount_value: "42.00",
+					amount_minor: 4200,
+					currency: "USD",
+					book: "business",
+					business_use_percent: null,
+					debit_account: "Expenses:Business:Software",
+					credit_account: "Assets:Business:Bank:Checking",
+					account_mapping_key: "acct:finance",
+					field_confidence_json: JSON.stringify({ overall: 0.95 }),
+					ledger_metadata_json: JSON.stringify({
+						categoryPrimary: "software_services",
+						categorySecondary: "saas",
+						ownerIdentityId: "owner:email",
+						institutionId: "inst:email-bank",
+						financialAccountId: "acct:finance",
+					}),
+					raw_payload_json: JSON.stringify({ seeded: true }),
+					created_at: "2026-03-31T00:00:00.000Z",
+					updated_at: "2026-03-31T00:00:00.000Z",
+				},
+				{
+					id: "ledger-pdf-1",
+					canonical_key: "import:artifact-sha:0",
+					status: "ready",
+					source_authority: "pdf",
+					occurred_at: "2026-03-20",
+					posted_at: "2026-03-21",
+					cleared_at: null,
+					description: "Imported PDF software charge",
+					counterparty: "PDF Services",
+					direction: "expense",
+					amount_value: "51.00",
+					amount_minor: 5100,
+					currency: "USD",
+					book: "business",
+					business_use_percent: null,
+					debit_account: "Expenses:Business:Software",
+					credit_account: "Assets:Business:Bank:Checking",
+					account_mapping_key: "bank:checking",
+					field_confidence_json: JSON.stringify({ overall: 0.99 }),
+					ledger_metadata_json: JSON.stringify({
+						categoryPrimary: "software_services",
+						categorySecondary: "statement_import",
+						ownerIdentityId: "owner:pdf",
+						institutionId: "inst:pdf-bank",
+						financialAccountId: "acct:pdf",
+					}),
+					raw_payload_json: JSON.stringify({ seeded: true }),
+					created_at: "2026-03-31T00:00:00.000Z",
+					updated_at: "2026-03-31T00:00:00.000Z",
+				},
+			])
+			.execute();
+		await db
+			.insertInto("finance_ledger_entry_sources")
+			.values([
+				{
+					id: "ledger-source-email-1",
+					ledger_entry_id: "ledger-email-1",
+					source_kind: "email",
+					message_id: emailMessageId,
+					secondary_result_id: null,
+					import_run_id: null,
+					import_transaction_id: null,
+					import_document_id: null,
+					evidence_json: JSON.stringify({ seeded: true }),
+					created_at: "2026-03-31T00:00:00.000Z",
+				},
+				{
+					id: "ledger-source-pdf-1",
+					ledger_entry_id: "ledger-pdf-1",
+					source_kind: "import",
+					message_id: null,
+					secondary_result_id: null,
+					import_run_id: "import-run-1",
+					import_transaction_id: "import-tx-1",
+					import_document_id: "import-doc-1",
+					evidence_json: JSON.stringify({ seeded: true }),
+					created_at: "2026-03-31T00:00:00.000Z",
+				},
+			])
+			.execute();
+		await db
 			.insertInto("finance_yearly_rollups")
 			.values({
 				id: "materialized-rollup-1",
@@ -181,9 +309,10 @@ describe("loadFinanceData filter contract", () => {
 			ensureWorkerStarted: vi.fn(),
 		}));
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 
 		const unfiltered = await actions.loadFinanceData({ year: 2026 });
 		expect(unfiltered.filters.institutions).toEqual(

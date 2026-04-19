@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 
 import pino from "pino";
+
+import { loadResolvedConfig } from "#/lib/app-config";
 
 type LogLevel = "info" | "error";
 
@@ -48,6 +52,7 @@ const LOG_ENABLED =
 const SECRET_KEY_PATTERN =
 	/(^|_)(access|refresh)?_?token$|authorization|api_?key|secret|password|credential|code_verifier/i;
 
+const RESOLVED_CONFIG = loadResolvedConfig();
 const loggerBase = {
 	service: "zmail",
 	version:
@@ -57,11 +62,26 @@ const loggerBase = {
 	commit_hash: process.env.ZMAIL_COMMIT_SHA ?? "uncommitted",
 	environment: process.env.NODE_ENV ?? "development",
 	runtime: "node",
+	service_instance_id: RESOLVED_CONFIG.observability.serviceInstanceId,
 } as const;
+const LOGGING_CONFIG = RESOLVED_CONFIG.logging;
+
+function createLogStream() {
+	const logFile = RESOLVED_CONFIG.observability.logFile;
+	if (!LOG_ENABLED || !logFile) {
+		return process.stdout;
+	}
+
+	mkdirSync(dirname(logFile), { recursive: true });
+	return pino.multistream([
+		{ stream: process.stdout },
+		{ stream: pino.destination({ dest: logFile, sync: true }) },
+	]);
+}
 
 export const logger = pino(
 	{
-		level: process.env.ZMAIL_LOG_LEVEL ?? "info",
+		level: LOGGING_CONFIG.level,
 		base: loggerBase,
 		formatters: {
 			level: (label) => ({ level: label }),
@@ -85,7 +105,7 @@ export const logger = pino(
 			censor: "[REDACTED]",
 		},
 	},
-	process.stdout,
+	createLogStream(),
 );
 
 function serializeError(error: unknown) {

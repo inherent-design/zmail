@@ -10,7 +10,7 @@ def main() -> int:
     parser.add_argument("artifact_json")
     parser.add_argument(
         "--url",
-        default="http://127.0.0.1:3000/api/finance/imports",
+        default="http://127.0.0.1:56711/api/finance/imports",
     )
     args = parser.parse_args()
 

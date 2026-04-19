@@ -1,21 +1,21 @@
 import { existsSync, readdirSync, rmSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
 import Database from "better-sqlite3";
 
-import {
-	ACCOUNTS_DIR,
-	DATA_DIR,
-	DB_PATH,
-	ensureStorageDirs,
-	nowIso,
-} from "#/lib/config";
+import { accountsDir, dbPath, ensureStorageDirs, nowIso } from "#/lib/config";
 import { getDb, resetDb, runMigrations } from "#/lib/db";
 import { queueJobIdempotent } from "#/lib/jobs";
 import type { LogTrace } from "#/lib/log";
+import { defaultOrgId } from "#/lib/runtime";
 import { runCli } from "#/scripts/_shared";
 
 type ResetMode = "all" | "messages" | "jobs";
+
+interface ParsedArgs {
+	mode: ResetMode;
+	orgId: string;
+}
 
 interface PreservedAccount {
 	id: string;
@@ -32,26 +32,53 @@ function deletePath(path: string) {
 	rmSync(path, { recursive: true, force: true });
 }
 
-function deleteDbFiles() {
-	for (const path of [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`]) {
+function deleteDbFiles(orgId: string) {
+	const targetDbPath = dbPath(orgId);
+	for (const path of [
+		targetDbPath,
+		`${targetDbPath}-wal`,
+		`${targetDbPath}-shm`,
+	]) {
 		rmSync(path, { force: true });
 	}
 }
 
-function parseMode(argv = process.argv): ResetMode {
-	const mode = argv[2] ?? "all";
-	if (mode === "all" || mode === "messages" || mode === "jobs") {
-		return mode;
+function parseArgs(argv = process.argv): ParsedArgs {
+	const args = argv.slice(2);
+	let mode: ResetMode = "all";
+	let orgId = defaultOrgId();
+
+	for (let index = 0; index < args.length; index += 1) {
+		const arg = args[index];
+		if (arg === "--") {
+			continue;
+		}
+		if (arg === "--org") {
+			const value = args[index + 1]?.trim();
+			if (!value) {
+				throw new Error("Missing value for --org");
+			}
+			orgId = value;
+			index += 1;
+			continue;
+		}
+		if (arg === "all" || arg === "messages" || arg === "jobs") {
+			mode = arg;
+			continue;
+		}
+		throw new Error(`Unsupported db reset arg: ${arg}`);
 	}
-	throw new Error(`Unsupported db reset mode: ${mode}`);
+
+	return { mode, orgId };
 }
 
-function loadPreservedAccounts(): PreservedAccount[] {
-	if (!existsSync(DB_PATH)) {
+function loadPreservedAccounts(orgId: string): PreservedAccount[] {
+	const targetDbPath = dbPath(orgId);
+	if (!existsSync(targetDbPath)) {
 		return [];
 	}
 
-	const sqlite = new Database(DB_PATH, { readonly: true });
+	const sqlite = new Database(targetDbPath, { readonly: true });
 	try {
 		const accountsTable = sqlite
 			.prepare(
@@ -98,49 +125,45 @@ function loadPreservedAccounts(): PreservedAccount[] {
 	}
 }
 
-function deleteRawMessageDirs() {
-	if (!existsSync(ACCOUNTS_DIR)) {
+function deleteRawMessageDirs(orgId: string) {
+	const targetAccountsDir = accountsDir(orgId);
+	if (!existsSync(targetAccountsDir)) {
 		return;
 	}
 
-	for (const entry of readdirSync(ACCOUNTS_DIR, { withFileTypes: true })) {
+	for (const entry of readdirSync(targetAccountsDir, { withFileTypes: true })) {
 		if (!entry.isDirectory()) {
 			continue;
 		}
 
-		deletePath(join(ACCOUNTS_DIR, entry.name, "raw"));
+		deletePath(join(targetAccountsDir, entry.name, "raw"));
 	}
 }
 
-async function resetAll() {
-	await resetDb();
-	deleteDbFiles();
-	deletePath(ACCOUNTS_DIR);
-	deletePath(resolve(DATA_DIR, "imports"));
-	deletePath(resolve(DATA_DIR, "tmp", "oauth"));
+async function resetAll(orgId: string) {
+	await resetDb(orgId);
+	deleteDbFiles(orgId);
+	deletePath(accountsDir(orgId));
 
 	return {
 		mode: "all" as const,
+		orgId,
 		deletedDbFiles: true,
 		deletedAccountsDir: true,
-		deletedImportsDir: true,
-		deletedTempOAuthDir: true,
 	};
 }
 
-async function resetMessages() {
-	const preservedAccounts = loadPreservedAccounts();
-	await resetDb();
+async function resetMessages(orgId: string) {
+	const preservedAccounts = loadPreservedAccounts(orgId);
+	await resetDb(orgId);
 
-	deleteDbFiles();
-	deleteRawMessageDirs();
-	deletePath(resolve(DATA_DIR, "imports"));
-	deletePath(resolve(DATA_DIR, "tmp", "oauth"));
+	deleteDbFiles(orgId);
+	deleteRawMessageDirs(orgId);
 
 	ensureStorageDirs();
-	runMigrations();
+	runMigrations(orgId);
 
-	const db = getDb();
+	const db = getDb(orgId);
 	const restoredAt = nowIso();
 	for (const account of preservedAccounts) {
 		await db
@@ -178,6 +201,7 @@ async function resetMessages() {
 
 	return {
 		mode: "messages" as const,
+		orgId,
 		preservedAccounts: preservedAccounts.length,
 		queuedFullSyncJobs,
 		preservedOAuthTokens: true,
@@ -186,17 +210,19 @@ async function resetMessages() {
 	};
 }
 
-async function resetJobs() {
-	await resetDb();
-	if (!existsSync(DB_PATH)) {
+async function resetJobs(orgId: string) {
+	await resetDb(orgId);
+	const targetDbPath = dbPath(orgId);
+	if (!existsSync(targetDbPath)) {
 		return {
 			mode: "jobs" as const,
+			orgId,
 			deletedJobs: 0,
 			hadDatabase: false,
 		};
 	}
 
-	const sqlite = new Database(DB_PATH);
+	const sqlite = new Database(targetDbPath);
 	try {
 		const jobsTable = sqlite
 			.prepare(
@@ -206,6 +232,7 @@ async function resetJobs() {
 		if (!jobsTable) {
 			return {
 				mode: "jobs" as const,
+				orgId,
 				deletedJobs: 0,
 				hadDatabase: true,
 			};
@@ -217,6 +244,7 @@ async function resetJobs() {
 		sqlite.prepare("DELETE FROM jobs").run();
 		return {
 			mode: "jobs" as const,
+			orgId,
 			deletedJobs: Number(countRow.count ?? 0),
 			hadDatabase: true,
 		};
@@ -225,13 +253,14 @@ async function resetJobs() {
 	}
 }
 
-export async function main(_trace?: LogTrace, mode = parseMode()) {
+export async function main(_trace?: LogTrace, argv = process.argv) {
+	const args = parseArgs(argv);
 	const summary =
-		mode === "all"
-			? await resetAll()
-			: mode === "messages"
-				? await resetMessages()
-				: await resetJobs();
+		args.mode === "all"
+			? await resetAll(args.orgId)
+			: args.mode === "messages"
+				? await resetMessages(args.orgId)
+				: await resetJobs(args.orgId);
 
 	console.log(JSON.stringify(summary, null, 2));
 }

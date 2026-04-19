@@ -30,6 +30,93 @@ interface GoogleOAuthStateRecord {
 	label: string;
 	flow?: "connect" | "reconnect";
 	accountId?: string;
+	ownerPrincipalEmail?: string;
+}
+
+interface GoogleOAuthErrorPayload {
+	error?: string;
+	error_description?: string;
+}
+
+export const GOOGLE_OAUTH_BOOTSTRAP_ERROR_PREFIX =
+	"Google OAuth client credentials were rejected by Google.";
+
+export class GoogleOAuthBootstrapError extends Error {
+	statusCode: number | null;
+	providerError: string | null;
+	providerErrorDescription: string | null;
+
+	constructor(
+		message: string,
+		input?: Partial<{
+			statusCode: number | null;
+			providerError: string | null;
+			providerErrorDescription: string | null;
+		}>,
+	) {
+		super(message);
+		this.name = "GoogleOAuthBootstrapError";
+		this.statusCode = input?.statusCode ?? null;
+		this.providerError = input?.providerError ?? null;
+		this.providerErrorDescription = input?.providerErrorDescription ?? null;
+	}
+}
+
+export class GoogleOAuthProviderError extends Error {
+	statusCode: number;
+	providerError: string | null;
+	providerErrorDescription: string | null;
+	retryable: boolean;
+
+	constructor(
+		message: string,
+		input: {
+			statusCode: number;
+			providerError?: string | null;
+			providerErrorDescription?: string | null;
+			retryable?: boolean;
+		},
+	) {
+		super(message);
+		this.name = "GoogleOAuthProviderError";
+		this.statusCode = input.statusCode;
+		this.providerError = input.providerError ?? null;
+		this.providerErrorDescription = input.providerErrorDescription ?? null;
+		this.retryable = input.retryable ?? false;
+	}
+}
+
+function googleOAuthBootstrapRejectedMessage() {
+	return `${GOOGLE_OAUTH_BOOTSTRAP_ERROR_PREFIX} Verify GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET for redirect URL ${GOOGLE_OAUTH.redirectUrl}. Start local server with mise run dev.`;
+}
+
+export function isGoogleOAuthBootstrapErrorMessage(
+	message: string | null | undefined,
+) {
+	return (
+		typeof message === "string" &&
+		message.includes(GOOGLE_OAUTH_BOOTSTRAP_ERROR_PREFIX)
+	);
+}
+
+function requireGoogleOAuthEnv(
+	name: "GOOGLE_OAUTH_CLIENT_ID" | "GOOGLE_OAUTH_CLIENT_SECRET",
+) {
+	const value =
+		name === "GOOGLE_OAUTH_CLIENT_ID"
+			? GOOGLE_OAUTH.clientId
+			: GOOGLE_OAUTH.clientSecret;
+	if (!value) {
+		throw new GoogleOAuthBootstrapError(
+			`Missing required Google OAuth bootstrap env: ${name}. Run the server through mise so secrets.enc.yaml is loaded, or provide the variable through deployment runtime env.`,
+		);
+	}
+	return value;
+}
+
+export function assertGoogleOAuthBootstrapEnv() {
+	requireGoogleOAuthEnv("GOOGLE_OAUTH_CLIENT_ID");
+	requireGoogleOAuthEnv("GOOGLE_OAUTH_CLIENT_SECRET");
 }
 
 export function isOAuthConfigured() {
@@ -59,6 +146,70 @@ function generateCodeChallenge(verifier: string) {
 	return base64url(createHash("sha256").update(verifier).digest());
 }
 
+async function readGoogleOAuthErrorPayload(response: Response) {
+	const text = await response.text();
+	if (!text) {
+		return {
+			providerError: null,
+			providerErrorDescription: null,
+		};
+	}
+	try {
+		const payload = JSON.parse(text) as GoogleOAuthErrorPayload;
+		return {
+			providerError: typeof payload.error === "string" ? payload.error : null,
+			providerErrorDescription:
+				typeof payload.error_description === "string"
+					? payload.error_description
+					: null,
+		};
+	} catch {
+		return {
+			providerError: null,
+			providerErrorDescription: null,
+		};
+	}
+}
+
+function buildGoogleOAuthEndpointError(
+	operation: "exchange" | "refresh",
+	input: {
+		statusCode: number;
+		providerError: string | null;
+		providerErrorDescription: string | null;
+	},
+) {
+	if (input.providerError === "invalid_client") {
+		return new GoogleOAuthBootstrapError(
+			googleOAuthBootstrapRejectedMessage(),
+			{
+				statusCode: input.statusCode,
+				providerError: input.providerError,
+				providerErrorDescription: input.providerErrorDescription,
+			},
+		);
+	}
+
+	const messagePrefix =
+		operation === "exchange"
+			? "Google OAuth token exchange failed."
+			: "Google OAuth token refresh failed.";
+	let message = messagePrefix;
+	if (input.providerError === "invalid_grant") {
+		message = `${messagePrefix} Google returned invalid_grant.`;
+	} else if (input.providerError) {
+		message = `${messagePrefix} Google returned ${input.providerError}.`;
+	} else {
+		message = `${messagePrefix} Google returned HTTP ${input.statusCode}.`;
+	}
+	return new GoogleOAuthProviderError(message, {
+		statusCode: input.statusCode,
+		providerError: input.providerError,
+		providerErrorDescription: input.providerErrorDescription,
+		retryable: input.statusCode === 429 || input.statusCode >= 500,
+	});
+}
+
 export function buildAuthUrl(
 	input:
 		| string
@@ -66,6 +217,7 @@ export function buildAuthUrl(
 				label: string;
 				flow?: "connect" | "reconnect";
 				accountId?: string;
+				ownerPrincipalEmail?: string;
 		  },
 ) {
 	const normalizedInput =
@@ -78,13 +230,15 @@ export function buildAuthUrl(
 					label: input.label,
 					flow: input.flow ?? "connect",
 					accountId: input.accountId,
+					ownerPrincipalEmail: input.ownerPrincipalEmail,
 				};
+	assertGoogleOAuthBootstrapEnv();
 	const state = base64url(randomBytes(16));
 	const codeVerifier = generateCodeVerifier();
 	const codeChallenge = generateCodeChallenge(codeVerifier);
 
 	const params = new URLSearchParams({
-		client_id: GOOGLE_OAUTH.clientId,
+		client_id: requireGoogleOAuthEnv("GOOGLE_OAUTH_CLIENT_ID"),
 		redirect_uri: GOOGLE_OAUTH.redirectUrl,
 		response_type: "code",
 		scope: GOOGLE_OAUTH.scope,
@@ -104,6 +258,7 @@ export function buildAuthUrl(
 			label: normalizedInput.label,
 			flow: normalizedInput.flow,
 			accountId: normalizedInput.accountId,
+			ownerPrincipalEmail: normalizedInput.ownerPrincipalEmail,
 		} satisfies GoogleOAuthStateRecord),
 	);
 
@@ -128,12 +283,13 @@ export function loadOAuthState(state: string) {
 }
 
 export async function exchangeCode(code: string, codeVerifier: string) {
+	assertGoogleOAuthBootstrapEnv();
 	const response = await fetch(TOKEN_ENDPOINT, {
 		method: "POST",
 		headers: { "Content-Type": "application/x-www-form-urlencoded" },
 		body: new URLSearchParams({
-			client_id: GOOGLE_OAUTH.clientId,
-			client_secret: GOOGLE_OAUTH.clientSecret,
+			client_id: requireGoogleOAuthEnv("GOOGLE_OAUTH_CLIENT_ID"),
+			client_secret: requireGoogleOAuthEnv("GOOGLE_OAUTH_CLIENT_SECRET"),
 			code,
 			code_verifier: codeVerifier,
 			grant_type: "authorization_code",
@@ -142,8 +298,10 @@ export async function exchangeCode(code: string, codeVerifier: string) {
 	});
 
 	if (!response.ok) {
-		const text = await response.text();
-		throw new Error(`Token exchange failed: ${response.status} ${text}`);
+		throw buildGoogleOAuthEndpointError("exchange", {
+			statusCode: response.status,
+			...(await readGoogleOAuthErrorPayload(response)),
+		});
 	}
 
 	return (await response.json()) as {
@@ -156,20 +314,23 @@ export async function exchangeCode(code: string, codeVerifier: string) {
 }
 
 export async function refreshAccessToken(refreshToken: string) {
+	assertGoogleOAuthBootstrapEnv();
 	const response = await fetch(TOKEN_ENDPOINT, {
 		method: "POST",
 		headers: { "Content-Type": "application/x-www-form-urlencoded" },
 		body: new URLSearchParams({
-			client_id: GOOGLE_OAUTH.clientId,
-			client_secret: GOOGLE_OAUTH.clientSecret,
+			client_id: requireGoogleOAuthEnv("GOOGLE_OAUTH_CLIENT_ID"),
+			client_secret: requireGoogleOAuthEnv("GOOGLE_OAUTH_CLIENT_SECRET"),
 			refresh_token: refreshToken,
 			grant_type: "refresh_token",
 		}),
 	});
 
 	if (!response.ok) {
-		const text = await response.text();
-		throw new Error(`Token refresh failed: ${response.status} ${text}`);
+		throw buildGoogleOAuthEndpointError("refresh", {
+			statusCode: response.status,
+			...(await readGoogleOAuthErrorPayload(response)),
+		});
 	}
 
 	return (await response.json()) as {
@@ -258,7 +419,13 @@ export async function ensureFreshToken(
 		return updated;
 	} catch (error) {
 		trace.fail("oauth.refresh.failed", error);
-		return null;
+		if (
+			error instanceof GoogleOAuthProviderError &&
+			error.providerError === "invalid_grant"
+		) {
+			return null;
+		}
+		throw error;
 	}
 }
 

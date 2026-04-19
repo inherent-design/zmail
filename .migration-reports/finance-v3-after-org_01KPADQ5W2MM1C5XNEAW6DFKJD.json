@@ -1,0 +1,327 @@
+{
+  "orgId": "org_01KPADQ5W2MM1C5XNEAW6DFKJD",
+  "capturedAt": "2026-04-18T22:06:58.513Z",
+  "tables": {
+    "accounts": 4,
+    "messages": 11452,
+    "classification_results": 0,
+    "message_labels": 0,
+    "reviews": 0,
+    "message_secondary_results": 0,
+    "message_secondary_heads": 0,
+    "message_category_assignments": 0,
+    "message_category_assignment_heads": 0,
+    "finance_event_evidence": 0,
+    "finance_event_candidates": 0,
+    "finance_document_candidates": 0,
+    "finance_yearly_rollups": 0,
+    "finance_yearly_subcategory_rollups": 0,
+    "finance_ledger_entries": 0,
+    "finance_ledger_entry_sources": 0,
+    "finance_patterns": 0,
+    "finance_export_runs": 0,
+    "finance_export_items": 0,
+    "jobs": 844,
+    "runtime_events": 31,
+    "finance_model_migration_runs": 1,
+    "finance_v3_archive_rows": 74672
+  },
+  "labelVersions": [],
+  "secondaryVersions": [],
+  "archiveByTable": [
+    {
+      "sourceTable": "classification_results",
+      "count": 20815
+    },
+    {
+      "sourceTable": "finance_document_candidates",
+      "count": 796
+    },
+    {
+      "sourceTable": "finance_event_candidates",
+      "count": 553
+    },
+    {
+      "sourceTable": "finance_event_evidence",
+      "count": 1429
+    },
+    {
+      "sourceTable": "finance_yearly_rollups",
+      "count": 21
+    },
+    {
+      "sourceTable": "finance_yearly_subcategory_rollups",
+      "count": 31
+    },
+    {
+      "sourceTable": "message_category_assignment_heads",
+      "count": 10742
+    },
+    {
+      "sourceTable": "message_category_assignments",
+      "count": 22790
+    },
+    {
+      "sourceTable": "message_labels",
+      "count": 10742
+    },
+    {
+      "sourceTable": "message_secondary_heads",
+      "count": 2094
+    },
+    {
+      "sourceTable": "message_secondary_results",
+      "count": 4601
+    },
+    {
+      "sourceTable": "reviews",
+      "count": 58
+    }
+  ],
+  "jobs": [
+    {
+      "kind": "classify_account_backlog",
+      "status": "complete",
+      "count": 105
+    },
+    {
+      "kind": "classify_account_backlog",
+      "status": "failed",
+      "count": 1
+    },
+    {
+      "kind": "classify_account_backlog",
+      "status": "queued",
+      "count": 4
+    },
+    {
+      "kind": "classify_finance_backlog",
+      "status": "complete",
+      "count": 80
+    },
+    {
+      "kind": "classify_finance_backlog",
+      "status": "queued",
+      "count": 4
+    },
+    {
+      "kind": "import_operator_registry",
+      "status": "complete",
+      "count": 1
+    },
+    {
+      "kind": "rebuild_category_assignments",
+      "status": "complete",
+      "count": 4
+    },
+    {
+      "kind": "rebuild_finance_knowledge",
+      "status": "complete",
+      "count": 27
+    },
+    {
+      "kind": "rebuild_finance_knowledge",
+      "status": "queued",
+      "count": 1
+    },
+    {
+      "kind": "rebuild_finance_rollups",
+      "status": "complete",
+      "count": 27
+    },
+    {
+      "kind": "rebuild_finance_rollups",
+      "status": "queued",
+      "count": 1
+    },
+    {
+      "kind": "reconcile_registry_suggestions",
+      "status": "complete",
+      "count": 1
+    },
+    {
+      "kind": "sync_account_backfill",
+      "status": "complete",
+      "count": 44
+    },
+    {
+      "kind": "sync_account_backfill",
+      "status": "failed",
+      "count": 11
+    },
+    {
+      "kind": "sync_account_delta",
+      "status": "complete",
+      "count": 522
+    },
+    {
+      "kind": "sync_account_delta",
+      "status": "failed",
+      "count": 3
+    },
+    {
+      "kind": "sync_account_full",
+      "status": "complete",
+      "count": 4
+    },
+    {
+      "kind": "sync_account_full",
+      "status": "queued",
+      "count": 4
+    }
+  ],
+  "openJobs": [
+    {
+      "id": "0cd3ed53-37db-49f6-8ef2-f547af3f40ae",
+      "kind": "sync_account_full",
+      "scopeId": "c5fcb5f9-e46b-460d-8277-3d0160265e85",
+      "status": "queued",
+      "promptVersion": null,
+      "attempts": 0,
+      "lastError": null,
+      "createdAt": "2026-04-17T20:23:27.069Z"
+    },
+    {
+      "id": "4a7b15ec-e221-449a-9e78-518d9a3cd6ab",
+      "kind": "sync_account_full",
+      "scopeId": "c676d516-3350-42d3-89e9-eb4042f421eb",
+      "status": "queued",
+      "promptVersion": null,
+      "attempts": 0,
+      "lastError": null,
+      "createdAt": "2026-04-17T20:23:44.677Z"
+    },
+    {
+      "id": "3c9fff89-6fbb-4467-90ae-0902084a4beb",
+      "kind": "sync_account_full",
+      "scopeId": "13e5d47f-07ea-4e8f-bd45-f992a3210e4f",
+      "status": "queued",
+      "promptVersion": null,
+      "attempts": 0,
+      "lastError": null,
+      "createdAt": "2026-04-17T20:24:03.928Z"
+    },
+    {
+      "id": "22973e13-7b52-41b5-8c7f-f63eb1b94021",
+      "kind": "sync_account_full",
+      "scopeId": "bb57fb8f-5b38-4b24-84c8-f35da8170a7b",
+      "status": "queued",
+      "promptVersion": null,
+      "attempts": 0,
+      "lastError": null,
+      "createdAt": "2026-04-17T20:24:19.066Z"
+    },
+    {
+      "id": "c678bcca-b6ae-48e9-a7d3-d63d3f1d9d3a",
+      "kind": "rebuild_finance_knowledge",
+      "scopeId": "finance",
+      "status": "queued",
+      "promptVersion": "finance-knowledge-merge-v1",
+      "attempts": 0,
+      "lastError": null,
+      "createdAt": "2026-04-17T20:24:35.350Z"
+    },
+    {
+      "id": "7ba27ac3-4eea-481f-9161-cac1d5f824f7",
+      "kind": "rebuild_finance_rollups",
+      "scopeId": "finance_rollups",
+      "status": "queued",
+      "promptVersion": "finance-knowledge-merge-v1",
+      "attempts": 0,
+      "lastError": null,
+      "createdAt": "2026-04-17T20:24:35.350Z"
+    },
+    {
+      "id": "f8cdb4fe-40ad-4333-ad9e-da8ac3f9df3d",
+      "kind": "classify_account_backlog",
+      "scopeId": "13e5d47f-07ea-4e8f-bd45-f992a3210e4f",
+      "status": "queued",
+      "promptVersion": "classify-email-v3",
+      "attempts": 0,
+      "lastError": null,
+      "createdAt": "2026-04-18T22:04:55.671Z"
+    },
+    {
+      "id": "ec9cb41d-9f6e-4006-965c-a5e58051c8c7",
+      "kind": "classify_finance_backlog",
+      "scopeId": "13e5d47f-07ea-4e8f-bd45-f992a3210e4f",
+      "status": "queued",
+      "promptVersion": "finance-intel-v3",
+      "attempts": 0,
+      "lastError": null,
+      "createdAt": "2026-04-18T22:04:55.672Z"
+    },
+    {
+      "id": "1871cb1f-aabe-49ee-99d3-313383673c85",
+      "kind": "classify_account_backlog",
+      "scopeId": "bb57fb8f-5b38-4b24-84c8-f35da8170a7b",
+      "status": "queued",
+      "promptVersion": "classify-email-v3",
+      "attempts": 0,
+      "lastError": null,
+      "createdAt": "2026-04-18T22:04:55.674Z"
+    },
+    {
+      "id": "8ee52239-8a45-4972-85d7-368619fbc471",
+      "kind": "classify_finance_backlog",
+      "scopeId": "bb57fb8f-5b38-4b24-84c8-f35da8170a7b",
+      "status": "queued",
+      "promptVersion": "finance-intel-v3",
+      "attempts": 0,
+      "lastError": null,
+      "createdAt": "2026-04-18T22:04:55.674Z"
+    },
+    {
+      "id": "c067d9cf-cf52-4325-b5f8-2af6b955c2a2",
+      "kind": "classify_finance_backlog",
+      "scopeId": "c5fcb5f9-e46b-460d-8277-3d0160265e85",
+      "status": "queued",
+      "promptVersion": "finance-intel-v3",
+      "attempts": 0,
+      "lastError": null,
+      "createdAt": "2026-04-18T22:04:55.676Z"
+    },
+    {
+      "id": "49a99eeb-045c-4950-9b9b-e912d57362c5",
+      "kind": "classify_account_backlog",
+      "scopeId": "c676d516-3350-42d3-89e9-eb4042f421eb",
+      "status": "queued",
+      "promptVersion": "classify-email-v3",
+      "attempts": 0,
+      "lastError": null,
+      "createdAt": "2026-04-18T22:04:55.677Z"
+    },
+    {
+      "id": "b7baf152-e1ef-4a1c-acda-8796c1747827",
+      "kind": "classify_finance_backlog",
+      "scopeId": "c676d516-3350-42d3-89e9-eb4042f421eb",
+      "status": "queued",
+      "promptVersion": "finance-intel-v3",
+      "attempts": 0,
+      "lastError": null,
+      "createdAt": "2026-04-18T22:04:55.677Z"
+    },
+    {
+      "id": "a27a28b2-a5d4-4953-a5f9-3fbd172e7735",
+      "kind": "classify_account_backlog",
+      "scopeId": "c5fcb5f9-e46b-460d-8277-3d0160265e85",
+      "status": "queued",
+      "promptVersion": "classify-email-v3",
+      "attempts": 0,
+      "lastError": null,
+      "createdAt": "2026-04-18T22:06:39.649Z"
+    }
+  ],
+  "migrationRuns": [
+    {
+      "id": "337c3daa-732f-4b3e-8418-ec77fc7c32ee",
+      "org_id": "org_01KPADQ5W2MM1C5XNEAW6DFKJD",
+      "status": "reclassify_queued",
+      "archived_at": "2026-04-18T22:04:54.253Z",
+      "completed_at": null,
+      "cleaned_at": null,
+      "options_json": "{\"archive\":true,\"reclassify\":true,\"clean\":false}",
+      "counts_json": "[{\"table\":\"classification_results\",\"rows\":20815},{\"table\":\"message_labels\",\"rows\":10742},{\"table\":\"reviews\",\"rows\":58},{\"table\":\"message_secondary_results\",\"rows\":4601},{\"table\":\"message_secondary_heads\",\"rows\":2094},{\"table\":\"message_category_assignments\",\"rows\":22790},{\"table\":\"message_category_assignment_heads\",\"rows\":10742},{\"table\":\"finance_event_evidence\",\"rows\":1429},{\"table\":\"finance_event_candidates\",\"rows\":553},{\"table\":\"finance_document_candidates\",\"rows\":796},{\"table\":\"finance_yearly_subcategory_rollups\",\"rows\":31},{\"table\":\"finance_yearly_rollups\",\"rows\":21},{\"table\":\"finance_export_items\",\"rows\":0},{\"table\":\"finance_export_runs\",\"rows\":0},{\"table\":\"finance_ledger_entry_sources\",\"rows\":0},{\"table\":\"finance_ledger_entries\",\"rows\":0},{\"table\":\"finance_patterns\",\"rows\":0}]"
+    }
+  ]
+}

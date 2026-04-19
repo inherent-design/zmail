@@ -13,6 +13,23 @@ describe("google-oauth", () => {
 		expect(mod.isOAuthConfigured()).toBe(false);
 	});
 
+	it("treats blank and placeholder bootstrap env as missing", async () => {
+		const runtime = await createTestRuntime();
+		process.env.GOOGLE_OAUTH_CLIENT_ID = "  ";
+		process.env.GOOGLE_OAUTH_CLIENT_SECRET =
+			"REPLACE_ME_GOOGLE_OAUTH_CLIENT_SECRET";
+		vi.resetModules();
+		const mod =
+			await runtime.importFresh<typeof import("#/lib/google-oauth")>(
+				"#/lib/google-oauth",
+			);
+		expect(mod.isOAuthConfigured()).toBe(false);
+		expect(mod.missingOAuthVars()).toEqual([
+			"GOOGLE_OAUTH_CLIENT_ID",
+			"GOOGLE_OAUTH_CLIENT_SECRET",
+		]);
+	});
+
 	it("missingOAuthVars returns both var names when unset", async () => {
 		await createTestRuntime();
 		const mod = await import("#/lib/google-oauth");
@@ -285,6 +302,8 @@ describe("google-oauth", () => {
 
 	it("exchangeCode throws on non-ok response", async () => {
 		const runtime = await createTestRuntime();
+		process.env.GOOGLE_OAUTH_CLIENT_ID = "cid";
+		process.env.GOOGLE_OAUTH_CLIENT_SECRET = "csecret";
 		vi.resetModules();
 
 		vi.spyOn(globalThis, "fetch").mockResolvedValue({
@@ -298,8 +317,37 @@ describe("google-oauth", () => {
 				"#/lib/google-oauth",
 			);
 		await expect(mod.exchangeCode("bad", "bad")).rejects.toThrow(
-			"Token exchange failed",
+			"Google OAuth token exchange failed",
 		);
+	});
+
+	it("exchangeCode maps invalid_client to a bootstrap error", async () => {
+		const runtime = await createTestRuntime();
+		process.env.GOOGLE_OAUTH_CLIENT_ID = "cid";
+		process.env.GOOGLE_OAUTH_CLIENT_SECRET = "csecret";
+		vi.resetModules();
+
+		vi.spyOn(globalThis, "fetch").mockResolvedValue({
+			ok: false,
+			status: 401,
+			text: async () =>
+				JSON.stringify({
+					error: "invalid_client",
+					error_description: "The provided client secret is invalid.",
+				}),
+		} as Response);
+
+		const mod =
+			await runtime.importFresh<typeof import("#/lib/google-oauth")>(
+				"#/lib/google-oauth",
+			);
+
+		await expect(mod.exchangeCode("bad", "bad")).rejects.toMatchObject({
+			name: "GoogleOAuthBootstrapError",
+			message: expect.stringContaining(
+				"Google OAuth client credentials were rejected by Google.",
+			),
+		});
 	});
 
 	it("refreshAccessToken calls fetch with correct params", async () => {
@@ -334,6 +382,8 @@ describe("google-oauth", () => {
 
 	it("refreshAccessToken throws on non-ok response", async () => {
 		const runtime = await createTestRuntime();
+		process.env.GOOGLE_OAUTH_CLIENT_ID = "cid";
+		process.env.GOOGLE_OAUTH_CLIENT_SECRET = "csecret";
 		vi.resetModules();
 
 		vi.spyOn(globalThis, "fetch").mockResolvedValue({
@@ -347,8 +397,37 @@ describe("google-oauth", () => {
 				"#/lib/google-oauth",
 			);
 		await expect(mod.refreshAccessToken("bad-token")).rejects.toThrow(
-			"Token refresh failed",
+			"Google OAuth token refresh failed",
 		);
+	});
+
+	it("refreshAccessToken maps invalid_client to a bootstrap error", async () => {
+		const runtime = await createTestRuntime();
+		process.env.GOOGLE_OAUTH_CLIENT_ID = "cid";
+		process.env.GOOGLE_OAUTH_CLIENT_SECRET = "csecret";
+		vi.resetModules();
+
+		vi.spyOn(globalThis, "fetch").mockResolvedValue({
+			ok: false,
+			status: 401,
+			text: async () =>
+				JSON.stringify({
+					error: "invalid_client",
+					error_description: "The provided client secret is invalid.",
+				}),
+		} as Response);
+
+		const mod =
+			await runtime.importFresh<typeof import("#/lib/google-oauth")>(
+				"#/lib/google-oauth",
+			);
+
+		await expect(mod.refreshAccessToken("bad-token")).rejects.toMatchObject({
+			name: "GoogleOAuthBootstrapError",
+			message: expect.stringContaining(
+				"Google OAuth client credentials were rejected by Google.",
+			),
+		});
 	});
 
 	it("fetchEmailIdentity returns email on success", async () => {
@@ -413,6 +492,8 @@ describe("google-oauth", () => {
 
 	it("ensureFreshToken refreshes expired token", async () => {
 		const runtime = await createTestRuntime();
+		process.env.GOOGLE_OAUTH_CLIENT_ID = "cid";
+		process.env.GOOGLE_OAUTH_CLIENT_SECRET = "csecret";
 		vi.resetModules();
 		const log = createMockLogModule();
 		vi.doMock("#/lib/log", () => log.module);
@@ -479,8 +560,10 @@ describe("google-oauth", () => {
 		);
 	});
 
-	it("ensureFreshToken returns null when refresh fails", async () => {
+	it("ensureFreshToken returns null when refresh fails with invalid_grant", async () => {
 		const runtime = await createTestRuntime();
+		process.env.GOOGLE_OAUTH_CLIENT_ID = "cid";
+		process.env.GOOGLE_OAUTH_CLIENT_SECRET = "csecret";
 		vi.resetModules();
 		const log = createMockLogModule();
 		vi.doMock("#/lib/log", () => log.module);
@@ -488,7 +571,11 @@ describe("google-oauth", () => {
 		vi.spyOn(globalThis, "fetch").mockResolvedValue({
 			ok: false,
 			status: 401,
-			text: async () => "bad",
+			text: async () =>
+				JSON.stringify({
+					error: "invalid_grant",
+					error_description: "expired",
+				}),
 		} as Response);
 
 		const mod =
@@ -511,6 +598,101 @@ describe("google-oauth", () => {
 
 		const result = await mod.ensureFreshToken("acct-fail");
 		expect(result).toBeNull();
+		expect(log.records).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					type: "fail",
+					event: "oauth.refresh.failed",
+				}),
+			]),
+		);
+	});
+
+	it("ensureFreshToken throws when Google rejects bootstrap credentials", async () => {
+		const runtime = await createTestRuntime();
+		process.env.GOOGLE_OAUTH_CLIENT_ID = "cid";
+		process.env.GOOGLE_OAUTH_CLIENT_SECRET = "csecret";
+		vi.resetModules();
+		const log = createMockLogModule();
+		vi.doMock("#/lib/log", () => log.module);
+
+		vi.spyOn(globalThis, "fetch").mockResolvedValue({
+			ok: false,
+			status: 401,
+			text: async () =>
+				JSON.stringify({
+					error: "invalid_client",
+					error_description: "bad secret",
+				}),
+		} as Response);
+
+		const mod =
+			await runtime.importFresh<typeof import("#/lib/google-oauth")>(
+				"#/lib/google-oauth",
+			);
+
+		mod.writeOAuthToken("acct-bootstrap", {
+			version: 1,
+			provider: "google",
+			emailAddress: "test@example.com",
+			accessToken: "old",
+			refreshToken: "refresh",
+			expiresAt: new Date(Date.now() - 1000).toISOString(),
+			scope: ["openid"],
+			tokenType: "Bearer",
+			updatedAt: new Date().toISOString(),
+		});
+
+		await expect(mod.ensureFreshToken("acct-bootstrap")).rejects.toMatchObject({
+			name: "GoogleOAuthBootstrapError",
+			message: expect.stringContaining(
+				"Google OAuth client credentials were rejected by Google.",
+			),
+		});
+		expect(log.records).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					type: "fail",
+					event: "oauth.refresh.failed",
+				}),
+			]),
+		);
+	});
+
+	it("ensureFreshToken rethrows retryable refresh failures", async () => {
+		const runtime = await createTestRuntime();
+		process.env.GOOGLE_OAUTH_CLIENT_ID = "cid";
+		process.env.GOOGLE_OAUTH_CLIENT_SECRET = "csecret";
+		vi.resetModules();
+		const log = createMockLogModule();
+		vi.doMock("#/lib/log", () => log.module);
+
+		vi.spyOn(globalThis, "fetch").mockResolvedValue({
+			ok: false,
+			status: 503,
+			text: async () => "unavailable",
+		} as Response);
+
+		const mod =
+			await runtime.importFresh<typeof import("#/lib/google-oauth")>(
+				"#/lib/google-oauth",
+			);
+
+		mod.writeOAuthToken("acct-retry", {
+			version: 1,
+			provider: "google",
+			emailAddress: "test@example.com",
+			accessToken: "old",
+			refreshToken: "refresh",
+			expiresAt: new Date(Date.now() - 1000).toISOString(),
+			scope: ["openid"],
+			tokenType: "Bearer",
+			updatedAt: new Date().toISOString(),
+		});
+
+		await expect(mod.ensureFreshToken("acct-retry")).rejects.toThrow(
+			"Google OAuth token refresh failed",
+		);
 		expect(log.records).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({

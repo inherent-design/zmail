@@ -266,6 +266,18 @@ describe("overseer", () => {
 				updated_at: "2026-01-01T00:00:00.000Z",
 			})
 			.execute();
+		await db
+			.insertInto("overseer_profiles")
+			.values({
+				id: "profile-rebuild",
+				account_id: "acct-1",
+				built_from_messages: 0,
+				promoted_tags_json: "[]",
+				prompt_preamble: "none",
+				profile_json: "{}",
+				created_at: "2026-01-01T00:00:00.000Z",
+			})
+			.execute();
 
 		const overseer =
 			await runtime.importFresh<typeof import("#/lib/overseer")>(

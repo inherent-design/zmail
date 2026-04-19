@@ -10,6 +10,7 @@ import {
 	buildContentSha256,
 	buildThreadKey,
 	coerceReceivedAt,
+	coerceReceivedAtString,
 	normalizeBodyText,
 	toAddressJson,
 } from "#/lib/normalize";
@@ -179,6 +180,44 @@ export interface ParsedImapMessage {
 	}>;
 }
 
+function receivedHeaderCandidates(value: unknown): string[] {
+	if (typeof value === "string") {
+		return [value];
+	}
+	if (Array.isArray(value)) {
+		return value.flatMap((entry) => receivedHeaderCandidates(entry));
+	}
+	if (value && typeof value === "object" && Symbol.iterator in value) {
+		return [...(value as Iterable<unknown>)].flatMap((entry) =>
+			receivedHeaderCandidates(entry),
+		);
+	}
+	return [];
+}
+
+function coerceReceivedAtFromHeaders(input?: {
+	get?: (name: string) => unknown;
+}): string | null {
+	if (!input?.get) {
+		return null;
+	}
+	const receivedHeaders = receivedHeaderCandidates(input.get("received"));
+	for (const header of receivedHeaders) {
+		const parts = header
+			.split(";")
+			.map((part) => part.trim())
+			.filter(Boolean)
+			.reverse();
+		for (const part of parts) {
+			const receivedAt = coerceReceivedAtString(part);
+			if (receivedAt) {
+				return receivedAt;
+			}
+		}
+	}
+	return null;
+}
+
 export async function parseRawMessage(
 	raw: Buffer,
 	_rawSha256: string,
@@ -218,8 +257,11 @@ export async function parseRawMessage(
 				isInline: att.contentDisposition === "inline" ? 1 : 0,
 			}),
 		);
+		const parsedDateReceivedAt = coerceReceivedAt(parsed.date);
 		const receivedAt =
-			coerceReceivedAt(parsed.date) ?? receivedAtFallback ?? null;
+			parsedDateReceivedAt ??
+			(parsed.date ? coerceReceivedAtFromHeaders(parsed.headers) : null) ??
+			coerceReceivedAtString(receivedAtFallback);
 		const senderAddress = parsed.from?.value?.[0]?.address ?? null;
 		const subject = parsed.subject ?? null;
 		const contentSha256 = buildContentSha256({
@@ -261,7 +303,7 @@ export async function parseRawMessage(
 	} catch (error) {
 		const parseErrorReason =
 			error instanceof Error ? error.message : String(error);
-		const receivedAt = receivedAtFallback ?? null;
+		const receivedAt = coerceReceivedAtString(receivedAtFallback);
 		return {
 			id: randomUUID(),
 			messageId: `<${randomUUID()}@parse-error>`,

@@ -6,8 +6,13 @@ import { parse, stringify } from "yaml";
 
 import { APP_CONFIG, nowIso } from "#/lib/config";
 import { getDb, jsonText, safeJsonParse } from "#/lib/db";
+import { queueJobIdempotent } from "#/lib/jobs";
+import { publishActionEvent } from "#/lib/runtime-events";
 import {
-	normalizeMessageLabel,
+	type FinanceAccountMapping,
+	type FinanceIntelV3,
+	financeAccountMappingFileSchema,
+	parseCurrentMessageLabel,
 	type RegistryFinancialAccount,
 	type RegistryIdentity,
 	type RegistryInstitution,
@@ -28,6 +33,7 @@ export interface OperatorRegistrySnapshot {
 	institutions: RegistryInstitution[];
 	financialAccounts: RegistryFinancialAccount[];
 	senderRules: RegistrySenderRule[];
+	accountMappings: FinanceAccountMapping[];
 }
 
 export interface RegistryMatchResult {
@@ -36,6 +42,7 @@ export interface RegistryMatchResult {
 	institutions: RegistryInstitution[];
 	financialAccounts: RegistryFinancialAccount[];
 	senderRules: RegistrySenderRule[];
+	accountMappings: FinanceAccountMapping[];
 }
 
 function normalizeUnique(values: string[]) {
@@ -48,6 +55,12 @@ function normalizeUnique(values: string[]) {
 
 function sortById<T extends { id: string }>(rows: T[]) {
 	return [...rows].sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function sortByMappingKey<T extends { mappingKey: string }>(rows: T[]) {
+	return [...rows].sort((left, right) =>
+		left.mappingKey.localeCompare(right.mappingKey),
+	);
 }
 
 function normalizeRegistryIdentity(
@@ -97,6 +110,19 @@ function normalizeRegistrySenderRule(
 	};
 }
 
+function normalizeFinanceAccountMapping(
+	mapping: FinanceAccountMapping,
+): FinanceAccountMapping {
+	return {
+		...mapping,
+		mappingKey: mapping.mappingKey.trim(),
+		debitAccount: mapping.debitAccount?.trim() || null,
+		creditAccount: mapping.creditAccount?.trim() || null,
+		currency: mapping.currency?.trim() || null,
+		notes: mapping.notes?.trim() || null,
+	};
+}
+
 function buildEmptyRegistry(
 	baseDir = APP_CONFIG.registryDir,
 ): OperatorRegistrySnapshot {
@@ -104,12 +130,14 @@ function buildEmptyRegistry(
 	const institutions: RegistryInstitution[] = [];
 	const financialAccounts: RegistryFinancialAccount[] = [];
 	const senderRules: RegistrySenderRule[] = [];
+	const accountMappings: FinanceAccountMapping[] = [];
 	return {
 		sha256: buildRegistrySha256({
 			identities,
 			institutions,
 			financialAccounts,
 			senderRules,
+			accountMappings,
 		}),
 		importedAt: null,
 		sourceDir: baseDir,
@@ -117,6 +145,7 @@ function buildEmptyRegistry(
 		institutions,
 		financialAccounts,
 		senderRules,
+		accountMappings,
 	};
 }
 
@@ -139,7 +168,7 @@ function writeYamlIfMissing(path: string, value: unknown) {
 	if (existsSync(path)) {
 		return;
 	}
-	writeFileSync(path, `${stringify(value)}`.trimEnd() + "\n", "utf8");
+	writeFileSync(path, `${stringify(value).trimEnd()}\n`, "utf8");
 }
 
 export function getRegistryPaths(baseDir = APP_CONFIG.registryDir) {
@@ -148,18 +177,18 @@ export function getRegistryPaths(baseDir = APP_CONFIG.registryDir) {
 		institutions: resolve(baseDir, "institutions.yaml"),
 		financialAccounts: resolve(baseDir, "financial-accounts.yaml"),
 		senderRules: resolve(baseDir, "sender-rules.yaml"),
+		financeAccountMappings: resolve(baseDir, "finance-account-mappings.yaml"),
 	};
 }
 
-export function ensureOperatorRegistryFiles(
-	baseDir = APP_CONFIG.registryDir,
-) {
+export function ensureOperatorRegistryFiles(baseDir = APP_CONFIG.registryDir) {
 	mkdirSync(baseDir, { recursive: true });
 	const paths = getRegistryPaths(baseDir);
 	writeYamlIfMissing(paths.identities, []);
 	writeYamlIfMissing(paths.institutions, []);
 	writeYamlIfMissing(paths.financialAccounts, []);
 	writeYamlIfMissing(paths.senderRules, []);
+	writeYamlIfMissing(paths.financeAccountMappings, []);
 	return paths;
 }
 
@@ -168,6 +197,7 @@ export function buildRegistrySha256(input: {
 	institutions: RegistryInstitution[];
 	financialAccounts: RegistryFinancialAccount[];
 	senderRules: RegistrySenderRule[];
+	accountMappings: FinanceAccountMapping[];
 }) {
 	return createHash("sha256")
 		.update(
@@ -181,6 +211,9 @@ export function buildRegistrySha256(input: {
 				),
 				senderRules: sortById(
 					input.senderRules.map(normalizeRegistrySenderRule),
+				),
+				accountMappings: sortByMappingKey(
+					input.accountMappings.map(normalizeFinanceAccountMapping),
 				),
 			}),
 		)
@@ -217,17 +250,24 @@ export async function importOperatorRegistry(baseDir = APP_CONFIG.registryDir) {
 		(input) => registrySenderRuleFileSchema.parse(input),
 		[],
 	).map(normalizeRegistrySenderRule);
+	const accountMappings = loadYamlFile(
+		paths.financeAccountMappings,
+		(input) => financeAccountMappingFileSchema.parse(input),
+		[],
+	).map(normalizeFinanceAccountMapping);
 	const sha256 = buildRegistrySha256({
 		identities,
 		institutions,
 		financialAccounts,
 		senderRules,
+		accountMappings,
 	});
 	const counts = {
 		identities: identities.length,
 		institutions: institutions.length,
 		financialAccounts: financialAccounts.length,
 		senderRules: senderRules.length,
+		accountMappings: accountMappings.length,
 	};
 	const db = getDb();
 	const importedAt = nowIso();
@@ -237,6 +277,7 @@ export async function importOperatorRegistry(baseDir = APP_CONFIG.registryDir) {
 			.deleteFrom("registry_sender_rules")
 			.where("source_kind", "=", "operator")
 			.execute();
+		await trx.deleteFrom("finance_account_mappings").execute();
 		await trx
 			.deleteFrom("registry_financial_accounts")
 			.where("source_kind", "=", "operator")
@@ -327,6 +368,34 @@ export async function importOperatorRegistry(baseDir = APP_CONFIG.registryDir) {
 				.execute();
 		}
 
+		if (accountMappings.length > 0) {
+			await trx
+				.insertInto("finance_account_mappings")
+				.values(
+					accountMappings.map((mapping) => ({
+						id: randomUUID(),
+						mapping_key: mapping.mappingKey,
+						book: mapping.book,
+						account_name:
+							mapping.debitAccount ??
+							mapping.creditAccount ??
+							mapping.mappingKey,
+						account_type: "posting",
+						currency: mapping.currency,
+						confidence: mapping.confidence,
+						source_json: jsonText(mapping),
+						debit_account: mapping.debitAccount,
+						credit_account: mapping.creditAccount,
+						match_json: jsonText(mapping.match),
+						notes: mapping.notes,
+						source_path: paths.financeAccountMappings,
+						created_at: importedAt,
+						updated_at: importedAt,
+					})),
+				)
+				.execute();
+		}
+
 		await trx
 			.insertInto("registry_import_state")
 			.values({
@@ -372,12 +441,14 @@ export async function loadOperatorRegistry() {
 		institutions,
 		financialAccounts,
 		senderRules,
+		accountMappings,
 		importState,
 	] = await Promise.all([
 		db.selectFrom("registry_identities").selectAll().execute(),
 		db.selectFrom("registry_institutions").selectAll().execute(),
 		db.selectFrom("registry_financial_accounts").selectAll().execute(),
 		db.selectFrom("registry_sender_rules").selectAll().execute(),
+		db.selectFrom("finance_account_mappings").selectAll().execute(),
 		db
 			.selectFrom("registry_import_state")
 			.selectAll()
@@ -390,6 +461,7 @@ export async function loadOperatorRegistry() {
 		institutions.length === 0 &&
 		financialAccounts.length === 0 &&
 		senderRules.length === 0 &&
+		accountMappings.length === 0 &&
 		!importState
 	) {
 		return buildEmptyRegistry();
@@ -439,6 +511,16 @@ export async function loadOperatorRegistry() {
 				priority: rule.priority,
 				notes: rule.notes,
 			})),
+			accountMappings: accountMappings.map((mapping) => ({
+				mappingKey: mapping.mapping_key,
+				book: mapping.book as FinanceAccountMapping["book"],
+				match: safeJsonParse(mapping.match_json, {}),
+				debitAccount: mapping.debit_account,
+				creditAccount: mapping.credit_account,
+				currency: mapping.currency,
+				confidence: mapping.confidence,
+				notes: mapping.notes,
+			})),
 		}),
 		importedAt: importState?.imported_at ?? null,
 		sourceDir: importState?.source_dir ?? APP_CONFIG.registryDir,
@@ -484,6 +566,16 @@ export async function loadOperatorRegistry() {
 			priority: rule.priority,
 			notes: rule.notes,
 		})),
+		accountMappings: accountMappings.map((mapping) => ({
+			mappingKey: mapping.mapping_key,
+			book: mapping.book as FinanceAccountMapping["book"],
+			match: safeJsonParse(mapping.match_json, {}),
+			debitAccount: mapping.debit_account,
+			creditAccount: mapping.credit_account,
+			currency: mapping.currency,
+			confidence: mapping.confidence,
+			notes: mapping.notes,
+		})),
 	};
 
 	return snapshot;
@@ -502,7 +594,7 @@ function normalizeSearchText(input: {
 	senderAddress: string | null;
 	subject: string | null;
 	bodyText: string;
-	rootLabel: ReturnType<typeof normalizeMessageLabel>;
+	rootLabel: ReturnType<typeof parseCurrentMessageLabel>;
 }) {
 	return [
 		input.accountLabel,
@@ -510,8 +602,8 @@ function normalizeSearchText(input: {
 		input.senderAddress ?? "",
 		input.subject ?? "",
 		input.bodyText,
-		input.rootLabel?.finance.accountHint ?? "",
-		input.rootLabel?.finance.purpose ?? "",
+		input.rootLabel?.finance.signal ?? "",
+		input.rootLabel?.finance.evidence ?? "",
 	]
 		.join("\n")
 		.toLowerCase();
@@ -536,6 +628,108 @@ function matchAccountLast4(text: string, account: RegistryFinancialAccount) {
 	);
 }
 
+function normalizeScalarList(value: unknown) {
+	if (Array.isArray(value)) {
+		return value
+			.map((item) => (typeof item === "string" ? item.trim() : ""))
+			.filter(Boolean);
+	}
+	return typeof value === "string" && value.trim() ? [value.trim()] : [];
+}
+
+function fieldMatches(value: unknown, matcher: (candidate: string) => boolean) {
+	const candidates = normalizeScalarList(value);
+	if (candidates.length === 0) {
+		return null;
+	}
+	return candidates.some((candidate) => matcher(candidate));
+}
+
+function mappingHasExplicitMatch(mapping: FinanceAccountMapping) {
+	return [
+		"senderAddress",
+		"senderDomain",
+		"senderContains",
+		"textIncludes",
+		"book",
+		"ownerIdentityId",
+		"institutionId",
+		"financialAccountId",
+		"accountLast4",
+	].some((field) => Object.hasOwn(mapping.match, field));
+}
+
+function matchFinanceAccountMapping(input: {
+	mapping: FinanceAccountMapping;
+	senderAddress: string;
+	senderDomain: string | null;
+	searchText: string;
+	rootBook: string | null;
+	matchedIdentityIds: Set<string>;
+	matchedInstitutionIds: Set<string>;
+	matchedFinancialAccountIds: Set<string>;
+}) {
+	const match = input.mapping.match;
+	const checks: Array<boolean | null> = [
+		fieldMatches(
+			match.senderAddress,
+			(candidate) => candidate.toLowerCase() === input.senderAddress,
+		),
+		fieldMatches(
+			match.senderDomain,
+			(candidate) => candidate.toLowerCase() === input.senderDomain,
+		),
+		fieldMatches(match.senderContains, (candidate) =>
+			input.senderAddress.includes(candidate.toLowerCase()),
+		),
+		fieldMatches(match.textIncludes, (candidate) =>
+			input.searchText.includes(candidate.toLowerCase()),
+		),
+		fieldMatches(match.book, (candidate) => candidate === input.rootBook),
+		fieldMatches(match.ownerIdentityId, (candidate) =>
+			input.matchedIdentityIds.has(candidate),
+		),
+		fieldMatches(match.institutionId, (candidate) =>
+			input.matchedInstitutionIds.has(candidate),
+		),
+		fieldMatches(match.financialAccountId, (candidate) =>
+			input.matchedFinancialAccountIds.has(candidate),
+		),
+		fieldMatches(match.accountLast4, (candidate) =>
+			new RegExp(`(^|[^0-9])${candidate}([^0-9]|$)`, "i").test(
+				input.searchText,
+			),
+		),
+	];
+	if (checks.some((check) => check === false)) {
+		return false;
+	}
+	const explicitPositive = checks.some((check) => check === true);
+	const referencedPositive =
+		fieldMatches(match.ownerIdentityId, (candidate) =>
+			input.matchedIdentityIds.has(candidate),
+		) === true ||
+		fieldMatches(match.institutionId, (candidate) =>
+			input.matchedInstitutionIds.has(candidate),
+		) === true ||
+		fieldMatches(match.financialAccountId, (candidate) =>
+			input.matchedFinancialAccountIds.has(candidate),
+		) === true;
+	if (explicitPositive) {
+		return true;
+	}
+	return !mappingHasExplicitMatch(input.mapping) ? referencedPositive : false;
+}
+
+function sortMatchedMappings(rows: FinanceAccountMapping[]) {
+	return [...rows]
+		.sort((left, right) => {
+			const confidenceOrder = right.confidence - left.confidence;
+			return confidenceOrder || left.mappingKey.localeCompare(right.mappingKey);
+		})
+		.slice(0, 20);
+}
+
 export async function matchRegistryForMessage(input: {
 	accountLabel: string;
 	accountEmail: string;
@@ -549,7 +743,7 @@ export async function matchRegistryForMessage(input: {
 	const senderDomain = extractDomain(senderAddress);
 	const accountEmail = input.accountEmail.toLowerCase();
 	const accountDomain = extractDomain(accountEmail);
-	const rootLabel = normalizeMessageLabel(input.rootLabel);
+	const rootLabel = parseCurrentMessageLabel(input.rootLabel);
 	const searchText = normalizeSearchText({
 		...input,
 		rootLabel,
@@ -631,13 +825,128 @@ export async function matchRegistryForMessage(input: {
 	matchedInstitutions.push(...senderRuleInstitutionRows);
 	matchedFinancialAccounts.push(...senderRuleAccountRows);
 
+	const uniqueIdentities = uniqueById(matchedIdentities);
+	const uniqueInstitutions = uniqueById(matchedInstitutions);
+	const uniqueFinancialAccounts = uniqueById(matchedFinancialAccounts);
+	const matchedIdentityIds = new Set(uniqueIdentities.map((row) => row.id));
+	const matchedInstitutionIds = new Set(
+		uniqueInstitutions.map((row) => row.id),
+	);
+	const matchedFinancialAccountIds = new Set(
+		uniqueFinancialAccounts.map((row) => row.id),
+	);
+	const accountMappings = sortMatchedMappings(
+		registry.accountMappings.filter((mapping) =>
+			matchFinanceAccountMapping({
+				mapping,
+				senderAddress,
+				senderDomain,
+				searchText,
+				rootBook: rootLabel?.finance.bookHint ?? null,
+				matchedIdentityIds,
+				matchedInstitutionIds,
+				matchedFinancialAccountIds,
+			}),
+		),
+	);
+
 	return {
 		sha256: registry.sha256,
-		identities: uniqueById(matchedIdentities),
-		institutions: uniqueById(matchedInstitutions),
-		financialAccounts: uniqueById(matchedFinancialAccounts),
+		identities: uniqueIdentities,
+		institutions: uniqueInstitutions,
+		financialAccounts: uniqueFinancialAccounts,
 		senderRules: uniqueById(matchedSenderRules),
+		accountMappings,
 	} satisfies RegistryMatchResult;
+}
+
+function normalizeHintKey(input: string) {
+	return input
+		.trim()
+		.toLowerCase()
+		.replace(/\s+/g, " ")
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "")
+		.slice(0, 160);
+}
+
+function hintRows(input: {
+	secondaryResultId: string;
+	messageId: string;
+	financeIntel: FinanceIntelV3;
+}) {
+	const confidence = Math.min(input.financeIntel.confidence.overall, 0.8);
+	const groups = [
+		{
+			kind: "identity",
+			hints: input.financeIntel.unresolvedEntityHints.identityHints,
+		},
+		{
+			kind: "institution",
+			hints: input.financeIntel.unresolvedEntityHints.institutionHints,
+		},
+		{
+			kind: "financial_account",
+			hints: input.financeIntel.unresolvedEntityHints.financialAccountHints,
+		},
+	] as const;
+	return groups.flatMap((group) =>
+		group.hints.flatMap((hint) => {
+			const normalized = normalizeHintKey(hint);
+			if (!normalized) {
+				return [];
+			}
+			return [
+				{
+					id: randomUUID(),
+					entity_kind: group.kind,
+					canonical_key: `email-hint:${group.kind}:${normalized}`,
+					suggestion_json: jsonText({
+						displayName: hint.trim(),
+						aliases: [hint.trim()],
+						messageId: input.messageId,
+					}),
+					source_kind: "email_finance_intel",
+					source_ref_id: input.secondaryResultId,
+					confidence,
+					status: "pending",
+					applied_registry_id: null,
+					created_at: nowIso(),
+					updated_at: nowIso(),
+				},
+			];
+		}),
+	);
+}
+
+export async function persistEmailFinanceHintSuggestions(input: {
+	secondaryResultId: string;
+	messageId: string;
+	financeIntel: FinanceIntelV3;
+}) {
+	const rows = hintRows(input);
+	if (rows.length === 0) {
+		return 0;
+	}
+	const db = getDb();
+	await db.insertInto("registry_suggestions").values(rows).execute();
+	await queueJobIdempotent({
+		kind: "reconcile_registry_suggestions",
+		scopeType: "system",
+		scopeId: "registry_suggestions",
+	});
+	await publishActionEvent({
+		topic: "finance",
+		eventType: "finance.registry_suggestions_created",
+		entityKind: "message_secondary_result",
+		entityId: input.secondaryResultId,
+		payload: {
+			secondaryResultId: input.secondaryResultId,
+			messageId: input.messageId,
+			count: rows.length,
+		},
+	});
+	return rows.length;
 }
 
 export async function reconcileRegistrySuggestions() {

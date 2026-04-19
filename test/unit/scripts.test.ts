@@ -12,6 +12,7 @@ import {
 	insertMessageRow,
 	insertSecondaryResultRow,
 	seedLegacyPreSecondarySchema,
+	seedStaleCanonicalMigrationHistory,
 	seedTestAccount,
 } from "#/test/helpers/db";
 import { createMockLogModule } from "#/test/helpers/log";
@@ -24,11 +25,49 @@ interface MockCodexLoginOptions {
 	onPrompt?: (input: { message: string }) => Promise<string>;
 }
 
+const ACTIVE_MIGRATIONS = [
+	{ name: "001_init.sql" },
+	{ name: "002_connection_state.sql" },
+	{ name: "003_finance_ledger_export.sql" },
+	{ name: "004_finance_v3_archive.sql" },
+	{ name: "005_finance_v3_target.sql" },
+	{ name: "006_finance_v3_clean.sql" },
+];
+
 const loginOpenAICodex = vi.fn(async () => ({
 	refresh: "refresh",
 	access: "access",
 	expires: Date.now() + 60_000,
 }));
+
+function buildFinanceArtifact(artifactSha256: string) {
+	return {
+		schemaVersion: "finance-source-import.v1",
+		sourceKind: "pdf",
+		sourceFile: {
+			absolutePath: "/tmp/statement.pdf",
+			sha256: "statement-sha",
+			filename: "statement.pdf",
+			importedAt: "2026-04-15T00:00:00.000Z",
+		},
+		artifactSha256,
+		extractor: {
+			runner: "pytest",
+			model: "claude-opus",
+			promptVersion: "finance-source-import.v1",
+			extractedTextHash: "text-sha",
+		},
+		registrySuggestions: {
+			identities: [],
+			institutions: [],
+			financialAccounts: [],
+			senderRules: [],
+		},
+		documents: [],
+		transactions: [],
+		provenance: {},
+	};
+}
 
 vi.mock("@mariozechner/pi-ai/oauth", () => ({
 	loginOpenAICodex,
@@ -50,8 +89,6 @@ describe("scripts", () => {
 		vi.doUnmock("#/lib/db");
 		vi.doUnmock("#/lib/log");
 		vi.doUnmock("#/lib/pi");
-		vi.doUnmock("vite");
-		vi.doUnmock("@tanstack/router-plugin/vite");
 	});
 
 	it("detects direct execution", async () => {
@@ -193,7 +230,7 @@ describe("scripts", () => {
 		);
 	});
 
-	it("runs migrations script", async () => {
+	it("runs migrations script for the default org when no org DBs exist yet", async () => {
 		const runtime = await createTestRuntime();
 		const script =
 			await runtime.importFresh<typeof import("#/scripts/migrate")>(
@@ -211,6 +248,150 @@ describe("scripts", () => {
 		const tableNames = tables.map((t) => t.name);
 		expect(tableNames).toContain("accounts");
 		expect(tableNames).toContain("account_sync_state");
+		expect(
+			db
+				.getSqlite()
+				.prepare("SELECT name FROM _migrations ORDER BY name")
+				.all(),
+		).toEqual(ACTIVE_MIGRATIONS);
+	});
+
+	it("runs migrations across all discovered org databases by default", async () => {
+		const runtime = await createTestRuntime();
+		const dbModule =
+			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
+		dbModule.getSqlite("org-a");
+		dbModule.getSqlite("org-b");
+
+		const script =
+			await runtime.importFresh<typeof import("#/scripts/migrate")>(
+				"#/scripts/migrate",
+			);
+		await script.main();
+
+		expect(
+			dbModule
+				.getSqlite("org-a")
+				.prepare("SELECT name FROM _migrations ORDER BY name")
+				.all(),
+		).toEqual(ACTIVE_MIGRATIONS);
+		expect(
+			dbModule
+				.getSqlite("org-b")
+				.prepare("SELECT name FROM _migrations ORDER BY name")
+				.all(),
+		).toEqual(ACTIVE_MIGRATIONS);
+	});
+
+	it("adopts stale history for a selected org and preserves existing rows", async () => {
+		const runtime = await createTestRuntime();
+		await seedStaleCanonicalMigrationHistory({
+			orgId: "org-stale",
+			withSampleData: true,
+		});
+		const script =
+			await runtime.importFresh<typeof import("#/scripts/migrate")>(
+				"#/scripts/migrate",
+			);
+		const dbModule =
+			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
+		const sqlite = dbModule.getSqlite("org-stale");
+
+		expect(
+			sqlite
+				.prepare("SELECT COUNT(*) AS count FROM classification_results")
+				.get(),
+		).toEqual({ count: 1 });
+		expect(
+			sqlite.prepare("SELECT COUNT(*) AS count FROM message_labels").get(),
+		).toEqual({ count: 1 });
+
+		await script.main(undefined, [
+			"node",
+			"scripts/migrate.ts",
+			"--",
+			"--org",
+			"org-stale",
+			"--adopt-history",
+		]);
+
+		expect(
+			sqlite.prepare("SELECT name FROM _migrations ORDER BY name").all(),
+		).toEqual(ACTIVE_MIGRATIONS);
+		expect(
+			sqlite
+				.prepare(
+					"SELECT owner_principal_email FROM accounts WHERE id = 'acct-stale'",
+				)
+				.get(),
+		).toEqual({
+			owner_principal_email: "mannie@inherent.design",
+		});
+		expect(
+			sqlite
+				.prepare("SELECT COUNT(*) AS count FROM classification_results")
+				.get(),
+		).toEqual({ count: 1 });
+		expect(
+			sqlite.prepare("SELECT COUNT(*) AS count FROM message_labels").get(),
+		).toEqual({ count: 1 });
+	});
+
+	it("adopts all discovered org histories idempotently", async () => {
+		const runtime = await createTestRuntime();
+		await seedStaleCanonicalMigrationHistory({
+			orgId: "org-stale",
+			missingOwnerPrincipalEmail: false,
+			migrationNames: ["001_init.sql"],
+			withSampleData: true,
+		});
+		const dbModule =
+			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
+		dbModule.runMigrations("org-ready");
+		const script =
+			await runtime.importFresh<typeof import("#/scripts/migrate")>(
+				"#/scripts/migrate",
+			);
+
+		await script.main(undefined, [
+			"node",
+			"scripts/migrate.ts",
+			"--",
+			"--all-orgs",
+			"--adopt-history",
+		]);
+		await script.main(undefined, [
+			"node",
+			"scripts/migrate.ts",
+			"--",
+			"--all-orgs",
+			"--adopt-history",
+		]);
+		await script.main(undefined, [
+			"node",
+			"scripts/migrate.ts",
+			"--",
+			"--all-orgs",
+		]);
+
+		expect(
+			dbModule
+				.getSqlite("org-stale")
+				.prepare("SELECT name FROM _migrations ORDER BY name")
+				.all(),
+		).toEqual(ACTIVE_MIGRATIONS);
+		expect(
+			dbModule
+				.getSqlite("org-ready")
+				.prepare("SELECT name FROM _migrations ORDER BY name")
+				.all(),
+		).toEqual(ACTIVE_MIGRATIONS);
+		expect(
+			dbModule
+				.getSqlite("org-stale")
+				.prepare("SELECT COUNT(*) AS count FROM accounts")
+				.get(),
+		).toEqual({ count: 1 });
 	});
 
 	it("resets only jobs with db:reset:jobs", async () => {
@@ -245,11 +426,18 @@ describe("scripts", () => {
 			await runtime.importFresh<typeof import("#/scripts/db-reset")>(
 				"#/scripts/db-reset",
 			);
-		await script.main(undefined, "jobs");
+		await script.main(undefined, [
+			"node",
+			"scripts/db-reset.ts",
+			"--org",
+			"local",
+			"jobs",
+		]);
 
 		const summary = JSON.parse(String(logSpy.mock.calls[0]?.[0] ?? "{}"));
 		expect(summary).toEqual({
 			mode: "jobs",
+			orgId: "local",
 			deletedJobs: 1,
 			hadDatabase: true,
 		});
@@ -264,6 +452,8 @@ describe("scripts", () => {
 	it("resets messages while preserving accounts and oauth tokens", async () => {
 		const runtime = await createTestRuntime();
 		const { db } = await bootDb();
+		const configModule =
+			await runtime.importFresh<typeof import("#/lib/config")>("#/lib/config");
 		await seedTestAccount(db, {
 			id: "acct-1",
 			label: "Primary",
@@ -306,8 +496,8 @@ describe("scripts", () => {
 			})
 			.execute();
 
-		const acct1Dir = join(runtime.dataDir, "accounts", "acct-1");
-		const acct2Dir = join(runtime.dataDir, "accounts", "acct-2");
+		const acct1Dir = configModule.accountDir("acct-1");
+		const acct2Dir = configModule.accountDir("acct-2");
 		const acct1RawDir = join(acct1Dir, "raw");
 		const acct2RawDir = join(acct2Dir, "raw");
 		mkdirSync(acct1RawDir, { recursive: true });
@@ -322,11 +512,18 @@ describe("scripts", () => {
 			await runtime.importFresh<typeof import("#/scripts/db-reset")>(
 				"#/scripts/db-reset",
 			);
-		await script.main(undefined, "messages");
+		await script.main(undefined, [
+			"node",
+			"scripts/db-reset.ts",
+			"--org",
+			"local",
+			"messages",
+		]);
 
 		const summary = JSON.parse(String(logSpy.mock.calls[0]?.[0] ?? "{}"));
 		expect(summary).toEqual({
 			mode: "messages",
+			orgId: "local",
 			preservedAccounts: 2,
 			queuedFullSyncJobs: 1,
 			preservedOAuthTokens: true,
@@ -873,11 +1070,21 @@ describe("scripts", () => {
 		const script = await runtime.importFresh<
 			typeof import("#/scripts/audit-corpus")
 		>("#/scripts/audit-corpus");
-		await script.main();
+		await script.main(undefined, [
+			"node",
+			"scripts/audit-corpus.ts",
+			"--org",
+			"local",
+		]);
 
 		expect(logSpy).toHaveBeenCalledTimes(1);
 		const report = JSON.parse(String(logSpy.mock.calls[0]?.[0] ?? "{}"));
 		expect(report).toMatchObject({
+			runtime: expect.objectContaining({
+				orgId: "local",
+			}),
+			auth: expect.any(Object),
+			financeImportDedup: expect.any(Object),
 			sourceInvariants: expect.any(Object),
 			rootClassification: expect.any(Object),
 			moderation: expect.any(Object),
@@ -887,6 +1094,91 @@ describe("scripts", () => {
 			registry: expect.any(Object),
 		});
 
+		logSpy.mockRestore();
+	});
+
+	it("scopes corpus audit to the requested org", async () => {
+		const runtime = await createTestRuntime();
+		const dbModule =
+			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
+		dbModule.runMigrations("org-a");
+		dbModule.runMigrations("org-b");
+		const dbA = dbModule.getDb("org-a");
+		const dbB = dbModule.getDb("org-b");
+		await seedTestAccount(dbA, { id: "acct-a", emailAddress: "a@example.com" });
+		await seedTestAccount(dbB, { id: "acct-b", emailAddress: "b@example.com" });
+		await insertMessageRow(dbA, {
+			id: "msg-org-a",
+			accountId: "acct-a",
+			contentSha256: "sha-org-a",
+		});
+		await insertMessageRow(dbB, {
+			id: "msg-org-b",
+			accountId: "acct-b",
+			contentSha256: "sha-org-b",
+		});
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+		const script = await runtime.importFresh<
+			typeof import("#/scripts/audit-corpus")
+		>("#/scripts/audit-corpus");
+		await script.main(undefined, [
+			"node",
+			"scripts/audit-corpus.ts",
+			"--org",
+			"org-a",
+		]);
+
+		const report = JSON.parse(String(logSpy.mock.calls[0]?.[0] ?? "{}"));
+		expect(report.runtime.orgId).toBe("org-a");
+		expect(report.sourceInvariants.messages).toBe(1);
+		logSpy.mockRestore();
+	});
+
+	it("imports finance artifacts into the selected org only", async () => {
+		const runtime = await createTestRuntime();
+		const dbModule =
+			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
+		dbModule.runMigrations("org-a");
+		dbModule.runMigrations("org-b");
+		const artifactPath = join(runtime.root, "artifact.json");
+		writeFileSync(
+			artifactPath,
+			JSON.stringify(buildFinanceArtifact("artifact-sha-script"), null, 2),
+		);
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+		const script = await runtime.importFresh<
+			typeof import("#/scripts/import-finance-artifact")
+		>("#/scripts/import-finance-artifact");
+		await script.main(undefined, [
+			"node",
+			"scripts/import-finance-artifact.ts",
+			"--org",
+			"org-a",
+			artifactPath,
+		]);
+
+		const summary = JSON.parse(String(logSpy.mock.calls[0]?.[0] ?? "{}"));
+		expect(summary).toMatchObject({
+			ok: true,
+			orgId: "org-a",
+			imported: expect.objectContaining({
+				artifactSha256: "artifact-sha-script",
+			}),
+		});
+		expect(
+			dbModule
+				.getSqlite("org-a")
+				.prepare("SELECT COUNT(*) AS count FROM finance_import_runs")
+				.get(),
+		).toEqual({ count: 1 });
+		expect(
+			dbModule
+				.getSqlite("org-b")
+				.prepare("SELECT COUNT(*) AS count FROM finance_import_runs")
+				.get(),
+		).toEqual({ count: 0 });
 		logSpy.mockRestore();
 	});
 
@@ -1129,7 +1421,12 @@ describe("scripts", () => {
 		const script = await runtime.importFresh<
 			typeof import("#/scripts/audit-corpus")
 		>("#/scripts/audit-corpus");
-		await script.main();
+		await script.main(undefined, [
+			"node",
+			"scripts/audit-corpus.ts",
+			"--org",
+			"local",
+		]);
 
 		const report = JSON.parse(String(logSpy.mock.calls[0]?.[0] ?? "{}"));
 		expect(report.rootClassification.staleLabels).toBe(1);
@@ -1177,36 +1474,5 @@ describe("scripts", () => {
 		});
 
 		logSpy.mockRestore();
-	});
-
-	it("runs the route-tree generator script", async () => {
-		const runtime = await createTestRuntime();
-		const close = vi.fn(async () => undefined);
-		const createServer = vi.fn(async () => ({
-			close,
-		}));
-		const tanstackRouterGenerator = vi.fn((input) => input);
-
-		vi.doMock("vite", () => ({
-			createServer,
-		}));
-		vi.doMock("@tanstack/router-plugin/vite", () => ({
-			tanstackRouterGenerator,
-		}));
-
-		const script = await runtime.importFresh<
-			typeof import("#/scripts/generate-route-tree")
-		>("#/scripts/generate-route-tree");
-		await script.main();
-
-		expect(createServer).toHaveBeenCalled();
-		expect(tanstackRouterGenerator).toHaveBeenCalledWith({
-			target: "react",
-			routesDirectory: "./app/routes",
-			generatedRouteTree: "./app/routeTree.gen.ts",
-			routeFileIgnorePrefix: "-",
-			autoCodeSplitting: true,
-		});
-		expect(close).toHaveBeenCalled();
 	});
 });

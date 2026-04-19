@@ -1,0 +1,10 @@
+.cache
+.git
+.gitignore
+.output
+.tanstack
+.vscode
+coverage
+data
+node_modules
+test-results

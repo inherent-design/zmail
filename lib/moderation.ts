@@ -175,10 +175,10 @@ export async function ensureModerationForMessage(input: {
 	if (existing && isModerationResultCurrent(existing)) {
 		return {
 			nsfwFlag: Boolean(existing.nsfw_flag),
-			scores: safeJsonParse<Record<
-				string,
-				number
-			>>(existing.category_scores_json, {}),
+			scores: safeJsonParse<Record<string, number>>(
+				existing.category_scores_json,
+				{},
+			),
 		};
 	}
 

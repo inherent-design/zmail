@@ -3,20 +3,25 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { bootDb, insertMessageLabelRow, insertMessageRow } from "#/test/helpers/db";
+import {
+	bootDb,
+	insertMessageLabelRow,
+	insertMessageRow,
+} from "#/test/helpers/db";
 import { createTestRuntime } from "#/test/helpers/runtime";
 
 describe("category rules", () => {
 	it("materializes default classification yaml files on first load", async () => {
 		const runtime = await createTestRuntime();
 		await bootDb({ seedDefaultAccount: true });
-		const rules =
-			await runtime.importFresh<typeof import("#/lib/category-rules")>(
-				"#/lib/category-rules",
-			);
+		const rules = await runtime.importFresh<
+			typeof import("#/lib/category-rules")
+		>("#/lib/category-rules");
+		const configModule =
+			await runtime.importFresh<typeof import("#/lib/config")>("#/lib/config");
 
 		const config = await rules.loadClassificationConfig();
-		const baseDir = join(runtime.dataDir, "operator", "classification");
+		const baseDir = configModule.classificationDir();
 
 		expect(config.rootTaxonomy.primaryBuckets).toContain("finance");
 		expect(
@@ -40,10 +45,9 @@ describe("category rules", () => {
 	it("lists messages without assignment heads as pending rebuild work", async () => {
 		const runtime = await createTestRuntime();
 		const { db } = await bootDb({ seedDefaultAccount: true });
-		const rules =
-			await runtime.importFresh<typeof import("#/lib/category-rules")>(
-				"#/lib/category-rules",
-			);
+		const rules = await runtime.importFresh<
+			typeof import("#/lib/category-rules")
+		>("#/lib/category-rules");
 		const messageId = await insertMessageRow(db, {
 			contentSha256: "category-pending-sha",
 		});

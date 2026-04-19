@@ -11,6 +11,21 @@ function sha256(value: string) {
 	return createHash("sha256").update(value).digest("hex");
 }
 
+export function computeArtifactSha256(artifact: FinanceSourceImport) {
+	return artifact.artifactSha256 || sha256(JSON.stringify(artifact));
+}
+
+export async function findFinanceImportRunByArtifact(artifactSha256: string) {
+	const db = getDb();
+	const row = await db
+		.selectFrom("finance_import_runs")
+		.select(["id", "artifact_sha256", "imported_at"])
+		.where("artifact_sha256", "=", artifactSha256)
+		.orderBy("imported_at", "desc")
+		.executeTakeFirst();
+	return row ?? null;
+}
+
 export function parseAmountMinor(value: string | null | undefined) {
 	if (!value) {
 		return null;
@@ -24,6 +39,25 @@ export function parseAmountMinor(value: string | null | undefined) {
 		return null;
 	}
 	return Math.round(numeric * 100);
+}
+
+function v2RawValue(value: object, key: string) {
+	return (value as Record<string, unknown>)[key];
+}
+
+function v2String(value: object, key: string) {
+	const raw = v2RawValue(value, key);
+	return typeof raw === "string" ? raw : null;
+}
+
+function v2Number(value: object, key: string) {
+	const raw = v2RawValue(value, key);
+	return typeof raw === "number" && Number.isFinite(raw) ? raw : null;
+}
+
+function v2Record(value: object, key: string) {
+	const raw = v2RawValue(value, key);
+	return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
 }
 
 function buildSuggestionRows(input: {
@@ -117,8 +151,7 @@ export async function importFinanceArtifact(input: unknown) {
 	const db = getDb();
 	const importRunId = randomUUID();
 	const importedAt = nowIso();
-	const artifactSha256 =
-		artifact.artifactSha256 || sha256(JSON.stringify(artifact));
+	const artifactSha256 = computeArtifactSha256(artifact);
 
 	await db.transaction().execute(async (trx) => {
 		await trx
@@ -160,6 +193,26 @@ export async function importFinanceArtifact(input: unknown) {
 						institution_hint: document.institutionHint,
 						evidence_text: document.evidenceText,
 						payload_json: jsonText(document),
+						statement_opening_balance: v2String(
+							document,
+							"statementOpeningBalance",
+						),
+						statement_closing_balance: v2String(
+							document,
+							"statementClosingBalance",
+						),
+						statement_transaction_count: v2Number(
+							document,
+							"statementTransactionCount",
+						),
+						statement_currency: v2String(document, "statementCurrency"),
+						account_mapping_key: v2String(document, "accountMappingKey"),
+						extraction_confidence:
+							v2Number(document, "extractionConfidence") ?? 0,
+						raw_document_payload_json: jsonText(
+							v2Record(document, "rawPayload"),
+						),
+						raw_payload_json: jsonText(v2Record(document, "rawPayload")),
 						created_at: importedAt,
 					})),
 				)
@@ -190,6 +243,23 @@ export async function importFinanceArtifact(input: unknown) {
 						category_secondary: transaction.categorySecondary,
 						evidence_text: transaction.evidenceText,
 						payload_json: jsonText(transaction),
+						external_transaction_id: v2String(
+							transaction,
+							"externalTransactionId",
+						),
+						cleared_at: v2String(transaction, "clearedAt"),
+						statement_row_id: v2String(transaction, "statementRowId"),
+						row_index: v2Number(transaction, "rowIndex"),
+						account_mapping_key: v2String(transaction, "accountMappingKey"),
+						book_hint: v2String(transaction, "bookHint") ?? "unknown",
+						business_use_percent: v2Number(transaction, "businessUsePercent"),
+						extraction_confidence:
+							v2Number(transaction, "extractionConfidence") ?? 0,
+						raw_row_payload_json: jsonText(v2Record(transaction, "rawPayload")),
+						row_provenance_json: jsonText(
+							v2Record(transaction, "rowProvenance"),
+						),
+						raw_payload_json: jsonText(v2Record(transaction, "rawPayload")),
 						created_at: importedAt,
 					})),
 				)

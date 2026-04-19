@@ -7,41 +7,30 @@ import {
 	insertSecondaryResultRow,
 	seedTestAccount,
 } from "#/test/helpers/db";
+import {
+	buildFinanceIntelV3,
+	buildMessageLabelV3,
+} from "#/test/helpers/labels";
 import { createTestRuntime } from "#/test/helpers/runtime";
 
 function financeLabel() {
-	return {
-		schemaVersion: "message-label.v1" as const,
-		nsfw: false,
+	return buildMessageLabelV3({
 		finance: {
 			relevant: true,
-			direction: "expense" as const,
-			owner: "business" as const,
-			accountHint: "amex",
-			purpose: "software",
+			signal: "receipt",
+			operational: true,
+			bookHint: "business",
+			requiresFinanceIntel: true,
+			confidence: 0.95,
+			evidence: "Software receipt.",
 		},
-		social: {
-			personal: false,
-			private: false,
-			social: false,
-			business: true,
-		},
-		risk: {
-			businessSensitive: false,
-			leakRisk: false,
-		},
+		commerce: { transactional: true },
 		routing: {
 			primaryBucket: "finance",
+			secondaryBuckets: ["receipt"],
 			tags: ["receipt"],
 		},
-		confidence: {
-			overall: 0.95,
-			finance: 0.95,
-			social: 0.95,
-			risk: 0.95,
-		},
-		explanation: "finance",
-	};
+	});
 }
 
 describe("worker finance jobs", () => {
@@ -237,6 +226,7 @@ describe("worker finance jobs", () => {
 			status: "ready",
 			contentSha256: "content-current",
 			registrySha256: "registry-sha",
+			result: buildFinanceIntelV3(),
 		});
 
 		const classifyFinanceMessageNow = vi.fn(
@@ -250,12 +240,12 @@ describe("worker finance jobs", () => {
 						id: `secondary-${input.messageId}`,
 						message_id: input.messageId,
 						classifier_key: "finance_intel",
-						schema_version: "finance-intel.v1",
+						schema_version: "finance-intel.v3",
 						job_id: null,
 						model: "gpt-5.4-mini",
-						prompt_version: "finance-intel-v1",
+						prompt_version: "finance-intel-v3",
 						source: "model",
-						result_json: JSON.stringify({ ok: true }),
+						result_json: JSON.stringify(buildFinanceIntelV3()),
 						raw_response_json: "{}",
 						usage_json: null,
 						input_content_sha256: "content-stale",
@@ -289,7 +279,7 @@ describe("worker finance jobs", () => {
 				return {
 					headStatus: "ready" as const,
 					lowConfidence: false,
-					financeIntel: { schemaVersion: "finance-intel.v1" },
+					financeIntel: { schemaVersion: "finance-intel.v3" },
 					model: "gpt-5.4-mini",
 					backend: "openai-subscription",
 					usage: null,
@@ -379,6 +369,246 @@ describe("worker finance jobs", () => {
 		});
 	});
 
+	it("counts blocked model-output finance rows as persisted successes", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		const messageId = await insertMessageRow(db, {
+			id: "msg-blocked-model-output",
+			accountId: "acct-1",
+			contentSha256: "content-blocked-model",
+		});
+		await insertMessageLabelRow(db, {
+			messageId,
+			primaryBucket: "finance",
+			contentSha256: "content-blocked-model",
+			label: financeLabel(),
+		});
+
+		const blockedFinanceIntel = buildFinanceIntelV3({
+			actionability: "manual_review",
+			book: {
+				scope: "business",
+				businessUsePercent: null,
+				taxTreatmentHint: null,
+				evidence: "Software receipt.",
+			},
+			ledgerReadiness: {
+				status: "blocked",
+				reasons: ["model_output_invalid"],
+				requiredFixes: ["manualReview"],
+			},
+			transactionCandidates: [],
+			documentCandidates: [],
+			dedupe: {
+				messageEvidenceKey: "email:msg-blocked-model-output",
+				sourceDocumentRefs: [],
+				externalTransactionIds: [],
+				normalizedComposites: [],
+			},
+			fieldConfidence: {
+				amount: null,
+				date: null,
+				counterparty: null,
+				accountMapping: null,
+				book: null,
+				category: null,
+				dedupe: null,
+			},
+			confidence: {
+				overall: 0,
+				messageKind: 0,
+				transactionExtraction: 0,
+				registryMatching: 0,
+			},
+			explanation: "Blocked because model output did not satisfy v3.",
+		});
+
+		const classifyFinanceMessageNow = vi.fn(
+			async (input: { jobId?: string | null; messageId: string }) => {
+				const { persistSecondaryResult } = await import("#/lib/secondary");
+				await persistSecondaryResult({
+					jobId: input.jobId ?? null,
+					messageId: input.messageId,
+					classifierKey: "finance_intel",
+					schemaVersion: "finance-intel.v3",
+					model: "gpt-5.4-mini",
+					backend: "openai-subscription",
+					promptVersion: "finance-intel-v3",
+					source: "model",
+					rawResponse: { parseError: "fixture parse error" },
+					usage: null,
+					result: blockedFinanceIntel,
+					contentSha256: "content-blocked-model",
+					registrySha256: "registry-sha",
+					status: "review",
+					overallConfidence: 0,
+				});
+				return {
+					headStatus: "review" as const,
+					lowConfidence: true,
+					financeIntel: blockedFinanceIntel,
+					model: "gpt-5.4-mini",
+					backend: "openai-subscription",
+					usage: null,
+					blockedModelOutput: true,
+				};
+			},
+		);
+
+		vi.doMock("#/lib/registry", () => ({
+			loadOperatorRegistry: vi.fn(async () => ({
+				sha256: "registry-sha",
+				importedAt: "2026-01-10T00:00:00.000Z",
+				sourceDir: "/tmp/registry",
+				identities: [],
+				institutions: [],
+				financialAccounts: [],
+				senderRules: [],
+			})),
+			matchRegistryForMessage: vi.fn(async () => ({
+				sha256: "registry-sha",
+				identities: [],
+				institutions: [],
+				financialAccounts: [],
+				senderRules: [],
+			})),
+		}));
+		vi.doMock("#/lib/finance-intel", () => ({
+			classifyFinanceMessageNow,
+		}));
+
+		const jobs =
+			await runtime.importFresh<typeof import("#/lib/jobs")>("#/lib/jobs");
+		const worker =
+			await runtime.importFresh<typeof import("#/lib/worker")>("#/lib/worker");
+		const jobId = await jobs.queueJobIdempotent({
+			kind: "classify_finance_backlog",
+			scopeType: "account",
+			scopeId: "acct-1",
+		});
+
+		expect(await worker.runWorkerIteration({ waitOnIdle: false })).toBe(true);
+
+		const backlogJob = await db
+			.selectFrom("jobs")
+			.select(["status", "success_count", "error_count", "meta_json"])
+			.where("id", "=", jobId)
+			.executeTakeFirstOrThrow();
+		const head = await db
+			.selectFrom("message_secondary_heads")
+			.select(["status", "content_sha256", "registry_sha256"])
+			.where("message_id", "=", messageId)
+			.executeTakeFirstOrThrow();
+		const queuedKnowledgeJob = await db
+			.selectFrom("jobs")
+			.select(["kind", "status", "scope_id"])
+			.where("kind", "=", "rebuild_finance_knowledge")
+			.executeTakeFirstOrThrow();
+
+		expect(backlogJob.status).toBe("complete");
+		expect(backlogJob.success_count).toBe(1);
+		expect(backlogJob.error_count).toBe(0);
+		expect(JSON.parse(backlogJob.meta_json ?? "{}")).toMatchObject({
+			mode: "live",
+			processed: 1,
+			total: 1,
+			registrySha256: "registry-sha",
+			blockedModelOutputCount: 1,
+		});
+		expect(head).toEqual({
+			status: "review",
+			content_sha256: "content-blocked-model",
+			registry_sha256: "registry-sha",
+		});
+		expect(queuedKnowledgeJob).toEqual({
+			kind: "rebuild_finance_knowledge",
+			status: "queued",
+			scope_id: "finance",
+		});
+	});
+
+	it("fails finance backlog jobs when persistence/classifier errors occur", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		const messageId = await insertMessageRow(db, {
+			id: "msg-finance-infra-error",
+			accountId: "acct-1",
+			contentSha256: "content-infra-error",
+		});
+		await insertMessageLabelRow(db, {
+			messageId,
+			primaryBucket: "finance",
+			contentSha256: "content-infra-error",
+			label: financeLabel(),
+		});
+
+		vi.doMock("#/lib/registry", () => ({
+			loadOperatorRegistry: vi.fn(async () => ({
+				sha256: "registry-sha",
+				importedAt: "2026-01-10T00:00:00.000Z",
+				sourceDir: "/tmp/registry",
+				identities: [],
+				institutions: [],
+				financialAccounts: [],
+				senderRules: [],
+			})),
+			matchRegistryForMessage: vi.fn(async () => ({
+				sha256: "registry-sha",
+				identities: [],
+				institutions: [],
+				financialAccounts: [],
+				senderRules: [],
+			})),
+		}));
+		vi.doMock("#/lib/finance-intel", () => ({
+			classifyFinanceMessageNow: vi.fn(async () => {
+				throw new Error("fixture persistence failure");
+			}),
+		}));
+
+		const jobs =
+			await runtime.importFresh<typeof import("#/lib/jobs")>("#/lib/jobs");
+		const worker =
+			await runtime.importFresh<typeof import("#/lib/worker")>("#/lib/worker");
+		const jobId = await jobs.queueJobIdempotent({
+			kind: "classify_finance_backlog",
+			scopeType: "account",
+			scopeId: "acct-1",
+		});
+
+		expect(await worker.runWorkerIteration({ waitOnIdle: false })).toBe(true);
+
+		const backlogJob = await db
+			.selectFrom("jobs")
+			.select([
+				"status",
+				"success_count",
+				"error_count",
+				"last_error",
+				"meta_json",
+			])
+			.where("id", "=", jobId)
+			.executeTakeFirstOrThrow();
+		const rebuildCount = await db
+			.selectFrom("jobs")
+			.select(({ fn }) => fn.countAll<number>().as("count"))
+			.where("kind", "=", "rebuild_finance_knowledge")
+			.executeTakeFirstOrThrow();
+
+		expect(backlogJob.status).toBe("failed");
+		expect(backlogJob.success_count).toBe(0);
+		expect(backlogJob.error_count).toBe(1);
+		expect(backlogJob.last_error).toContain("Finance backlog failed 1 of 1");
+		expect(JSON.parse(backlogJob.meta_json ?? "{}")).toMatchObject({
+			mode: "live",
+			processed: 1,
+			total: 1,
+			registrySha256: "registry-sha",
+			blockedModelOutputCount: 0,
+		});
+		expect(Number(rebuildCount.count)).toBe(0);
+	});
+
 	it("completes finance backlog jobs when all finance heads are current", async () => {
 		const runtime = await createTestRuntime();
 		const { db } = await bootDb({ seedDefaultAccount: true });
@@ -410,12 +640,14 @@ describe("worker finance jobs", () => {
 			status: "ready",
 			contentSha256: "content-ready",
 			registrySha256: "registry-sha",
+			result: buildFinanceIntelV3(),
 		});
 		await insertSecondaryResultRow(db, {
 			messageId: parseErrorMessageId,
 			status: "blocked_parse_error",
 			contentSha256: "content-blocked",
 			registrySha256: "registry-sha",
+			result: buildFinanceIntelV3(),
 		});
 
 		vi.doMock("#/lib/registry", () => ({
