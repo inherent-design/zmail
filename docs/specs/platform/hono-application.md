@@ -199,6 +199,28 @@ No route handler may touch org-scoped storage before step 6 completes.
    - `X-Zmail-Title`
    - `X-Zmail-Url`
    - `X-Zmail-Page`
+   - `X-Zmail-Event-Cursor`
+
+### Enhanced island GET
+
+1. validate session and organization context
+2. resolve org runtime
+3. load domain data from org-scoped services
+4. detect `X-Zmail-Partial: islands`
+5. parse `X-Zmail-Islands` as a comma-separated list of route-scoped island ids
+6. render only requested island fragment templates
+7. return:
+   - `X-Zmail-Title`
+   - `X-Zmail-Url`
+   - `X-Zmail-Page`
+   - `X-Zmail-Event-Cursor`
+   - `X-Zmail-Islands`
+
+The response HTML body contains only an island fragment envelope with the
+rendered island roots. It must not include `#app-main`, document chrome, or
+unrequested sibling islands. If one or more requested islands are unsupported,
+the response may include fallback metadata such as `X-Zmail-Island-Missing`;
+the browser may then refresh `main` for the same page only.
 
 ### Browser POST
 
@@ -278,6 +300,7 @@ Hono JSX and `hono/jsx/dom` decide:
 - interactive island mount points
 - client-side enhancement after initial HTML delivery
 - partial-fragment rendering for enhanced navigation
+- page-owned island fragment rendering for targeted live updates
 
 ## SSE Contract
 

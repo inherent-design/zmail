@@ -116,12 +116,24 @@ rows become supporting evidence where compatible.
 `finance_patterns` records cross-time structures derived from staged entries and
 document coverage:
 
-- recurring merchant or counterparty cadence
+- recurring merchant or counterparty cadence, stored as
+  `pattern_kind = "recurring_merchant"` for subscription-lens consumers
 - subscription cadence and amount bands
 - payroll cadence
 - tax document cadence by tax year and issuer
 - statement coverage gaps by account/date range
 - duplicate or near-duplicate imports
+
+For `recurring_merchant` rows, `summary_json` should include:
+
+- `counterparty`
+- `book`
+- `transactionCount`
+- `canonicalKeys`
+- optional `cadence`
+- optional `amountBand`
+- optional `nextExpectedAt`
+- optional `lastAmountMinor`
 
 ## Rollup Model
 
