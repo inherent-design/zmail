@@ -11,6 +11,14 @@ const ANALYTICS_ISLANDS = [
 
 const STATUS_ISLANDS = ["finance.command-bar", "finance.export-health"];
 
+function shouldRefreshAnalytics(event) {
+	return (
+		event.topic === "finance" &&
+		(event.eventType === "finance.ledger_rebuilt" ||
+			event.eventType === "finance.patterns_rebuilt")
+	);
+}
+
 function financeIslandHints(event) {
 	const hinted = event.payload?.changeHints?.islands;
 	if (Array.isArray(hinted)) {
@@ -198,6 +206,7 @@ function chartIsland(id, optionBuilder) {
 			const root = document.querySelector(`[data-zmail-island="${id}"]`);
 			return root ? captureChartState(root) : null;
 		},
+		shouldRefresh: shouldRefreshAnalytics,
 	};
 }
 

@@ -78,6 +78,7 @@ const app = {
 	navigate: (url, options) => shellNav.navigate(url, options),
 	currentPage: () => pageRegistry.currentPage(),
 	currentPathname: () => currentPathname(basePath),
+	islandsForEvent: (event) => pageRegistry.islandsForEvent(event),
 };
 
 const shellNav = createShellNav({
