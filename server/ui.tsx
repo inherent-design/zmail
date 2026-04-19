@@ -1911,10 +1911,7 @@ export function renderRunsPage(data: RunsPageData) {
 									<td>{row.model ?? "n/a"}</td>
 									<td>{row.progress.phase ?? "n/a"}</td>
 									<td>
-										{formatProgress(
-											row.progress.processed,
-											row.progress.total,
-										)}
+										{formatProgress(row.progress.processed, row.progress.total)}
 									</td>
 									<td>{formatEta(row.progress.etaSeconds)}</td>
 									<td>{row.progress.updatedAt ?? "n/a"}</td>

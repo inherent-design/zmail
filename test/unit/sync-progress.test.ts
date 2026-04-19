@@ -54,10 +54,9 @@ describe("sync progress", () => {
 			backfillSnapshotUid: 100,
 			backfillNextUid: null,
 		});
-		const progress =
-			await runtime.importFresh<typeof import("#/lib/sync-progress")>(
-				"#/lib/sync-progress",
-			);
+		const progress = await runtime.importFresh<
+			typeof import("#/lib/sync-progress")
+		>("#/lib/sync-progress");
 
 		await expect(
 			progress.loadAccountSyncProgress("acct-complete"),
@@ -91,10 +90,9 @@ describe("sync progress", () => {
 			finishedAt: "2026-01-01T00:00:10.000Z",
 			meta: { processed: 20 },
 		});
-		const progress =
-			await runtime.importFresh<typeof import("#/lib/sync-progress")>(
-				"#/lib/sync-progress",
-			);
+		const progress = await runtime.importFresh<
+			typeof import("#/lib/sync-progress")
+		>("#/lib/sync-progress");
 
 		const snapshot = await progress.loadAccountSyncProgress("acct-active");
 		expect(snapshot).toMatchObject({
@@ -116,10 +114,9 @@ describe("sync progress", () => {
 			backfillSnapshotUid: 10,
 			backfillNextUid: 20,
 		});
-		const progress =
-			await runtime.importFresh<typeof import("#/lib/sync-progress")>(
-				"#/lib/sync-progress",
-			);
+		const progress = await runtime.importFresh<
+			typeof import("#/lib/sync-progress")
+		>("#/lib/sync-progress");
 
 		const snapshot = await progress.loadAccountSyncProgress("acct-sparse");
 		expect(snapshot.processed).toBe(0);
@@ -150,10 +147,9 @@ describe("sync progress", () => {
 				updatedAt: "2026-01-01T00:00:05.000Z",
 			},
 		});
-		const progress =
-			await runtime.importFresh<typeof import("#/lib/sync-progress")>(
-				"#/lib/sync-progress",
-			);
+		const progress = await runtime.importFresh<
+			typeof import("#/lib/sync-progress")
+		>("#/lib/sync-progress");
 
 		const snapshot = await progress.loadAccountSyncProgress("acct-running");
 		expect(snapshot).toMatchObject({
@@ -166,4 +162,3 @@ describe("sync progress", () => {
 		});
 	});
 });
-

@@ -217,23 +217,27 @@ describe("shell nav", () => {
 		vi.stubGlobal("DOMParser", dom.window.DOMParser);
 		const refreshResponse = abortableResponse();
 		const signals: AbortSignal[] = [];
-		const fetchImpl = vi.fn((_url: string | URL | Request, init?: RequestInit) => {
-			if (init?.signal) {
-				signals.push(init.signal);
-			}
-			if (signals.length === 1) {
-				init?.signal?.addEventListener("abort", () => refreshResponse.abort());
-				return refreshResponse.promise;
-			}
-			return Promise.resolve(
-				partialResponse({
-					page: "accounts",
-					title: "Accounts",
-					cursor: 12,
-					body: "<section>Accounts page</section>",
-				}),
-			);
-		});
+		const fetchImpl = vi.fn(
+			(_url: string | URL | Request, init?: RequestInit) => {
+				if (init?.signal) {
+					signals.push(init.signal);
+				}
+				if (signals.length === 1) {
+					init?.signal?.addEventListener("abort", () =>
+						refreshResponse.abort(),
+					);
+					return refreshResponse.promise;
+				}
+				return Promise.resolve(
+					partialResponse({
+						page: "accounts",
+						title: "Accounts",
+						cursor: 12,
+						body: "<section>Accounts page</section>",
+					}),
+				);
+			},
+		);
 		const shellNav = createShellNav({
 			documentRef: dom.window.document,
 			windowRef: dom.window as unknown as Window,

@@ -214,12 +214,14 @@ describe("log", () => {
 
 		const log =
 			await runtime.importFresh<typeof import("#/lib/log")>("#/lib/log");
-		log.startTrace({
-			kind: "test",
-			operation: "file_sink",
-		}).complete("test.file_sink", {
-			refresh_token: "secret-refresh",
-		});
+		log
+			.startTrace({
+				kind: "test",
+				operation: "file_sink",
+			})
+			.complete("test.file_sink", {
+				refresh_token: "secret-refresh",
+			});
 
 		const event = JSON.parse(readFileSync(logFile, "utf8").trim()) as Record<
 			string,
