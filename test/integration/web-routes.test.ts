@@ -1,3 +1,4 @@
+import { JSDOM } from "jsdom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -223,6 +224,58 @@ describe("Hono web routes", () => {
 		expect(html).toContain('data-zmail-island="finance.cashflow"');
 		expect(html).not.toContain('id="app-main"');
 		expect(html).not.toContain('data-zmail-island="finance.filters"');
+	});
+
+	it("escapes JSON island props in raw script bodies", async () => {
+		const { app } = await loadServerApp();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		const hostile = "</script><img src=x onerror=alert(1)>";
+
+		await db
+			.insertInto("finance_ledger_entries")
+			.values({
+				id: "ledger-hostile-category",
+				canonical_key: "hostile-category:2026-03-15",
+				status: "ready",
+				source_authority: "email",
+				occurred_at: "2026-03-15",
+				posted_at: null,
+				cleared_at: null,
+				description: "Hostile category fixture",
+				counterparty: "Fixture",
+				direction: "expense",
+				amount_value: "12.34",
+				amount_minor: 1234,
+				currency: "USD",
+				book: "business",
+				business_use_percent: null,
+				debit_account: null,
+				credit_account: null,
+				account_mapping_key: null,
+				field_confidence_json: JSON.stringify({ overall: 1 }),
+				ledger_metadata_json: JSON.stringify({
+					categoryPrimary: hostile,
+					categorySecondary: "fixture",
+				}),
+				raw_payload_json: JSON.stringify({ seeded: true }),
+				created_at: "2026-03-31T00:00:00.000Z",
+				updated_at: "2026-03-31T00:00:00.000Z",
+			})
+			.execute();
+
+		const response = await app.request("http://localhost/finance?year=2026");
+
+		expect(response.status).toBe(200);
+		const html = await response.text();
+		expect(html).toContain("\\u003c/script");
+		expect(html).not.toContain("<img src=x");
+		const dom = new JSDOM(html);
+		const script = dom.window.document.querySelector(
+			'script[data-zmail-island-props="finance.categories"]',
+		);
+		expect(script).not.toBeNull();
+		const props = JSON.parse(script?.textContent ?? "{}");
+		expect(props.categories[0].primaryCategory).toBe(hostile);
 	});
 
 	it("marks missing finance islands for same-page fallback", async () => {

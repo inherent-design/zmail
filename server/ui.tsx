@@ -67,6 +67,15 @@ function json(value: unknown) {
 	return JSON.stringify(value, null, 2);
 }
 
+function jsonScript(value: unknown) {
+	return JSON.stringify(value)
+		.replaceAll("<", "\\u003c")
+		.replaceAll(">", "\\u003e")
+		.replaceAll("&", "\\u0026")
+		.replaceAll("\u2028", "\\u2028")
+		.replaceAll("\u2029", "\\u2029");
+}
+
 function href(path: string) {
 	return appPath(path);
 }
@@ -93,7 +102,7 @@ export function DocumentShell(input: {
 				<script
 					type="importmap"
 					dangerouslySetInnerHTML={{
-						__html: JSON.stringify({
+						__html: jsonScript({
 							imports: {
 								"echarts/": assetPath("/vendor/echarts/"),
 								"zrender/": assetPath("/vendor/zrender/"),
@@ -169,7 +178,7 @@ export function IslandPropsScript(input: { id: string; props: unknown }) {
 		<script
 			type="application/json"
 			data-zmail-island-props={input.id}
-			dangerouslySetInnerHTML={{ __html: JSON.stringify(input.props) }}
+			dangerouslySetInnerHTML={{ __html: jsonScript(input.props) }}
 		/>
 	);
 }
