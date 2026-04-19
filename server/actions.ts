@@ -1446,6 +1446,111 @@ export async function loadFinanceData(
 					(exportItemCounts.get(row.export_run_id) ?? 0) + 1,
 				);
 			}
+			const cashflowSeries = Array.from({ length: 12 }, (_, index) => {
+				const month = `${yearString}-${String(index + 1).padStart(2, "0")}`;
+				return {
+					month,
+					inflowMinor: 0,
+					outflowMinor: 0,
+					netMinor: 0,
+					transactionCount: 0,
+				};
+			});
+			const categoryBreakdownMap = new Map<
+				string,
+				{
+					primaryCategory: string;
+					secondaryCategory: string | null;
+					inflowMinor: number;
+					outflowMinor: number;
+					netMinor: number;
+					transactionCount: number;
+				}
+			>();
+			for (const entry of filteredLedger) {
+				if (entry.status === "duplicate") {
+					continue;
+				}
+				const amount = Math.abs(entry.amountMinor ?? 0);
+				const monthIndex = entry.occurredAt
+					? Number.parseInt(entry.occurredAt.slice(5, 7), 10) - 1
+					: -1;
+				if (monthIndex >= 0 && monthIndex < cashflowSeries.length) {
+					const point = cashflowSeries[monthIndex];
+					point.transactionCount += 1;
+					if (entry.direction === "income") {
+						point.inflowMinor += amount;
+						point.netMinor += amount;
+					} else if (entry.direction === "expense") {
+						point.outflowMinor += amount;
+						point.netMinor -= amount;
+					}
+				}
+				const categoryKey = `${entry.primaryCategory}:${entry.secondaryCategory ?? ""}`;
+				const category = categoryBreakdownMap.get(categoryKey) ?? {
+					primaryCategory: entry.primaryCategory,
+					secondaryCategory: entry.secondaryCategory,
+					inflowMinor: 0,
+					outflowMinor: 0,
+					netMinor: 0,
+					transactionCount: 0,
+				};
+				category.transactionCount += 1;
+				if (entry.direction === "income") {
+					category.inflowMinor += amount;
+					category.netMinor += amount;
+				} else if (entry.direction === "expense") {
+					category.outflowMinor += amount;
+					category.netMinor -= amount;
+				}
+				categoryBreakdownMap.set(categoryKey, category);
+			}
+			const categoryBreakdown = [...categoryBreakdownMap.values()].sort(
+				(left, right) =>
+					right.outflowMinor - left.outflowMinor ||
+					right.inflowMinor - left.inflowMinor ||
+					left.primaryCategory.localeCompare(right.primaryCategory),
+			);
+			const subscriptionPatterns = patternRows
+				.filter((row) => row.pattern_kind === "recurring_merchant")
+				.map((row) => {
+					const summary = safeJsonParse<{
+						counterparty?: string | null;
+						book?: string | null;
+						transactionCount?: number | null;
+						canonicalKeys?: string[] | null;
+						cadence?: string | null;
+						amountBand?: string | null;
+						nextExpectedAt?: string | null;
+						lastAmountMinor?: number | null;
+					}>(row.summary_json, {});
+					return {
+						id: row.id,
+						patternKey: row.pattern_key,
+						status: row.status,
+						confidence: row.confidence,
+						counterparty: summary.counterparty ?? row.pattern_key,
+						book: summary.book ?? null,
+						transactionCount:
+							typeof summary.transactionCount === "number"
+								? summary.transactionCount
+								: 0,
+						canonicalKeyCount: Array.isArray(summary.canonicalKeys)
+							? summary.canonicalKeys.length
+							: 0,
+						cadence: summary.cadence ?? null,
+						amountBand: summary.amountBand ?? null,
+						nextExpectedAt: summary.nextExpectedAt ?? null,
+						lastAmountMinor:
+							typeof summary.lastAmountMinor === "number"
+								? summary.lastAmountMinor
+								: null,
+						firstSeenAt: row.first_seen_at,
+						lastSeenAt: row.last_seen_at,
+						summary,
+					};
+				});
+			const latestExport = exportRuns[0] ?? null;
 
 			return {
 				year: selectedYear,
@@ -1487,6 +1592,31 @@ export async function loadFinanceData(
 					jobs: jobCounts,
 				},
 				summary,
+				cashflowSeries,
+				categoryBreakdown,
+				subscriptionPatterns,
+				exportHealth: {
+					readyCount: coverage.ledgerReadyCount,
+					reviewCount: coverage.ledgerReviewCount,
+					blockedCount: coverage.ledgerBlockedCount,
+					duplicateCount: coverage.ledgerDuplicateCount,
+					latestExport: latestExport
+						? {
+								id: latestExport.id,
+								status: latestExport.status,
+								strict: Boolean(latestExport.strict),
+								year: latestExport.year,
+								outDir: latestExport.out_dir,
+								itemCount: exportItemCounts.get(latestExport.id) ?? 0,
+								createdAt: latestExport.created_at,
+								completedAt: latestExport.completed_at,
+								validation: safeJsonParse<Record<string, unknown> | null>(
+									latestExport.validation_json,
+									null,
+								),
+							}
+						: null,
+				},
 				rollups: (hasGranularFilters
 					? derivedRollups.rollups
 					: refreshedRollupRows
