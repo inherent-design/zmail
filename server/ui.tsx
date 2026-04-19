@@ -42,6 +42,27 @@ type RunMeta = {
 	lastErrorMessage?: string;
 };
 
+export type PageMode = "static" | "hybrid" | "dynamic-root";
+
+export type IslandStatePolicy = {
+	semanticUrlKeys: string[];
+	sessionKeys: string[];
+	ephemeralKeys: string[];
+	restoreOnSwap: boolean;
+	shareable: "none" | "committed" | "live";
+};
+
+export type IslandDefinition = {
+	id: string;
+	page: string;
+	mode: "server" | "client" | "dynamic-root";
+	fragmentUrl: string;
+	topics: string[];
+	statePolicy: IslandStatePolicy;
+};
+
+export type IslandRenderMap = Record<string, unknown>;
+
 function json(value: unknown) {
 	return JSON.stringify(value, null, 2);
 }
@@ -62,12 +83,24 @@ export function DocumentShell(input: {
 			data-page={input.page}
 			data-zmail-base-path={CLIENT_CONFIG.server.basePath}
 			data-zmail-event-cursor={String(input.eventCursor)}
+			data-zmail-state-scope="local"
 		>
 			<head>
 				<meta charSet="utf-8" />
 				<meta name="viewport" content="width=device-width, initial-scale=1" />
 				<title>{input.title}</title>
 				<link rel="stylesheet" href={assetPath("/assets/styles.css")} />
+				<script
+					type="importmap"
+					dangerouslySetInnerHTML={{
+						__html: JSON.stringify({
+							imports: {
+								"echarts/": assetPath("/vendor/echarts/"),
+								"zrender/": assetPath("/vendor/zrender/"),
+							},
+						}),
+					}}
+				/>
 			</head>
 			<body>
 				<div class="shell">
@@ -107,6 +140,48 @@ export function PartialMain(input: {
 			id="app-main"
 			class="page"
 			data-page={input.page}
+			data-event-cursor={String(input.eventCursor)}
+		>
+			{input.children}
+		</div>
+	);
+}
+
+export function IslandFrame(input: {
+	id: string;
+	mode?: "server" | "client" | "dynamic-root";
+	class?: string;
+	children: unknown;
+}) {
+	return (
+		<section
+			class={input.class ?? "card stack"}
+			data-zmail-island={input.id}
+			data-zmail-island-mode={input.mode ?? "server"}
+		>
+			{input.children}
+		</section>
+	);
+}
+
+export function IslandPropsScript(input: { id: string; props: unknown }) {
+	return (
+		<script
+			type="application/json"
+			data-zmail-island-props={input.id}
+			dangerouslySetInnerHTML={{ __html: JSON.stringify(input.props) }}
+		/>
+	);
+}
+
+export function IslandFragmentEnvelope(input: {
+	page: string;
+	eventCursor: number;
+	children: unknown;
+}) {
+	return (
+		<div
+			data-zmail-island-fragments={input.page}
 			data-event-cursor={String(input.eventCursor)}
 		>
 			{input.children}
@@ -1188,7 +1263,18 @@ function filterHref(
 	return href(`/finance?${params.toString()}`);
 }
 
-export function renderFinancePage(
+export const FINANCE_ISLAND_IDS = [
+	"finance.command-bar",
+	"finance.filters",
+	"finance.summary",
+	"finance.cashflow",
+	"finance.categories",
+	"finance.subscriptions",
+	"finance.ledger-preview",
+	"finance.export-health",
+] as const;
+
+function financePageContext(
 	data: FinancePageData,
 	currentSearch: URLSearchParams,
 ) {
@@ -1224,12 +1310,30 @@ export function renderFinancePage(
 	) {
 		warnings.push("Ledger staging tables are still empty.");
 	}
+	return { tabKeys, activeTab, tabHref, warnings };
+}
 
-	return (
-		<>
-			<section class="card stack" data-page-actions="finance">
+function percent(value: number) {
+	return `${Math.round(value * 100)}%`;
+}
+
+export function renderFinanceIslandMap(
+	data: FinancePageData,
+	currentSearch: URLSearchParams,
+) {
+	const { tabKeys, activeTab, tabHref, warnings } = financePageContext(
+		data,
+		currentSearch,
+	);
+
+	return {
+		"finance.command-bar": (
+			<IslandFrame id="finance.command-bar" class="card stack finance-command">
 				<div class="row">
-					<h1>Finance knowledge</h1>
+					<div>
+						<h1>Finance instrument panel</h1>
+						<p class="muted">Ledger staging, cashflow, recurring charges.</p>
+					</div>
 					<div class="actions">
 						<Button
 							label="Import registry"
@@ -1261,7 +1365,7 @@ export function renderFinancePage(
 					<Pill>ledger: {String(data.pipelineStatus.ledgerEntryCount)}</Pill>
 				</div>
 				{warnings.length ? (
-					<div class="stack">
+					<div class="warning-strip">
 						{warnings.map((warning) => (
 							<p key={warning} class="muted">
 								Warning: {warning}
@@ -1280,8 +1384,10 @@ export function renderFinancePage(
 						</a>
 					))}
 				</nav>
-			</section>
-			<section class="card stack">
+			</IslandFrame>
+		),
+		"finance.filters": (
+			<IslandFrame id="finance.filters" class="card stack finance-filters">
 				<h2>Filters</h2>
 				<div class="stack">
 					<div class="row">
@@ -1358,8 +1464,10 @@ export function renderFinancePage(
 						</div>
 					) : null}
 				</div>
-			</section>
-			<section class="stats">
+			</IslandFrame>
+		),
+		"finance.summary": (
+			<IslandFrame id="finance.summary" class="stats finance-kpis">
 				<div class="stat">
 					<span class="muted">Inflow</span>
 					<strong>{money(data.summary.inflowMinor)}</strong>
@@ -1384,11 +1492,135 @@ export function renderFinancePage(
 					<span class="muted">Review</span>
 					<strong>{String(data.pipelineStatus.ledgerReviewCount)}</strong>
 				</div>
-			</section>
-
-			{activeTab === "overview" ? (
-				<>
-					<section class="card stack">
+			</IslandFrame>
+		),
+		"finance.cashflow": (
+			<IslandFrame id="finance.cashflow" class="card stack chart-card">
+				<div class="row">
+					<div>
+						<h2>Cashflow</h2>
+						<p class="muted">Monthly inflow, outflow, and net movement.</p>
+					</div>
+				</div>
+				<div
+					class="chart-frame"
+					data-finance-chart="cashflow"
+					role="img"
+					aria-label="Monthly finance cashflow chart"
+				/>
+				<IslandPropsScript
+					id="finance.cashflow"
+					props={{
+						year: data.year,
+						series: data.cashflowSeries,
+					}}
+				/>
+			</IslandFrame>
+		),
+		"finance.categories": (
+			<IslandFrame id="finance.categories" class="card stack chart-card">
+				<div class="row">
+					<div>
+						<h2>Category breakdown</h2>
+						<p class="muted">Outflow-first category pressure.</p>
+					</div>
+				</div>
+				<div
+					class="chart-frame"
+					data-finance-chart="categories"
+					role="img"
+					aria-label="Finance category breakdown chart"
+				/>
+				<IslandPropsScript
+					id="finance.categories"
+					props={{
+						categories: data.categoryBreakdown.slice(0, 12),
+					}}
+				/>
+				<table>
+					<thead>
+						<tr>
+							<th>Category</th>
+							<th>Outflow</th>
+							<th>Inflow</th>
+							<th>Net</th>
+							<th>Count</th>
+						</tr>
+					</thead>
+					<tbody>
+						{data.categoryBreakdown.slice(0, 8).map((row) => (
+							<tr key={`${row.primaryCategory}:${row.secondaryCategory ?? ""}`}>
+								<td>
+									{row.primaryCategory}
+									{row.secondaryCategory ? ` / ${row.secondaryCategory}` : ""}
+								</td>
+								<td>{money(row.outflowMinor)}</td>
+								<td>{money(row.inflowMinor)}</td>
+								<td>{money(row.netMinor)}</td>
+								<td>{String(row.transactionCount)}</td>
+							</tr>
+						))}
+						{data.categoryBreakdown.length === 0 ? (
+							<tr>
+								<td colspan={5}>No category data for current filters.</td>
+							</tr>
+						) : null}
+					</tbody>
+				</table>
+			</IslandFrame>
+		),
+		"finance.subscriptions": (
+			<IslandFrame id="finance.subscriptions" class="card stack">
+				<div class="row">
+					<div>
+						<h2>Recurring charges</h2>
+						<p class="muted">Subscription lens from materialized patterns.</p>
+					</div>
+					<Pill>{String(data.subscriptionPatterns.length)} patterns</Pill>
+				</div>
+				<table>
+					<thead>
+						<tr>
+							<th>Counterparty</th>
+							<th>Book</th>
+							<th>Count</th>
+							<th>Confidence</th>
+							<th>Last seen</th>
+							<th>Details</th>
+						</tr>
+					</thead>
+					<tbody>
+						{data.subscriptionPatterns.map((row) => (
+							<tr key={row.id}>
+								<td>{row.counterparty}</td>
+								<td>{row.book ?? "unknown"}</td>
+								<td>{String(row.transactionCount)}</td>
+								<td>{percent(row.confidence)}</td>
+								<td>{row.lastSeenAt ?? "unknown"}</td>
+								<td>
+									<details class="drawer">
+										<summary>Open</summary>
+										<JsonBlock value={row.summary} />
+									</details>
+								</td>
+							</tr>
+						))}
+						{data.subscriptionPatterns.length === 0 ? (
+							<tr>
+								<td colspan={6}>
+									No recurring patterns yet. Rebuild finance knowledge after
+									finance classification catches up.
+								</td>
+							</tr>
+						) : null}
+					</tbody>
+				</table>
+			</IslandFrame>
+		),
+		"finance.ledger-preview": (
+			<IslandFrame id="finance.ledger-preview" class="card stack">
+				{activeTab === "overview" ? (
+					<>
 						<h2>Rollups</h2>
 						<table>
 							<thead>
@@ -1419,127 +1651,62 @@ export function renderFinancePage(
 								) : null}
 							</tbody>
 						</table>
-					</section>
-					<section class="card stack">
-						<h2>Patterns</h2>
+					</>
+				) : null}
+
+				{activeTab === "ledger" ? (
+					<>
+						<h2>Ledger</h2>
 						<table>
 							<thead>
 								<tr>
-									<th>Kind</th>
-									<th>Key</th>
 									<th>Status</th>
-									<th>Confidence</th>
+									<th>When</th>
+									<th>Description</th>
+									<th>Amount</th>
+									<th>Book</th>
+									<th>Category</th>
+									<th>Source</th>
 									<th>Details</th>
 								</tr>
 							</thead>
 							<tbody>
-								{data.patterns.map((row) => (
-									<tr key={row.id}>
-										<td>{row.patternKind}</td>
-										<td>{row.patternKey}</td>
+								{data.ledgerPreview.map((row) => (
+									<tr key={row.canonicalKey}>
 										<td>{row.status}</td>
-										<td>{row.confidence.toFixed(2)}</td>
+										<td>{row.occurredAt ?? "unknown"}</td>
+										<td>{row.description ?? "n/a"}</td>
+										<td>
+											{row.amountMinor != null ? money(row.amountMinor) : "n/a"}
+										</td>
+										<td>{row.book}</td>
+										<td>
+											{row.primaryCategory}
+											{row.secondaryCategory
+												? ` / ${row.secondaryCategory}`
+												: ""}
+										</td>
+										<td>{row.sourceKind}</td>
 										<td>
 											<details class="drawer">
 												<summary>Open</summary>
-												<JsonBlock value={row.summary} />
+												<JsonBlock value={row} />
 											</details>
 										</td>
 									</tr>
 								))}
-								{data.patterns.length === 0 ? (
+								{data.ledgerPreview.length === 0 ? (
 									<tr>
-										<td colspan={5}>No patterns staged.</td>
+										<td colspan={8}>No ledger rows for current filters.</td>
 									</tr>
 								) : null}
 							</tbody>
 						</table>
-					</section>
-					<section class="card stack">
-						<h2>Account mappings</h2>
-						<table>
-							<thead>
-								<tr>
-									<th>Mapping</th>
-									<th>Book</th>
-									<th>Debit</th>
-									<th>Credit</th>
-									<th>Confidence</th>
-								</tr>
-							</thead>
-							<tbody>
-								{data.accountMappings.map((row) => (
-									<tr key={row.id}>
-										<td>{row.mappingKey}</td>
-										<td>{row.book}</td>
-										<td>{row.debitAccount ?? "unmapped"}</td>
-										<td>{row.creditAccount ?? "unmapped"}</td>
-										<td>{row.confidence.toFixed(2)}</td>
-									</tr>
-								))}
-								{data.accountMappings.length === 0 ? (
-									<tr>
-										<td colspan={5}>No account mappings cached.</td>
-									</tr>
-								) : null}
-							</tbody>
-						</table>
-					</section>
-				</>
-			) : null}
+					</>
+				) : null}
 
-			{activeTab === "ledger" ? (
-				<section class="card stack">
-					<h2>Ledger</h2>
-					<table>
-						<thead>
-							<tr>
-								<th>Status</th>
-								<th>When</th>
-								<th>Description</th>
-								<th>Amount</th>
-								<th>Book</th>
-								<th>Category</th>
-								<th>Source</th>
-								<th>Details</th>
-							</tr>
-						</thead>
-						<tbody>
-							{data.ledgerPreview.map((row) => (
-								<tr key={row.canonicalKey}>
-									<td>{row.status}</td>
-									<td>{row.occurredAt ?? "unknown"}</td>
-									<td>{row.description ?? "n/a"}</td>
-									<td>
-										{row.amountMinor != null ? money(row.amountMinor) : "n/a"}
-									</td>
-									<td>{row.book}</td>
-									<td>
-										{row.primaryCategory}
-										{row.secondaryCategory ? ` / ${row.secondaryCategory}` : ""}
-									</td>
-									<td>{row.sourceKind}</td>
-									<td>
-										<details class="drawer">
-											<summary>Open</summary>
-											<JsonBlock value={row} />
-										</details>
-									</td>
-								</tr>
-							))}
-							{data.ledgerPreview.length === 0 ? (
-								<tr>
-									<td colspan={8}>No ledger rows for current filters.</td>
-								</tr>
-							) : null}
-						</tbody>
-					</table>
-				</section>
-			) : null}
-
-			{activeTab === "imports" ? (
-				<>
-					<section class="card stack">
+				{activeTab === "imports" ? (
+					<>
 						<h2>Imported documents</h2>
 						<table>
 							<thead>
@@ -1576,17 +1743,14 @@ export function renderFinancePage(
 								) : null}
 							</tbody>
 						</table>
-					</section>
-					<section class="card stack">
-						<h2>Imported rows</h2>
+						<h2>Imported transactions</h2>
 						<table>
 							<thead>
 								<tr>
 									<th>Source</th>
-									<th>Posted</th>
+									<th>When</th>
 									<th>Description</th>
 									<th>Amount</th>
-									<th>Mapping</th>
 									<th>Details</th>
 								</tr>
 							</thead>
@@ -1594,12 +1758,9 @@ export function renderFinancePage(
 								{data.importTransactions.map((row) => (
 									<tr key={row.id}>
 										<td>{row.sourceKind}</td>
-										<td>{row.postedAt ?? row.occurredAt ?? "unknown"}</td>
+										<td>{row.occurredAt ?? row.postedAt ?? "unknown"}</td>
 										<td>{row.counterparty ?? row.description ?? "n/a"}</td>
-										<td>
-											{row.amountValue ?? "n/a"} {row.currency ?? ""}
-										</td>
-										<td>{row.accountMappingKey ?? "unmapped"}</td>
+										<td>{row.amountValue ?? "n/a"}</td>
 										<td>
 											<details class="drawer">
 												<summary>Open</summary>
@@ -1610,53 +1771,89 @@ export function renderFinancePage(
 								))}
 								{data.importTransactions.length === 0 ? (
 									<tr>
-										<td colspan={6}>No imported rows.</td>
+										<td colspan={5}>No imported transactions.</td>
 									</tr>
 								) : null}
 							</tbody>
 						</table>
-					</section>
-					<section class="card stack">
-						<h2>Registry suggestions</h2>
+					</>
+				) : null}
+
+				{activeTab === "review" ? (
+					<>
+						<h2>Review queue</h2>
 						<table>
 							<thead>
 								<tr>
-									<th>Kind</th>
-									<th>Source</th>
 									<th>Status</th>
-									<th>Confidence</th>
+									<th>When</th>
+									<th>Description</th>
+									<th>Amount</th>
+									<th>Book</th>
+									<th>Source</th>
 									<th>Details</th>
 								</tr>
 							</thead>
 							<tbody>
-								{data.registrySuggestions.map((row) => (
-									<tr key={row.id}>
-										<td>{row.entityKind}</td>
-										<td>{row.sourceKind}</td>
+								{data.reviewRows.map((row) => (
+									<tr key={row.canonicalKey}>
 										<td>{row.status}</td>
-										<td>{row.confidence.toFixed(2)}</td>
+										<td>{row.occurredAt ?? "unknown"}</td>
+										<td>{row.description ?? "n/a"}</td>
+										<td>
+											{row.amountMinor != null ? money(row.amountMinor) : "n/a"}
+										</td>
+										<td>{row.book}</td>
+										<td>{row.sourceKind}</td>
 										<td>
 											<details class="drawer">
 												<summary>Open</summary>
-												<JsonBlock value={row.suggestion} />
+												<JsonBlock value={row} />
 											</details>
 										</td>
 									</tr>
 								))}
-								{data.registrySuggestions.length === 0 ? (
+								{data.reviewRows.length === 0 ? (
 									<tr>
-										<td colspan={5}>No registry suggestions.</td>
+										<td colspan={7}>No unresolved ledger rows.</td>
 									</tr>
 								) : null}
 							</tbody>
 						</table>
-					</section>
-				</>
-			) : null}
+					</>
+				) : null}
+			</IslandFrame>
+		),
+		"finance.export-health": (
+			<IslandFrame id="finance.export-health" class="card stack">
+				{activeTab === "overview" ? (
+					<>
+						<h2>Beancount / Fava readiness</h2>
+						<div class="stats compact">
+							<div class="stat">
+								<span class="muted">Ready</span>
+								<strong>{String(data.exportHealth.readyCount)}</strong>
+							</div>
+							<div class="stat">
+								<span class="muted">Review</span>
+								<strong>{String(data.exportHealth.reviewCount)}</strong>
+							</div>
+							<div class="stat">
+								<span class="muted">Blocked</span>
+								<strong>{String(data.exportHealth.blockedCount)}</strong>
+							</div>
+							<div class="stat">
+								<span class="muted">Latest export</span>
+								<strong>
+									{data.exportHealth.latestExport?.status ?? "none"}
+								</strong>
+							</div>
+						</div>
+					</>
+				) : null}
 
-			{activeTab === "exports" ? (
-				<>
-					<section class="card stack" data-page-actions="finance">
+				{activeTab === "exports" ? (
+					<>
 						<h2>Start export</h2>
 						<form class="form-grid" data-rpc={appPath("/rpc/finance/export")}>
 							<label>
@@ -1681,8 +1878,6 @@ export function renderFinancePage(
 								</button>
 							</div>
 						</form>
-					</section>
-					<section class="card stack">
 						<h2>Export runs</h2>
 						<table>
 							<thead>
@@ -1724,55 +1919,19 @@ export function renderFinancePage(
 								) : null}
 							</tbody>
 						</table>
-					</section>
-				</>
-			) : null}
+					</>
+				) : null}
+			</IslandFrame>
+		),
+	} satisfies IslandRenderMap;
+}
 
-			{activeTab === "review" ? (
-				<section class="card stack">
-					<h2>Review queue</h2>
-					<table>
-						<thead>
-							<tr>
-								<th>Status</th>
-								<th>When</th>
-								<th>Description</th>
-								<th>Amount</th>
-								<th>Book</th>
-								<th>Source</th>
-								<th>Details</th>
-							</tr>
-						</thead>
-						<tbody>
-							{data.reviewRows.map((row) => (
-								<tr key={row.canonicalKey}>
-									<td>{row.status}</td>
-									<td>{row.occurredAt ?? "unknown"}</td>
-									<td>{row.description ?? "n/a"}</td>
-									<td>
-										{row.amountMinor != null ? money(row.amountMinor) : "n/a"}
-									</td>
-									<td>{row.book}</td>
-									<td>{row.sourceKind}</td>
-									<td>
-										<details class="drawer">
-											<summary>Open</summary>
-											<JsonBlock value={row} />
-										</details>
-									</td>
-								</tr>
-							))}
-							{data.reviewRows.length === 0 ? (
-								<tr>
-									<td colspan={7}>No unresolved ledger rows.</td>
-								</tr>
-							) : null}
-						</tbody>
-					</table>
-				</section>
-			) : null}
-		</>
-	);
+export function renderFinancePage(
+	data: FinancePageData,
+	currentSearch: URLSearchParams,
+) {
+	const islands = renderFinanceIslandMap(data, currentSearch);
+	return <>{FINANCE_ISLAND_IDS.map((id) => islands[id])}</>;
 }
 
 export function renderProfilePage(data: ProfilePageData) {
