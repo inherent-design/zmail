@@ -45,8 +45,8 @@ Core product responsibilities:
 ### Intelligence
 
 - moderation
-- root classification via `message-label.v2`
-- finance secondary classification via `finance-intel.v2`
+- root classification via `message-label.v3`
+- finance secondary classification via `finance-intel.v3`
 - deterministic category projection
 - overseer/profile generation
 
