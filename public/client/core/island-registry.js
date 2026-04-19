@@ -158,6 +158,15 @@ export function createIslandRegistry(loaders) {
 		await mountIsland(id, app, state);
 	}
 
+	function islandsForEvent(event) {
+		if (!currentModule?.islands) {
+			return [];
+		}
+		return Object.entries(currentModule.islands)
+			.filter(([, mod]) => mod?.shouldRefresh?.(event))
+			.map(([id]) => id);
+	}
+
 	function cleanup() {
 		if (typeof currentCleanup === "function") {
 			currentCleanup();
@@ -170,6 +179,7 @@ export function createIslandRegistry(loaders) {
 		mount,
 		beforeIslandSwap,
 		afterIslandSwap,
+		islandsForEvent,
 		cleanup,
 		currentPage: () => currentPage,
 	};

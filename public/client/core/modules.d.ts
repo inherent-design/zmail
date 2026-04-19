@@ -35,6 +35,7 @@ type IslandApp = {
 	navigate(url: string | URL, options?: unknown): Promise<void>;
 	currentPage(): string | null;
 	currentPathname(): string;
+	islandsForEvent(event: RuntimeEvent): string[];
 };
 
 type IslandContext = {
@@ -87,6 +88,7 @@ declare module "#/public/client/core/island-registry.js" {
 			state: unknown,
 			app: unknown,
 		): Promise<void>;
+		islandsForEvent(event: RuntimeEvent): string[];
 		cleanup(): void;
 		currentPage(): string | null;
 	};
