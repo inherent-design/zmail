@@ -65,19 +65,43 @@ Active classifier:
 
 ### Trigger rules
 
-Run only when:
+Root eligibility requires:
 
 - current root label exists
 - current root label schema is `message-label.v3`
 - `rootLabel.finance.relevant === true`
 - `rootLabel.finance.requiresFinanceIntel === true`
-- `messages.parse_status === "parsed"`
+
+Parsed message behavior:
+
+- when `messages.parse_status === "parsed"`, run `finance-intel.v3`
+  extraction unless the current head is fresh
+
+Parse-error backlog behavior:
+
+- when `messages.parse_status === "error"`, do not skip backlog processing
+- persist or refresh a `finance_intel` secondary head with status
+  `blocked_parse_error`
+- the blocked head uses schema `finance-intel.v3`
+- the blocked result sets `ledgerReadiness.status = "blocked"` with reason
+  `parse_error`
+- refresh the blocked head when content hash, registry SHA, prompt version, or
+  prompt SHA is stale
+
+Targeted job behavior:
+
+- `classify_finance_messages` requires parsed targets
+- targeted jobs skip parse-error targets and record `meta.skipped[]` with reason
+  `parse_status_not_parsed`
 
 Skip when:
 
 - root label is missing
-- parse status is `error`
+- finance is not relevant
+- finance intel is not required
 - current finance head is fresh for content and registry inputs
+- targeted parse-error message: skip with metadata
+- backlog parse-error message: do not skip; write `blocked_parse_error`
 
 ### Freshness inputs
 

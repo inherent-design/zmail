@@ -51,6 +51,7 @@ Active job kinds:
 - `rebuild_finance_rollups`
 - `reconcile_registry_suggestions`
 - `import_finance_artifact`
+- `export_finance_beancount`
 - `rebuild_overseer`
 - `import_operator_registry`
 
@@ -75,6 +76,7 @@ Examples:
   with `meta.targetMessageIds`
 - finance rollup rebuild: `(kind, scope_type=system, scope_id=finance_rollups)`
 - finance import: `(kind, scope_type=system, scope_id=artifactSha256)`
+- finance export: `(kind=export_finance_beancount, scope_type=system, scope_id=exportRunId)`
 
 The finance import queue scope must match the artifact dedup key:
 
