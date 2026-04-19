@@ -112,6 +112,7 @@ requires an active org and `org_operator` or higher.
 ### Browser vendor asset routes
 
 - `GET /vendor/echarts/*`
+- `GET /vendor/tslib/*`
 - `GET /vendor/zrender/*`
 
 These routes serve browser ESM dependencies referenced by the import map. They

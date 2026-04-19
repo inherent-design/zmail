@@ -106,6 +106,7 @@ export function DocumentShell(input: {
 						__html: jsonScript({
 							imports: {
 								"echarts/": assetPath("/vendor/echarts/"),
+								tslib: assetPath("/vendor/tslib/tslib.es6.js"),
 								"zrender/": assetPath("/vendor/zrender/"),
 							},
 						}),
@@ -134,6 +135,7 @@ export function DocumentShell(input: {
 						{input.children}
 					</main>
 				</div>
+				<script type="module" src={assetPath("/client/core/browser-env.js")} />
 				<script type="module" src={assetPath("/client/app.js")}></script>
 			</body>
 		</html>

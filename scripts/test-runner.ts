@@ -182,12 +182,14 @@ export const UNIT_BUCKETS: UnitBucket[] = [
 		name: "runtime-scripts",
 		tests: [
 			"test/unit/scripts.test.ts",
+			"test/unit/island-registry.test.ts",
 			"test/unit/shell-nav.test.ts",
 			"test/unit/test-helpers-e2e-scenarios.test.ts",
 			"test/unit/test-helpers-labels.test.ts",
 			"test/unit/test-runner.test.ts",
 		],
 		coverageInclude: [
+			"public/client/core/island-registry.js",
 			"public/client/core/shell-nav.ts",
 			"scripts/**/*.ts",
 			"test/helpers/**/*.ts",
