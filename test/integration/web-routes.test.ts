@@ -106,6 +106,8 @@ describe("Hono web routes", () => {
 		expect(homeHtml).toContain(
 			`data-zmail-event-cursor="${String(latestEvent.id)}"`,
 		);
+		expect(homeHtml).toContain('data-zmail-state-scope="org:local"');
+		expect(homeHtml).not.toContain('data-zmail-state-scope="local"');
 		expect(homeHtml).toContain(`data-event-cursor="${String(latestEvent.id)}"`);
 
 		const accounts = await app.request("http://localhost/accounts");
