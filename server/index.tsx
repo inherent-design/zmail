@@ -423,6 +423,7 @@ app.get(config.observability.metricsPath, async (c) => {
 
 webApp.use("/client/*", serveStatic({ root: "./public" }));
 webApp.use("/assets/*", serveStatic({ root: "./public" }));
+// Browser ESM vendor routes for import-map modules only. Do not mount org data here.
 webApp.use(
 	"/vendor/echarts/*",
 	serveStatic({
@@ -437,6 +438,8 @@ webApp.use(
 		rewriteRequestPath: (path) => path.replace(/^\/vendor\/zrender/, ""),
 	}),
 );
+webApp.all("/vendor/echarts/*", (c) => c.text("Not found", 404));
+webApp.all("/vendor/zrender/*", (c) => c.text("Not found", 404));
 
 webApp.get("/auth/login", handleLogin);
 webApp.get("/auth/callback", handleAuthCallback);
