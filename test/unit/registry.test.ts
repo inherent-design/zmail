@@ -15,6 +15,8 @@ describe("registry", () => {
 	it("imports registry yaml, marks finance heads stale, and matches known facts", async () => {
 		const runtime = await createTestRuntime();
 		const { db } = await bootDb({ seedDefaultAccount: true });
+		const configModule =
+			await runtime.importFresh<typeof import("#/lib/config")>("#/lib/config");
 		const messageId = await insertMessageRow(db, {
 			accountId: "acct-1",
 			subject: "Checking account statement ending 4242",
@@ -28,7 +30,7 @@ describe("registry", () => {
 			registrySha256: "registry-old",
 		});
 
-		const registryDir = join(runtime.dataDir, "operator", "registry");
+		const registryDir = configModule.registryDir();
 		await mkdir(registryDir, { recursive: true });
 		await writeFile(
 			join(registryDir, "identities.yaml"),
@@ -129,6 +131,7 @@ describe("registry", () => {
 			institutions: 1,
 			financialAccounts: 1,
 			senderRules: 1,
+			accountMappings: 0,
 		});
 		expect(snapshot.identities).toHaveLength(1);
 		expect(snapshot.institutions).toHaveLength(1);
@@ -148,7 +151,9 @@ describe("registry", () => {
 	it("treats missing and empty registry yaml files as empty inputs", async () => {
 		const runtime = await createTestRuntime();
 		await bootDb({ seedDefaultAccount: true });
-		const registryDir = join(runtime.dataDir, "operator", "registry");
+		const configModule =
+			await runtime.importFresh<typeof import("#/lib/config")>("#/lib/config");
+		const registryDir = configModule.registryDir();
 		await mkdir(registryDir, { recursive: true });
 		await writeFile(join(registryDir, "identities.yaml"), "");
 
@@ -163,13 +168,16 @@ describe("registry", () => {
 			institutions: 0,
 			financialAccounts: 0,
 			senderRules: 0,
+			accountMappings: 0,
 		});
 	});
 
 	it("imports registry yaml rows with optional last4 and domain omitted", async () => {
 		const runtime = await createTestRuntime();
 		await bootDb({ seedDefaultAccount: true });
-		const registryDir = join(runtime.dataDir, "operator", "registry");
+		const configModule =
+			await runtime.importFresh<typeof import("#/lib/config")>("#/lib/config");
+		const registryDir = configModule.registryDir();
 		await mkdir(registryDir, { recursive: true });
 		await writeFile(join(registryDir, "identities.yaml"), "[]\n");
 		await writeFile(join(registryDir, "institutions.yaml"), "[]\n");
@@ -202,6 +210,7 @@ describe("registry", () => {
 			institutions: 0,
 			financialAccounts: 1,
 			senderRules: 1,
+			accountMappings: 0,
 		});
 		expect(snapshot.financialAccounts[0]?.accountLast4).toBeNull();
 		expect(snapshot.senderRules[0]).toMatchObject({
@@ -733,13 +742,15 @@ describe("registry", () => {
 	it("materializes empty registry yaml files on first load", async () => {
 		const runtime = await createTestRuntime();
 		await bootDb({ seedDefaultAccount: true });
+		const configModule =
+			await runtime.importFresh<typeof import("#/lib/config")>("#/lib/config");
 
 		const registry =
 			await runtime.importFresh<typeof import("#/lib/registry")>(
 				"#/lib/registry",
 			);
 		const snapshot = await registry.loadOperatorRegistry();
-		const registryDir = join(runtime.dataDir, "operator", "registry");
+		const registryDir = configModule.registryDir();
 
 		expect(snapshot.identities).toEqual([]);
 		expect(snapshot.institutions).toEqual([]);
@@ -747,9 +758,7 @@ describe("registry", () => {
 		expect(snapshot.senderRules).toEqual([]);
 		expect(existsSync(join(registryDir, "identities.yaml"))).toBe(true);
 		expect(existsSync(join(registryDir, "institutions.yaml"))).toBe(true);
-		expect(existsSync(join(registryDir, "financial-accounts.yaml"))).toBe(
-			true,
-		);
+		expect(existsSync(join(registryDir, "financial-accounts.yaml"))).toBe(true);
 		expect(existsSync(join(registryDir, "sender-rules.yaml"))).toBe(true);
 	});
 });

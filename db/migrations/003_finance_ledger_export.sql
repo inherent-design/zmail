@@ -1,0 +1,4 @@
+-- 003: Stable history stamp for finance ledger/export tables.
+--
+-- The finance ledger/export schema is now part of the canonical 001 baseline.
+-- This file intentionally contains no replayed column-add statements.

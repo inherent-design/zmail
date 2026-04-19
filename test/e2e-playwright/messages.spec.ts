@@ -7,7 +7,7 @@ import {
 } from "./helpers";
 import { PLAYWRIGHT_SCENARIOS } from "./scenarios";
 
-test("classify backlog queues a run and leaves a current v2 label", async ({
+test("classify backlog queues a run and leaves a current v3 label", async ({
 	page,
 }) => {
 	await gotoAndHydrate(
@@ -31,11 +31,11 @@ test("classify backlog queues a run and leaves a current v2 label", async ({
 		.locator(".card")
 		.filter({ hasText: "Current label" })
 		.first();
-	await expect(currentLabelCard).toContainText("message-label.v2");
+	await expect(currentLabelCard).toContainText("message-label.v3");
 	await expect(currentLabelCard).toContainText("primaryBucket");
 });
 
-test("classify now produces a current v2 label on message detail", async ({
+test("classify now produces a current v3 label on message detail", async ({
 	page,
 }) => {
 	await gotoAndHydrate(
@@ -56,6 +56,6 @@ test("classify now produces a current v2 label on message detail", async ({
 		.locator(".card")
 		.filter({ hasText: "Current label" })
 		.first();
-	await expect(currentLabelCard).toContainText("message-label.v2");
+	await expect(currentLabelCard).toContainText("message-label.v3");
 	await expect(currentLabelCard).toContainText("primaryBucket");
 });

@@ -1,0 +1,125 @@
+
+> zmail@ classify:migrate-finance-v3 /Users/zer0cell/production/zmail
+> tsx scripts/classify-migrate-finance-v3.ts --org org_01KPADQ5W2MM1C5XNEAW6DFKJD --archive --reclassify --confirm
+
+{"level":"info","timestamp":"2026-04-18T22:04:54.249Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"cli","operation":"classify:migrate-finance-v3","request_id":"c3322f81-3b82-40e6-99d4-4aea61c2c7d6","trace_id":"56fa375c-1cac-4db6-9eba-9ee3521a5b9a","span_id":"31d50e4a-ecd7-4175-bfeb-a296cce8e388","event":"cli.command.start","outcome":"in_progress","duration_ms":0}
+{"level":"info","timestamp":"2026-04-18T22:04:55.672Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"job","operation":"queue_job","job_kind":"classify_account_backlog","scope_type":"account","scope_id":"13e5d47f-07ea-4e8f-bd45-f992a3210e4f","request_id":"33f38802-93f1-4ebd-b6f4-7ecdd943f02a","trace_id":"d31377fc-22de-4813-b175-59cc0fc68e4a","span_id":"d1fe7229-56af-4095-b5aa-3aee01d8e0c7","job_id":"f8cdb4fe-40ad-4333-ad9e-da8ac3f9df3d","model":"gpt-5.4-mini","prompt_version":"classify-email-v3","event":"job.queued","outcome":"success","duration_ms":1}
+{"level":"info","timestamp":"2026-04-18T22:04:55.673Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"event","operation":"publish_runtime_event","topic":"jobs","event_type":"job.queued","entity_kind":"job","entity_id":"f8cdb4fe-40ad-4333-ad9e-da8ac3f9df3d","request_id":"6f246124-7340-49db-a3a1-36785584c786","trace_id":"4e3a314f-7e3d-429d-a7df-b37e647b4635","span_id":"36637811-4f75-4848-bb4c-3c7a08a70a8a","event_id":47917,"org_id":"org_01KPADQ5W2MM1C5XNEAW6DFKJD","event":"runtime.event.published","outcome":"success","duration_ms":1}
+{"level":"info","timestamp":"2026-04-18T22:04:55.673Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"event","operation":"publish_runtime_event","topic":"account:13e5d47f-07ea-4e8f-bd45-f992a3210e4f","event_type":"job.queued","entity_kind":"job","entity_id":"f8cdb4fe-40ad-4333-ad9e-da8ac3f9df3d","request_id":"ce26f07f-d141-4188-98a2-255854adb299","trace_id":"9d087f0a-d28f-4f00-9eef-154eb1da1ca9","span_id":"0c642aad-6046-4d2a-ad99-79ebfdeceab9","event_id":47918,"org_id":"org_01KPADQ5W2MM1C5XNEAW6DFKJD","event":"runtime.event.published","outcome":"success","duration_ms":1}
+{"level":"info","timestamp":"2026-04-18T22:04:55.673Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"event","operation":"publish_runtime_event","topic":"accounts","event_type":"job.queued","entity_kind":"job","entity_id":"f8cdb4fe-40ad-4333-ad9e-da8ac3f9df3d","request_id":"c9c1e7a4-de3c-4d1b-acac-a5268257f6b6","trace_id":"9ff9827c-c782-44aa-bc32-0d26a5eff379","span_id":"2b1c0f01-6583-4ab5-b9b0-337c9a8173f6","event_id":47919,"org_id":"org_01KPADQ5W2MM1C5XNEAW6DFKJD","event":"runtime.event.published","outcome":"success","duration_ms":1}
+{"level":"info","timestamp":"2026-04-18T22:04:55.674Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"job","operation":"queue_job","job_kind":"classify_finance_backlog","scope_type":"account","scope_id":"13e5d47f-07ea-4e8f-bd45-f992a3210e4f","request_id":"a1d98da4-4efc-4777-8e15-ae00c31459e8","trace_id":"7a1f26de-17bc-4b86-baae-3c4d5eff5cab","span_id":"32d6e12a-da30-4693-a701-18c7dde711a3","job_id":"ec9cb41d-9f6e-4006-965c-a5e58051c8c7","model":"gpt-5.4-mini","prompt_version":"finance-intel-v3","event":"job.queued","outcome":"success","duration_ms":2}
+{"level":"info","timestamp":"2026-04-18T22:04:55.674Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"job","operation":"queue_job","job_kind":"classify_account_backlog","scope_type":"account","scope_id":"bb57fb8f-5b38-4b24-84c8-f35da8170a7b","request_id":"1b98f3ab-85e8-4464-82af-f4862cae2b1b","trace_id":"02c1c610-5966-4688-b111-3db23b0b7344","span_id":"659707d1-3cd3-4c50-93f5-485a47f8d0e9","job_id":"1871cb1f-aabe-49ee-99d3-313383673c85","model":"gpt-5.4-mini","prompt_version":"classify-email-v3","event":"job.queued","outcome":"success","duration_ms":0}
+{"level":"info","timestamp":"2026-04-18T22:04:55.674Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"job","operation":"queue_job","job_kind":"classify_finance_backlog","scope_type":"account","scope_id":"bb57fb8f-5b38-4b24-84c8-f35da8170a7b","request_id":"d9a58486-ae56-4fd4-9411-9bfafc7727a1","trace_id":"61c9da46-2127-4ea9-89b7-59db46b612da","span_id":"16b41d5d-7b5b-44ff-80eb-6b93dd6860ba","job_id":"8ee52239-8a45-4972-85d7-368619fbc471","model":"gpt-5.4-mini","prompt_version":"finance-intel-v3","event":"job.queued","outcome":"success","duration_ms":0}
+{"level":"info","timestamp":"2026-04-18T22:04:55.675Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"event","operation":"publish_runtime_event","topic":"jobs","event_type":"job.queued","entity_kind":"job","entity_id":"ec9cb41d-9f6e-4006-965c-a5e58051c8c7","request_id":"0e857c20-3b27-4f72-aebe-de12cab87d61","trace_id":"03785dce-03c8-4800-bc87-2c95bf2cf08f","span_id":"3b1635af-6079-4f79-b5ac-fde389efe8ad","event_id":47920,"org_id":"org_01KPADQ5W2MM1C5XNEAW6DFKJD","event":"runtime.event.published","outcome":"success","duration_ms":2}
+{"level":"info","timestamp":"2026-04-18T22:04:55.675Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"event","operation":"publish_runtime_event","topic":"account:13e5d47f-07ea-4e8f-bd45-f992a3210e4f","event_type":"job.queued","entity_kind":"job","entity_id":"ec9cb41d-9f6e-4006-965c-a5e58051c8c7","request_id":"f0d8f2ec-cd3d-4a13-84b9-bd3e5c6ee969","trace_id":"b5403aaf-fb00-4499-831c-f0b5c0ac5dc0","span_id":"5ccfb43a-790a-46ec-b6b3-81bcf10c7d4d","event_id":47921,"org_id":"org_01KPADQ5W2MM1C5XNEAW6DFKJD","event":"runtime.event.published","outcome":"success","duration_ms":1}
+{"level":"info","timestamp":"2026-04-18T22:04:55.675Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"event","operation":"publish_runtime_event","topic":"accounts","event_type":"job.queued","entity_kind":"job","entity_id":"ec9cb41d-9f6e-4006-965c-a5e58051c8c7","request_id":"67f7ee92-21bc-41e8-b8ac-7819ac7f47c2","trace_id":"8fb0a018-348d-43bc-9d11-7d3ea472eecd","span_id":"4125376c-bd48-4d4a-a777-9c50d1a1037a","event_id":47922,"org_id":"org_01KPADQ5W2MM1C5XNEAW6DFKJD","event":"runtime.event.published","outcome":"success","duration_ms":1}
+{"level":"info","timestamp":"2026-04-18T22:04:55.675Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"event","operation":"publish_runtime_event","topic":"finance","event_type":"job.queued","entity_kind":"job","entity_id":"ec9cb41d-9f6e-4006-965c-a5e58051c8c7","request_id":"05161aaf-05af-4c6f-b47c-0553d999d0d4","trace_id":"12288d87-0adb-4f42-a789-97a34d8b12a4","span_id":"0ea01c52-03e7-4f60-bf9f-1001b3861ad5","event_id":47923,"org_id":"org_01KPADQ5W2MM1C5XNEAW6DFKJD","event":"runtime.event.published","outcome":"success","duration_ms":1}
+{"level":"info","timestamp":"2026-04-18T22:04:55.675Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"event","operation":"publish_runtime_event","topic":"jobs","event_type":"job.queued","entity_kind":"job","entity_id":"1871cb1f-aabe-49ee-99d3-313383673c85","request_id":"0ed8ab19-e426-48a6-bedf-7f383d062a29","trace_id":"30fa5bf5-1273-4ec3-8772-a5a1c5c3b112","span_id":"c7325364-34b8-4746-93c6-48555ef189dc","event_id":47924,"org_id":"org_01KPADQ5W2MM1C5XNEAW6DFKJD","event":"runtime.event.published","outcome":"success","duration_ms":1}
+{"level":"info","timestamp":"2026-04-18T22:04:55.675Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"event","operation":"publish_runtime_event","topic":"account:bb57fb8f-5b38-4b24-84c8-f35da8170a7b","event_type":"job.queued","entity_kind":"job","entity_id":"1871cb1f-aabe-49ee-99d3-313383673c85","request_id":"93f086f0-f026-440e-acd1-d0fa46498bcc","trace_id":"24a8acc6-4f31-4a55-9050-afdd4b1ce31a","span_id":"d14c03d3-c5d6-4a31-bf9d-03344668d495","event_id":47925,"org_id":"org_01KPADQ5W2MM1C5XNEAW6DFKJD","event":"runtime.event.published","outcome":"success","duration_ms":1}
+{"level":"info","timestamp":"2026-04-18T22:04:55.676Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"event","operation":"publish_runtime_event","topic":"accounts","event_type":"job.queued","entity_kind":"job","entity_id":"1871cb1f-aabe-49ee-99d3-313383673c85","request_id":"a19b7790-a582-4ce2-a9df-cb945b536447","trace_id":"e3ef1021-a810-49c4-bdd6-42045c5886dc","span_id":"c135b005-5cf9-49d2-b6c5-dfb952fce755","event_id":47926,"org_id":"org_01KPADQ5W2MM1C5XNEAW6DFKJD","event":"runtime.event.published","outcome":"success","duration_ms":2}
+{"level":"info","timestamp":"2026-04-18T22:04:55.676Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"event","operation":"publish_runtime_event","topic":"jobs","event_type":"job.queued","entity_kind":"job","entity_id":"8ee52239-8a45-4972-85d7-368619fbc471","request_id":"e25f76fd-b508-41ab-bb13-b7d63e40d171","trace_id":"5d71ae49-6d5e-4c5a-925f-f48660108d94","span_id":"05a60fac-310a-4b81-8f24-56867c5989bd","event_id":47927,"org_id":"org_01KPADQ5W2MM1C5XNEAW6DFKJD","event":"runtime.event.published","outcome":"success","duration_ms":2}
+{"level":"info","timestamp":"2026-04-18T22:04:55.676Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"event","operation":"publish_runtime_event","topic":"account:bb57fb8f-5b38-4b24-84c8-f35da8170a7b","event_type":"job.queued","entity_kind":"job","entity_id":"8ee52239-8a45-4972-85d7-368619fbc471","request_id":"1ed9f4c1-507d-4d29-ab8e-f6e1d0d0f6bd","trace_id":"0d81b5a9-1520-4c71-a1a7-313edd79fd07","span_id":"a07b2dbe-eace-4497-bca9-b5a1f00d48df","event_id":47928,"org_id":"org_01KPADQ5W2MM1C5XNEAW6DFKJD","event":"runtime.event.published","outcome":"success","duration_ms":2}
+{"level":"info","timestamp":"2026-04-18T22:04:55.676Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"event","operation":"publish_runtime_event","topic":"accounts","event_type":"job.queued","entity_kind":"job","entity_id":"8ee52239-8a45-4972-85d7-368619fbc471","request_id":"4ad03046-f09c-427b-9a39-b9bc4c918d28","trace_id":"64b8899e-ae92-4560-bc31-b2f8d856c110","span_id":"86c6c3de-9a81-4593-a5e6-e889e918cc78","event_id":47929,"org_id":"org_01KPADQ5W2MM1C5XNEAW6DFKJD","event":"runtime.event.published","outcome":"success","duration_ms":2}
+{"level":"info","timestamp":"2026-04-18T22:04:55.676Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"event","operation":"publish_runtime_event","topic":"finance","event_type":"job.queued","entity_kind":"job","entity_id":"8ee52239-8a45-4972-85d7-368619fbc471","request_id":"df3a82a7-5cfb-4ab8-a8b9-7ca266730506","trace_id":"50da34ae-7c76-44d3-ae96-55511b25aeb2","span_id":"59db9359-cb6b-4444-bc06-6cb579200498","event_id":47930,"org_id":"org_01KPADQ5W2MM1C5XNEAW6DFKJD","event":"runtime.event.published","outcome":"success","duration_ms":2}
+{"level":"info","timestamp":"2026-04-18T22:04:55.676Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"job","operation":"queue_job_idempotent","job_kind":"classify_account_backlog","scope_type":"account","scope_id":"c5fcb5f9-e46b-460d-8277-3d0160265e85","request_id":"ab1f50ad-f777-4623-803e-9d5fad2010f0","trace_id":"4e8e400b-1b73-4f00-8769-83b1117656bd","span_id":"ad304900-45a1-4061-98c5-dc164105abde","outcome":"duplicate","job_id":"a5bd4ca9-8000-4549-a85e-3841a62dc820","event":"job.queue_duplicate","duration_ms":2}
+{"level":"info","timestamp":"2026-04-18T22:04:55.677Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"job","operation":"queue_job","job_kind":"classify_finance_backlog","scope_type":"account","scope_id":"c5fcb5f9-e46b-460d-8277-3d0160265e85","request_id":"4568a2b5-1f42-4712-bba0-56abfc03537d","trace_id":"c90ca156-8a7a-40a2-8766-9043ab234f1f","span_id":"55e61782-b1a3-437f-a1d3-807306f85242","job_id":"c067d9cf-cf52-4325-b5f8-2af6b955c2a2","model":"gpt-5.4-mini","prompt_version":"finance-intel-v3","event":"job.queued","outcome":"success","duration_ms":1}
+{"level":"info","timestamp":"2026-04-18T22:04:55.677Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"event","operation":"publish_runtime_event","topic":"jobs","event_type":"job.queued","entity_kind":"job","entity_id":"c067d9cf-cf52-4325-b5f8-2af6b955c2a2","request_id":"91b327e7-7951-4d6a-a18e-05d05f89aec8","trace_id":"e60a35b0-268f-4116-a1bc-86e8ac322136","span_id":"fc58fb12-e407-4242-ae57-3e9baadcfdf9","event_id":47931,"org_id":"org_01KPADQ5W2MM1C5XNEAW6DFKJD","event":"runtime.event.published","outcome":"success","duration_ms":1}
+{"level":"info","timestamp":"2026-04-18T22:04:55.677Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"event","operation":"publish_runtime_event","topic":"account:c5fcb5f9-e46b-460d-8277-3d0160265e85","event_type":"job.queued","entity_kind":"job","entity_id":"c067d9cf-cf52-4325-b5f8-2af6b955c2a2","request_id":"d113cd39-75d2-4086-a63d-0da7c760f1d5","trace_id":"bfca9946-8552-4b6b-9f45-5faf0ef78573","span_id":"9edad1c2-ab4b-4c5f-bdb1-0956dcb7fc94","event_id":47932,"org_id":"org_01KPADQ5W2MM1C5XNEAW6DFKJD","event":"runtime.event.published","outcome":"success","duration_ms":1}
+{"level":"info","timestamp":"2026-04-18T22:04:55.677Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"event","operation":"publish_runtime_event","topic":"accounts","event_type":"job.queued","entity_kind":"job","entity_id":"c067d9cf-cf52-4325-b5f8-2af6b955c2a2","request_id":"a55b66c5-7698-46f4-bfcc-0ae464d1a426","trace_id":"a0b4c390-954a-4808-88a2-91ea2c29d421","span_id":"423cae96-2f90-485e-9989-6d30881cb9ca","event_id":47933,"org_id":"org_01KPADQ5W2MM1C5XNEAW6DFKJD","event":"runtime.event.published","outcome":"success","duration_ms":1}
+{"level":"info","timestamp":"2026-04-18T22:04:55.677Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"event","operation":"publish_runtime_event","topic":"finance","event_type":"job.queued","entity_kind":"job","entity_id":"c067d9cf-cf52-4325-b5f8-2af6b955c2a2","request_id":"1d3b1f2e-09b9-4458-87b3-7cf951833715","trace_id":"8cc1175a-fefa-47af-9a35-4a7904deb23e","span_id":"8b443615-3c15-4672-a55b-642f008bbe9d","event_id":47934,"org_id":"org_01KPADQ5W2MM1C5XNEAW6DFKJD","event":"runtime.event.published","outcome":"success","duration_ms":1}
+{"level":"info","timestamp":"2026-04-18T22:04:55.677Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"job","operation":"queue_job","job_kind":"classify_account_backlog","scope_type":"account","scope_id":"c676d516-3350-42d3-89e9-eb4042f421eb","request_id":"5b7aaa4d-2289-4231-ba30-8d3f3d26d4a7","trace_id":"f539f51c-3115-4bb4-9fc5-0b50060a3fbf","span_id":"a0e00618-5451-4f88-9b29-3ffe2737f2de","job_id":"49a99eeb-045c-4950-9b9b-e912d57362c5","model":"gpt-5.4-mini","prompt_version":"classify-email-v3","event":"job.queued","outcome":"success","duration_ms":0}
+{"level":"info","timestamp":"2026-04-18T22:04:55.677Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"event","operation":"publish_runtime_event","topic":"jobs","event_type":"job.queued","entity_kind":"job","entity_id":"49a99eeb-045c-4950-9b9b-e912d57362c5","request_id":"3d546672-6d31-44a3-8c1e-25475d899af0","trace_id":"c13fd176-97f7-43f7-89f3-bb665fe1abfd","span_id":"443fd66f-2a46-44b8-866b-bacc01a74978","event_id":47935,"org_id":"org_01KPADQ5W2MM1C5XNEAW6DFKJD","event":"runtime.event.published","outcome":"success","duration_ms":0}
+{"level":"info","timestamp":"2026-04-18T22:04:55.677Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"event","operation":"publish_runtime_event","topic":"account:c676d516-3350-42d3-89e9-eb4042f421eb","event_type":"job.queued","entity_kind":"job","entity_id":"49a99eeb-045c-4950-9b9b-e912d57362c5","request_id":"f256ca44-9303-4e2e-8d36-274d9acbef45","trace_id":"a40543f2-5456-46c9-b7f3-d50bec271cd1","span_id":"8cf6d632-e9b6-4843-97f4-f3cfde802121","event_id":47936,"org_id":"org_01KPADQ5W2MM1C5XNEAW6DFKJD","event":"runtime.event.published","outcome":"success","duration_ms":0}
+{"level":"info","timestamp":"2026-04-18T22:04:55.677Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"event","operation":"publish_runtime_event","topic":"accounts","event_type":"job.queued","entity_kind":"job","entity_id":"49a99eeb-045c-4950-9b9b-e912d57362c5","request_id":"436528f4-84ab-4694-8fda-2bd73cf32a6d","trace_id":"86157414-bb75-421f-b66d-c13f241b96cb","span_id":"44b88f14-895a-4e37-aa55-8d7ddd089345","event_id":47937,"org_id":"org_01KPADQ5W2MM1C5XNEAW6DFKJD","event":"runtime.event.published","outcome":"success","duration_ms":0}
+{"level":"info","timestamp":"2026-04-18T22:04:55.677Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"job","operation":"queue_job","job_kind":"classify_finance_backlog","scope_type":"account","scope_id":"c676d516-3350-42d3-89e9-eb4042f421eb","request_id":"1ad497ea-39bb-414a-9dc9-9a7844c25cb8","trace_id":"59f7d9fc-0f8f-4123-8bcf-3e9eaa6fbe8f","span_id":"94918807-9551-437a-9d28-af9159586d25","job_id":"b7baf152-e1ef-4a1c-acda-8796c1747827","model":"gpt-5.4-mini","prompt_version":"finance-intel-v3","event":"job.queued","outcome":"success","duration_ms":0}
+{
+  "ok": true,
+  "results": [
+    {
+      "orgId": "org_01KPADQ5W2MM1C5XNEAW6DFKJD",
+      "archiveRunId": "337c3daa-732f-4b3e-8418-ec77fc7c32ee",
+      "archivedAt": "2026-04-18T22:04:54.253Z",
+      "dryRun": false,
+      "archive": true,
+      "reclassify": true,
+      "clean": false,
+      "counts": [
+        {
+          "table": "classification_results",
+          "rows": 20815
+        },
+        {
+          "table": "message_labels",
+          "rows": 10742
+        },
+        {
+          "table": "reviews",
+          "rows": 58
+        },
+        {
+          "table": "message_secondary_results",
+          "rows": 4601
+        },
+        {
+          "table": "message_secondary_heads",
+          "rows": 2094
+        },
+        {
+          "table": "message_category_assignments",
+          "rows": 22790
+        },
+        {
+          "table": "message_category_assignment_heads",
+          "rows": 10742
+        },
+        {
+          "table": "finance_event_evidence",
+          "rows": 1429
+        },
+        {
+          "table": "finance_event_candidates",
+          "rows": 553
+        },
+        {
+          "table": "finance_document_candidates",
+          "rows": 796
+        },
+        {
+          "table": "finance_yearly_subcategory_rollups",
+          "rows": 31
+        },
+        {
+          "table": "finance_yearly_rollups",
+          "rows": 21
+        },
+        {
+          "table": "finance_export_items",
+          "rows": 0
+        },
+        {
+          "table": "finance_export_runs",
+          "rows": 0
+        },
+        {
+          "table": "finance_ledger_entry_sources",
+          "rows": 0
+        },
+        {
+          "table": "finance_ledger_entries",
+          "rows": 0
+        },
+        {
+          "table": "finance_patterns",
+          "rows": 0
+        }
+      ],
+      "queuedAccounts": 4,
+      "cleanResult": null
+    }
+  ]
+}
+{"level":"info","timestamp":"2026-04-18T22:04:55.677Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"cli","operation":"classify:migrate-finance-v3","request_id":"c3322f81-3b82-40e6-99d4-4aea61c2c7d6","trace_id":"56fa375c-1cac-4db6-9eba-9ee3521a5b9a","span_id":"31d50e4a-ecd7-4175-bfeb-a296cce8e388","event":"cli.command.complete","outcome":"success","duration_ms":1428}
+{"level":"info","timestamp":"2026-04-18T22:04:55.678Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"event","operation":"publish_runtime_event","topic":"jobs","event_type":"job.queued","entity_kind":"job","entity_id":"b7baf152-e1ef-4a1c-acda-8796c1747827","request_id":"9461664a-d916-4eff-a156-08408d0b4ca1","trace_id":"b30736ef-c7a9-4087-92da-697c9f578fb2","span_id":"d7456214-be77-484a-948a-b0487ef5b49f","event_id":47938,"org_id":"org_01KPADQ5W2MM1C5XNEAW6DFKJD","event":"runtime.event.published","outcome":"success","duration_ms":1}
+{"level":"info","timestamp":"2026-04-18T22:04:55.678Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"event","operation":"publish_runtime_event","topic":"account:c676d516-3350-42d3-89e9-eb4042f421eb","event_type":"job.queued","entity_kind":"job","entity_id":"b7baf152-e1ef-4a1c-acda-8796c1747827","request_id":"2fa8ca77-3204-42e6-a117-ed8d09f94a18","trace_id":"eb429077-32b7-425e-8250-e62e05d2c35e","span_id":"12e57c2a-8c05-480e-86b3-7366b393c53e","event_id":47939,"org_id":"org_01KPADQ5W2MM1C5XNEAW6DFKJD","event":"runtime.event.published","outcome":"success","duration_ms":1}
+{"level":"info","timestamp":"2026-04-18T22:04:55.678Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"event","operation":"publish_runtime_event","topic":"accounts","event_type":"job.queued","entity_kind":"job","entity_id":"b7baf152-e1ef-4a1c-acda-8796c1747827","request_id":"e652a751-1c5f-433e-93e1-bdc81291a7e2","trace_id":"7d869771-a730-42af-a7c9-bf3fc6194930","span_id":"9595805a-73c8-4f89-85d5-e671b295226e","event_id":47940,"org_id":"org_01KPADQ5W2MM1C5XNEAW6DFKJD","event":"runtime.event.published","outcome":"success","duration_ms":1}
+{"level":"info","timestamp":"2026-04-18T22:04:55.678Z","service":"zmail","version":"dev","commit_hash":"uncommitted","environment":"development","runtime":"node","kind":"event","operation":"publish_runtime_event","topic":"finance","event_type":"job.queued","entity_kind":"job","entity_id":"b7baf152-e1ef-4a1c-acda-8796c1747827","request_id":"26d2bc86-a484-4d22-b71f-e8e58cc31efa","trace_id":"0c427280-81d7-4e6b-9f39-4c5a915ae363","span_id":"feade93f-6995-4923-a2c6-f7fec3a18171","event_id":47941,"org_id":"org_01KPADQ5W2MM1C5XNEAW6DFKJD","event":"runtime.event.published","outcome":"success","duration_ms":1}

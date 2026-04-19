@@ -13,7 +13,12 @@ import {
 	MODERATION_PROMPT_VERSION,
 	OVERSEER_PROMPT_VERSION,
 } from "#/lib/config";
-import { getDb, runMigrations, safeJsonParse } from "#/lib/db";
+import {
+	ensureAccountOwnershipBackfill,
+	getDb,
+	runMigrations,
+	safeJsonParse,
+} from "#/lib/db";
 import {
 	claimNextJob,
 	completeJob,
@@ -32,20 +37,52 @@ import {
 	ensureModerationForMessage,
 	topModerationScores,
 } from "#/lib/moderation";
+import { recordJobComplete } from "#/lib/observability";
 import {
 	buildOverseerProfile,
 	loadLatestOverseerContext,
 	maybeQueueOverseerForAccount,
 } from "#/lib/overseer";
-import { normalizeMessageLabel } from "#/lib/schemas";
+import { promptSha256ForName } from "#/lib/prompt-identity";
+import {
+	currentOrgId,
+	defaultOrgId,
+	discoverOrgRuntimeIds,
+	runWithOrgContext,
+} from "#/lib/runtime";
+import { publishActionEvent } from "#/lib/runtime-events";
+import { parseCurrentMessageLabel } from "#/lib/schemas";
 
 declare global {
 	var __zmailWorkerStarted__: boolean | undefined;
 	var __zmailWorkerLoop__: Promise<void> | undefined;
+	var __zmailOrgWorkerLoops__: Map<string, Promise<void>> | undefined;
 }
 
 const ROOT_BACKLOG_BATCH_SIZE = 250;
 const FINANCE_BACKLOG_BATCH_SIZE = 100;
+
+function orgWorkerLoops() {
+	if (!globalThis.__zmailOrgWorkerLoops__) {
+		globalThis.__zmailOrgWorkerLoops__ = new Map();
+	}
+	return globalThis.__zmailOrgWorkerLoops__;
+}
+
+function discoverWorkerOrgIds(seedOrgId?: string) {
+	const orgIds = new Set(discoverOrgRuntimeIds());
+	if (seedOrgId) {
+		orgIds.add(seedOrgId);
+	}
+	if (orgIds.size === 0) {
+		orgIds.add(defaultOrgId());
+	}
+	return [...orgIds].sort();
+}
+
+function refreshLegacyWorkerLoop() {
+	globalThis.__zmailWorkerLoop__ = orgWorkerLoops().values().next().value;
+}
 
 function moderationPromptVersionSql() {
 	return sql<string | null>`case
@@ -58,6 +95,14 @@ function moderationPromptVersionSql() {
 
 function staleModerationPromptSql() {
 	return sql<boolean>`coalesce(${moderationPromptVersionSql()}, '') != ${MODERATION_PROMPT_VERSION}`;
+}
+
+function staleRootPromptSql(promptSha256: string) {
+	return sql<boolean>`message_labels.source != 'manual'
+		and (
+			coalesce(classification_results.prompt_version, '') != ${CLASSIFY_PROMPT_VERSION}
+			or coalesce(classification_results.prompt_sha256, '') != ${promptSha256}
+		)`;
 }
 
 export function delay(ms: number) {
@@ -100,6 +145,57 @@ async function runConcurrent<T>(
 			() => loop(),
 		),
 	);
+}
+
+export function createJobProgressSink(
+	job: JobRecord,
+	phase: "full" | "delta" | "backfill",
+) {
+	return {
+		async onProgress(input: {
+			phase: "full" | "delta" | "backfill";
+			fetched: number;
+			total: number | null;
+			rangeStart?: number | null;
+			rangeEnd?: number | null;
+			backfillNextUid?: number | null;
+		}) {
+			const updatedAt = new Date().toISOString();
+			const total = input.total;
+			const processed = Math.max(0, input.fetched);
+			let etaSeconds: number | null = null;
+			if (total !== null && total > 0 && job.started_at) {
+				const elapsedSeconds = Math.max(
+					0,
+					(Date.now() - new Date(job.started_at).getTime()) / 1000,
+				);
+				const ratePerSecond =
+					elapsedSeconds > 0 && processed > 0
+						? processed / elapsedSeconds
+						: null;
+				etaSeconds =
+					ratePerSecond && ratePerSecond > 0
+						? Math.max(0, (total - processed) / ratePerSecond)
+						: null;
+			}
+			await extendJobLease(job.id);
+			await updateJob({
+				id: job.id,
+				meta: {
+					mode: "live",
+					phase: input.phase ?? phase,
+					fetched: input.fetched,
+					processed,
+					total,
+					rangeStart: input.rangeStart ?? null,
+					rangeEnd: input.rangeEnd ?? null,
+					backfillNextUid: input.backfillNextUid ?? null,
+					etaSeconds,
+					updatedAt,
+				},
+			});
+		},
+	};
 }
 
 async function rebuildOverseerJob(job: JobRecord, trace: LogTrace) {
@@ -189,6 +285,13 @@ async function rebuildFinanceKnowledgeJob(job: JobRecord, trace: LogTrace) {
 		documents: result.documents,
 		evidence: result.evidence,
 	});
+	await publishActionEvent({
+		topic: "finance",
+		eventType: "finance.ledger_rebuilt",
+		entityKind: "job",
+		entityId: job.id,
+		payload: result,
+	});
 	await queueFinanceRollupsRebuild();
 }
 
@@ -217,6 +320,88 @@ async function rebuildFinanceRollupsJob(job: JobRecord, trace: LogTrace) {
 		rollups: result.rollups,
 		subcategory_rollups: result.subcategoryRollups,
 	});
+	await publishActionEvent({
+		topic: "finance",
+		eventType: "finance.patterns_rebuilt",
+		entityKind: "job",
+		entityId: job.id,
+		payload: result,
+	});
+}
+
+async function exportFinanceBeancountJob(job: JobRecord, trace: LogTrace) {
+	const jobTrace = trace.child({
+		kind: "worker",
+		operation: "export_finance_beancount",
+		job_id: job.id,
+		job_kind: job.kind,
+	});
+	const meta = parseJobMeta<{
+		orgId?: string;
+		outDir?: string;
+		exportRunId?: string;
+		year?: number | null;
+		strict?: boolean;
+	}>(job, {});
+	if (!meta.outDir) {
+		throw new Error("export_finance_beancount job missing outDir");
+	}
+	await publishActionEvent({
+		topic: "finance",
+		eventType: "finance.export_started",
+		entityKind: "job",
+		entityId: job.id,
+		payload: meta,
+	});
+	try {
+		const { exportFinanceBeancountPackage } = await import(
+			"#/lib/beancount-export"
+		);
+		const result = await exportFinanceBeancountPackage({
+			orgId: meta.orgId ?? currentOrgId(),
+			outDir: meta.outDir,
+			exportRunId: meta.exportRunId,
+			year: meta.year ?? undefined,
+			strict: meta.strict ?? true,
+		});
+		await completeJob({
+			id: job.id,
+			successCount: result.exported,
+			errorCount: 0,
+			meta: {
+				mode: "live",
+				...result,
+			},
+		});
+		await publishActionEvent({
+			topic: "finance",
+			eventType:
+				result.validation.beanCheck === "failed"
+					? "finance.export_failed"
+					: "finance.export_completed",
+			entityKind: "finance_export_run",
+			entityId: result.exportRunId,
+			payload: result,
+		});
+		jobTrace.complete("worker.export_finance_beancount.complete", {
+			export_run_id: result.exportRunId,
+			exported: result.exported,
+			unresolved: result.unresolved,
+			validation: result.validation.beanCheck,
+		});
+	} catch (error) {
+		await publishActionEvent({
+			topic: "finance",
+			eventType: "finance.export_failed",
+			entityKind: "job",
+			entityId: job.id,
+			payload: {
+				...meta,
+				error: error instanceof Error ? error.message : String(error),
+			},
+		});
+		throw error;
+	}
 }
 
 async function reconcileRegistrySuggestionsJob(
@@ -401,9 +586,15 @@ async function countOpenJobs(input: {
 
 async function hasPendingRootBacklog(accountId: string) {
 	const db = getDb();
+	const classifyPromptSha256 = promptSha256ForName("classify-email-v3.md");
 	const row = await db
 		.selectFrom("messages")
 		.leftJoin("message_labels", "message_labels.message_id", "messages.id")
+		.leftJoin(
+			"classification_results",
+			"classification_results.id",
+			"message_labels.classification_result_id",
+		)
 		.leftJoin(
 			"moderation_results",
 			"moderation_results.message_id",
@@ -416,12 +607,9 @@ async function hasPendingRootBacklog(accountId: string) {
 				eb("moderation_results.message_id", "is", null),
 				staleModerationPromptSql(),
 				eb("message_labels.message_id", "is", null),
-				eb("message_labels.schema_version", "!=", "message-label.v2"),
-				eb(
-					"message_labels.content_sha256",
-					"!=",
-					eb.ref("messages.content_sha256"),
-				),
+				eb("message_labels.schema_version", "!=", "message-label.v3"),
+				sql<boolean>`coalesce(message_labels.content_sha256, '') != coalesce(messages.content_sha256, '')`,
+				staleRootPromptSql(classifyPromptSha256),
 			]),
 		)
 		.orderBy("messages.received_at", "desc")
@@ -433,6 +621,9 @@ async function hasPendingRootBacklog(accountId: string) {
 
 async function hasPendingFinanceBacklog(accountId: string) {
 	const db = getDb();
+	const { loadOperatorRegistry } = await import("#/lib/registry");
+	const registry = await loadOperatorRegistry();
+	const financePromptSha256 = promptSha256ForName("finance-intel-v3.md");
 	const rows = await db
 		.selectFrom("messages")
 		.innerJoin("message_labels", "message_labels.message_id", "messages.id")
@@ -447,9 +638,14 @@ async function hasPendingFinanceBacklog(accountId: string) {
 			"message_secondary_heads.secondary_result_id",
 		)
 		.select([
+			"messages.content_sha256",
 			"message_labels.label_json",
 			"message_secondary_heads.status as head_status",
+			"message_secondary_heads.content_sha256 as head_content_sha256",
+			"message_secondary_heads.registry_sha256 as head_registry_sha256",
 			"message_secondary_results.schema_version as result_schema_version",
+			"message_secondary_results.prompt_version as result_prompt_version",
+			"message_secondary_results.prompt_sha256 as result_prompt_sha256",
 		])
 		.where("messages.account_id", "=", accountId)
 		.orderBy("messages.received_at", "desc")
@@ -457,14 +653,23 @@ async function hasPendingFinanceBacklog(accountId: string) {
 		.execute();
 
 	return rows.some((row) => {
-		const rootLabel = normalizeMessageLabel(safeJsonParse(row.label_json, null));
-		if (!rootLabel?.finance.relevant) {
+		const rootLabel = parseCurrentMessageLabel(
+			safeJsonParse(row.label_json, null),
+		);
+		if (
+			!rootLabel?.finance.relevant ||
+			!rootLabel.finance.requiresFinanceIntel
+		) {
 			return false;
 		}
 		return (
 			!row.head_status ||
 			row.head_status === "stale" ||
-			row.result_schema_version !== "finance-intel.v2"
+			row.result_schema_version !== "finance-intel.v3" ||
+			row.head_content_sha256 !== row.content_sha256 ||
+			row.head_registry_sha256 !== registry.sha256 ||
+			row.result_prompt_version !== FINANCE_INTEL_PROMPT_VERSION ||
+			row.result_prompt_sha256 !== financePromptSha256
 		);
 	});
 }
@@ -480,18 +685,15 @@ async function hasReadyFinanceHeads() {
 }
 
 function maxIsoValue(values: Array<string | null>) {
-	return values.reduce<string | null>(
-		(current, value) => {
-			if (!value) {
-				return current;
-			}
-			if (!current || value > current) {
-				return value;
-			}
+	return values.reduce<string | null>((current, value) => {
+		if (!value) {
 			return current;
-		},
-		null,
-	);
+		}
+		if (!current || value > current) {
+			return value;
+		}
+		return current;
+	}, null);
 }
 
 async function hasRollupInputs() {
@@ -674,6 +876,7 @@ async function syncAccountFullJob(job: JobRecord, trace?: LogTrace) {
 			job_kind: job.kind,
 			account_id: job.scope_id,
 		}),
+		createJobProgressSink(job, "full"),
 	);
 	await completeJob({
 		id: job.id,
@@ -684,6 +887,8 @@ async function syncAccountFullJob(job: JobRecord, trace?: LogTrace) {
 			phase: result.phase,
 			processed: result.fetched,
 			total: result.fetched,
+			etaSeconds: 0,
+			updatedAt: new Date().toISOString(),
 			skipped: result.skipped,
 			latestUidCursor: result.latestUidCursor,
 			earliestUidCursor: result.earliestUidCursor,
@@ -730,6 +935,7 @@ async function syncAccountDeltaJob(job: JobRecord, trace?: LogTrace) {
 			job_kind: job.kind,
 			account_id: job.scope_id,
 		}),
+		createJobProgressSink(job, "delta"),
 	);
 	await completeJob({
 		id: job.id,
@@ -740,6 +946,10 @@ async function syncAccountDeltaJob(job: JobRecord, trace?: LogTrace) {
 			phase: "delta",
 			skipped: result.skipped,
 			fetched: result.fetched,
+			processed: result.fetched,
+			total: result.fetched,
+			etaSeconds: 0,
+			updatedAt: new Date().toISOString(),
 			uidvalidityChanged: result.uidvalidityChanged,
 			latestUidCursor: result.latestUidCursor,
 			backfillNextUid: result.backfillNextUid,
@@ -763,7 +973,12 @@ async function syncAccountBackfillJob(job: JobRecord, trace?: LogTrace) {
 			job_kind: job.kind,
 			account_id: job.scope_id,
 		}),
+		createJobProgressSink(job, "backfill"),
 	);
+	const total =
+		result.rangeEnd && result.rangeStart
+			? result.rangeEnd - result.rangeStart + 1
+			: result.fetched;
 	await completeJob({
 		id: job.id,
 		successCount: result.fetched,
@@ -780,10 +995,9 @@ async function syncAccountBackfillJob(job: JobRecord, trace?: LogTrace) {
 			queuedMore: result.queuedMore,
 			uidvalidityChanged: result.uidvalidityChanged,
 			processed: result.fetched,
-			total:
-				result.rangeEnd && result.rangeStart
-					? result.rangeEnd - result.rangeStart + 1
-					: result.fetched,
+			total,
+			etaSeconds: result.backfillNextUid === null ? 0 : null,
+			updatedAt: new Date().toISOString(),
 		},
 	});
 
@@ -841,10 +1055,16 @@ async function classifyAccountBacklogJob(job: JobRecord, trace: LogTrace) {
 		.selectAll()
 		.where("id", "=", job.scope_id)
 		.executeTakeFirstOrThrow();
+	const classifyPromptSha256 = promptSha256ForName("classify-email-v3.md");
 
 	const messages = await db
 		.selectFrom("messages")
 		.leftJoin("message_labels", "message_labels.message_id", "messages.id")
+		.leftJoin(
+			"classification_results",
+			"classification_results.id",
+			"message_labels.classification_result_id",
+		)
 		.leftJoin(
 			"moderation_results",
 			"moderation_results.message_id",
@@ -866,12 +1086,9 @@ async function classifyAccountBacklogJob(job: JobRecord, trace: LogTrace) {
 				eb("moderation_results.message_id", "is", null),
 				staleModerationPromptSql(),
 				eb("message_labels.message_id", "is", null),
-				eb("message_labels.schema_version", "!=", "message-label.v2"),
-				eb(
-					"message_labels.content_sha256",
-					"!=",
-					eb.ref("messages.content_sha256"),
-				),
+				eb("message_labels.schema_version", "!=", "message-label.v3"),
+				sql<boolean>`coalesce(message_labels.content_sha256, '') != coalesce(messages.content_sha256, '')`,
+				staleRootPromptSql(classifyPromptSha256),
 			]),
 		)
 		.orderBy("messages.received_at", "desc")
@@ -952,6 +1169,7 @@ async function classifyAccountBacklogJob(job: JobRecord, trace: LogTrace) {
 
 			await classifyMessageNow({
 				jobId: job.id,
+				accountId: account.id,
 				messageId: message.id,
 				accountLabel: account.label,
 				sender: message.sender_address ?? "(unknown)",
@@ -1076,10 +1294,13 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 		.execute();
 
 	const rootFinanceRows = rows.flatMap((row) => {
-		const rootLabel = normalizeMessageLabel(
+		const rootLabel = parseCurrentMessageLabel(
 			safeJsonParse(row.label_json, null),
 		);
-		if (!rootLabel?.finance?.relevant) {
+		if (
+			!rootLabel?.finance?.relevant ||
+			!rootLabel.finance.requiresFinanceIntel
+		) {
 			return [];
 		}
 		return [
@@ -1116,6 +1337,7 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 		import("#/lib/secondary"),
 	]);
 	const registry = await loadOperatorRegistry();
+	const financePromptSha256 = promptSha256ForName("finance-intel-v3.md");
 	const messageIds = rootFinanceRows.map((row) => row.id);
 	const [heads, attachmentRows] = await Promise.all([
 		db
@@ -1126,9 +1348,11 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 				"message_secondary_heads.secondary_result_id",
 			)
 			.selectAll("message_secondary_heads")
-			.select(
+			.select([
 				"message_secondary_results.schema_version as result_schema_version",
-			)
+				"message_secondary_results.prompt_version as prompt_version",
+				"message_secondary_results.prompt_sha256 as prompt_sha256",
+			])
 			.where("message_secondary_heads.classifier_key", "=", "finance_intel")
 			.where("message_secondary_heads.message_id", "in", messageIds)
 			.execute(),
@@ -1153,25 +1377,31 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 		attachmentsByMessage.set(row.message_id, current);
 	}
 
-	const workItems = rootFinanceRows.filter((row) => {
-		const head = headsByMessage.get(row.id);
-		if (row.parse_status === "error") {
-			return (
-				!head ||
-				head.status !== "blocked_parse_error" ||
-				head.content_sha256 !== row.content_sha256 ||
-				head.registry_sha256 !== registry.sha256
-			);
-		}
+	const workItems = rootFinanceRows
+		.filter((row) => {
+			const head = headsByMessage.get(row.id);
+			if (row.parse_status === "error") {
+				return (
+					!head ||
+					head.status !== "blocked_parse_error" ||
+					head.content_sha256 !== row.content_sha256 ||
+					head.registry_sha256 !== registry.sha256 ||
+					head.prompt_version !== FINANCE_INTEL_PROMPT_VERSION ||
+					head.prompt_sha256 !== financePromptSha256
+				);
+			}
 
-		return (
-			head?.result_schema_version !== "finance-intel.v2" ||
-			!isSecondaryHeadCurrent(head, {
-				contentSha256: row.content_sha256,
-				registrySha256: registry.sha256,
-			})
-		);
-	}).slice(0, FINANCE_BACKLOG_BATCH_SIZE);
+			return (
+				head?.result_schema_version !== "finance-intel.v3" ||
+				!isSecondaryHeadCurrent(head, {
+					contentSha256: row.content_sha256,
+					registrySha256: registry.sha256,
+					promptVersion: FINANCE_INTEL_PROMPT_VERSION,
+					promptSha256: financePromptSha256,
+				})
+			);
+		})
+		.slice(0, FINANCE_BACKLOG_BATCH_SIZE);
 
 	backlogTrace.add({
 		total: workItems.length,
@@ -1187,6 +1417,7 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 				processed: 0,
 				total: 0,
 				registrySha256: registry.sha256,
+				blockedModelOutputCount: 0,
 			},
 		});
 		backlogTrace.complete("worker.classify_finance_backlog.complete", {
@@ -1200,6 +1431,7 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 
 	let successCount = 0;
 	let errorCount = 0;
+	let blockedModelOutputCount = 0;
 
 	await updateJob({
 		id: job.id,
@@ -1211,6 +1443,7 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 			processed: 0,
 			total: workItems.length,
 			registrySha256: registry.sha256,
+			blockedModelOutputCount,
 		},
 	});
 	backlogTrace.info("worker.classify_finance_backlog.start", {
@@ -1226,10 +1459,11 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 					jobId: job.id,
 					messageId: row.id,
 					classifierKey: "finance_intel",
-					schemaVersion: "finance-intel.v2",
+					schemaVersion: "finance-intel.v3",
 					model: "system",
 					backend: "system",
 					promptVersion: FINANCE_INTEL_PROMPT_VERSION,
+					promptSha256: financePromptSha256,
 					source: "system",
 					rawResponse: {
 						reason: "parse_error",
@@ -1237,9 +1471,20 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 					},
 					usage: null,
 					result: {
-						schemaVersion: "finance-intel.v2",
+						schemaVersion: "finance-intel.v3",
 						messageKind: "other_finance",
 						actionability: "manual_review",
+						book: {
+							scope: row.rootLabel.finance.bookHint,
+							businessUsePercent: null,
+							taxTreatmentHint: null,
+							evidence: row.rootLabel.finance.evidence,
+						},
+						ledgerReadiness: {
+							status: "blocked",
+							reasons: ["parse_error"],
+							requiredFixes: ["message_parse_recovery"],
+						},
 						transactionCandidates: [],
 						documentCandidates: [],
 						matchedRegistryRefs: {
@@ -1251,6 +1496,21 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 							identityHints: [],
 							institutionHints: [],
 							financialAccountHints: [],
+						},
+						dedupe: {
+							messageEvidenceKey: `email:${row.id}`,
+							sourceDocumentRefs: [],
+							externalTransactionIds: [],
+							normalizedComposites: [],
+						},
+						fieldConfidence: {
+							amount: null,
+							date: null,
+							counterparty: null,
+							accountMapping: null,
+							book: 0,
+							category: null,
+							dedupe: 0,
 						},
 						confidence: {
 							overall: 1,
@@ -1277,7 +1537,7 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 				rootLabel: row.rootLabel,
 			});
 
-			await classifyFinanceMessageNow({
+			const result = await classifyFinanceMessageNow({
 				jobId: job.id,
 				messageId: row.id,
 				accountLabel: account.label,
@@ -1293,6 +1553,9 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 				registryMatches,
 				contentSha256: row.content_sha256,
 			});
+			if (result.blockedModelOutput) {
+				blockedModelOutputCount += 1;
+			}
 		},
 		async (_row, error) => {
 			if (error) {
@@ -1309,21 +1572,37 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 					processed: successCount + errorCount,
 					total: workItems.length,
 					registrySha256: registry.sha256,
+					blockedModelOutputCount,
 				},
 			});
 		},
 	);
 
+	const finalMeta = {
+		mode: "live",
+		processed: successCount + errorCount,
+		total: workItems.length,
+		registrySha256: registry.sha256,
+		blockedModelOutputCount,
+	};
+
+	if (errorCount > 0) {
+		await updateJob({
+			id: job.id,
+			successCount,
+			errorCount,
+			meta: finalMeta,
+		});
+		throw new Error(
+			`Finance backlog failed ${errorCount} of ${workItems.length} items`,
+		);
+	}
+
 	await completeJob({
 		id: job.id,
 		successCount,
 		errorCount,
-		meta: {
-			mode: "live",
-			processed: successCount + errorCount,
-			total: workItems.length,
-			registrySha256: registry.sha256,
-		},
+		meta: finalMeta,
 	});
 	backlogTrace.complete("worker.classify_finance_backlog.complete", {
 		processed: successCount + errorCount,
@@ -1360,6 +1639,9 @@ async function processJob(job: JobRecord, trace: LogTrace) {
 			return;
 		case "import_finance_artifact":
 			await importFinanceArtifactJob(job, trace);
+			return;
+		case "export_finance_beancount":
+			await exportFinanceBeancountJob(job, trace);
 			return;
 		case "reconcile_registry_suggestions":
 			await reconcileRegistrySuggestionsJob(job, trace);
@@ -1409,11 +1691,24 @@ export async function runWorkerIteration(input: { waitOnIdle: boolean }) {
 	const heartbeat = setInterval(() => {
 		void extendJobLease(job.id);
 	}, APP_CONFIG.liveHeartbeatMs);
+	const startedAt = Date.now();
 
 	try {
 		await processJob(job, trace);
+		recordJobComplete({
+			kind: job.kind,
+			scopeType: job.scope_type,
+			status: "completed",
+			durationMs: Date.now() - startedAt,
+		});
 		trace.complete("worker.job_complete");
 	} catch (error) {
+		recordJobComplete({
+			kind: job.kind,
+			scopeType: job.scope_type,
+			status: "failed",
+			durationMs: Date.now() - startedAt,
+		});
 		trace.fail("worker.job_fail", error);
 		await failJob(job.id, error);
 	} finally {
@@ -1423,64 +1718,107 @@ export async function runWorkerIteration(input: { waitOnIdle: boolean }) {
 	return true;
 }
 
-async function workerLoop() {
-	const workerTrace = startTrace({
-		kind: "worker",
-		operation: "worker_loop",
+async function workerLoop(orgId: string) {
+	return runWithOrgContext(orgId, async () => {
+		const workerTrace = startTrace({
+			kind: "worker",
+			operation: "worker_loop",
+			org_id: orgId,
+		});
+		workerTrace.info("worker.start");
+		runMigrations();
+		await ensureAccountOwnershipBackfill();
+		requeueExpiredJobs();
+
+		try {
+			const { restoreWatchers } = await import("#/lib/watchers");
+			await restoreWatchers();
+			workerTrace.complete("worker.restore_watchers");
+		} catch (error) {
+			workerTrace.fail("worker.restore_watchers_failed", error);
+		}
+
+		await queuePendingBackfills(workerTrace);
+		await queueStartupReconciliation(workerTrace);
+
+		while (true) {
+			await runWorkerIteration({ waitOnIdle: true });
+		}
 	});
-	workerTrace.info("worker.start");
-	runMigrations();
-	requeueExpiredJobs();
-
-	try {
-		const { restoreWatchers } = await import("#/lib/watchers");
-		await restoreWatchers();
-		workerTrace.complete("worker.restore_watchers");
-	} catch (error) {
-		workerTrace.fail("worker.restore_watchers_failed", error);
-	}
-
-	await queuePendingBackfills(workerTrace);
-	await queueStartupReconciliation(workerTrace);
-
-	while (true) {
-		await runWorkerIteration({ waitOnIdle: true });
-	}
 }
 
-export function ensureWorkerStarted() {
+function startOrgWorker(orgId: string) {
+	const loops = orgWorkerLoops();
+	const existing = loops.get(orgId);
+	if (existing) {
+		return existing;
+	}
+
+	const loopPromise = workerLoop(orgId)
+		.catch((error) => {
+			startTrace({
+				kind: "worker",
+				operation: "worker_loop_crash",
+				org_id: orgId,
+			}).fail("worker.loop_crashed", error);
+		})
+		.finally(() => {
+			if (loops.get(orgId) === loopPromise) {
+				loops.delete(orgId);
+			}
+			refreshLegacyWorkerLoop();
+		});
+	loops.set(orgId, loopPromise);
+	refreshLegacyWorkerLoop();
+	return loopPromise;
+}
+
+export function ensureWorkerStarted(orgId?: string) {
 	if (!APP_CONFIG.runWorker) {
 		return;
 	}
 
-	if (globalThis.__zmailWorkerStarted__) {
-		return;
-	}
-
-	globalThis.__zmailWorkerStarted__ = true;
-	globalThis.__zmailWorkerLoop__ = workerLoop().catch((error) => {
-		globalThis.__zmailWorkerStarted__ = false;
-		globalThis.__zmailWorkerLoop__ = undefined;
+	const orgIds = discoverWorkerOrgIds(orgId);
+	if (!globalThis.__zmailWorkerStarted__) {
+		globalThis.__zmailWorkerStarted__ = true;
 		startTrace({
 			kind: "worker",
-			operation: "worker_loop_crash",
-		}).fail("worker.loop_crashed", error);
+			operation: "worker_supervisor",
+		}).info("worker.supervisor.start", {
+			org_ids: orgIds,
+		});
+	}
+
+	orgIds.forEach((candidateOrgId) => {
+		startOrgWorker(candidateOrgId);
+	});
+	refreshLegacyWorkerLoop();
+}
+
+async function drainOrgWorkerUntilIdle(orgId: string) {
+	return runWithOrgContext(orgId, async () => {
+		const trace = startTrace({
+			kind: "worker",
+			operation: "drain_worker",
+			org_id: orgId,
+		});
+		trace.info("worker.drain.start");
+		runMigrations();
+		await ensureAccountOwnershipBackfill();
+		requeueExpiredJobs();
+		await queuePendingBackfills(trace);
+		await queueStartupReconciliation(trace);
+
+		while (await runWorkerIteration({ waitOnIdle: false })) {
+			// Drain until no queued or expired jobs remain.
+		}
+		trace.complete("worker.drain.complete");
 	});
 }
 
-export async function drainWorkerUntilIdle() {
-	const trace = startTrace({
-		kind: "worker",
-		operation: "drain_worker",
-	});
-	trace.info("worker.drain.start");
-	runMigrations();
-	requeueExpiredJobs();
-	await queuePendingBackfills(trace);
-	await queueStartupReconciliation(trace);
-
-	while (await runWorkerIteration({ waitOnIdle: false })) {
-		// Drain until no queued or expired jobs remain.
+export async function drainWorkerUntilIdle(input?: { orgId?: string }) {
+	const orgIds = input?.orgId ? [input.orgId] : discoverWorkerOrgIds();
+	for (const orgId of orgIds) {
+		await drainOrgWorkerUntilIdle(orgId);
 	}
-	trace.complete("worker.drain.complete");
 }

@@ -3,6 +3,7 @@ import { z } from "zod";
 export const providerKindSchema = z.enum(["gmail"]);
 export const accountConnectionStateSchema = z.enum([
 	"connected",
+	"config_error",
 	"paused",
 	"needs_reconnect",
 	"disconnected",
@@ -140,6 +141,7 @@ export const financeOwnerSchema = z.enum([
 	"mixed",
 	"unknown",
 ]);
+export const financeBookScopeSchema = financeOwnerSchema;
 
 export const rootPrimaryBucketSchema = z.enum([
 	"finance",
@@ -185,6 +187,32 @@ export const financeSchema = z.object({
 	owner: financeOwnerSchema,
 	accountHint: z.string().nullable(),
 	purpose: z.string().nullable(),
+});
+
+export const financeGateSignalSchema = z.enum([
+	"none",
+	"receipt",
+	"invoice",
+	"statement",
+	"banking",
+	"tax",
+	"payroll",
+	"investment",
+	"subscription",
+	"donation",
+	"transfer",
+	"promotion",
+	"other",
+]);
+
+export const financeGateSchema = z.object({
+	relevant: z.boolean(),
+	signal: financeGateSignalSchema,
+	operational: z.boolean(),
+	bookHint: financeBookScopeSchema,
+	requiresFinanceIntel: z.boolean(),
+	confidence: z.number().min(0).max(1),
+	evidence: z.string().min(1).max(500).nullable(),
 });
 
 export const socialSchema = z.object({
@@ -305,16 +333,37 @@ export const messageLabelV2Schema = messageLabelV2CoreSchema.extend({
 	nsfw: z.boolean(),
 });
 
-export const messageLabelWithoutNsfwSchema = messageLabelV2CoreSchema;
+export const messageLabelV3CoreSchema = messageLabelV2CoreSchema
+	.omit({ finance: true })
+	.extend({
+		finance: financeGateSchema,
+	});
+
+export const messageLabelV3Schema = messageLabelV3CoreSchema.extend({
+	schemaVersion: z.literal("message-label.v3"),
+	nsfw: z.boolean(),
+});
+
+export const messageLabelWithoutNsfwV2Schema = messageLabelV2CoreSchema;
+export const messageLabelWithoutNsfwSchema = messageLabelV3CoreSchema;
+export const messageLabelWithoutNsfwV3Schema = messageLabelV3CoreSchema;
 export const messageLabelSchema = z.union([
 	messageLabelV1Schema,
 	messageLabelV2Schema,
+	messageLabelV3Schema,
 ]);
 
 export type MessageLabelV2 = z.infer<typeof messageLabelV2Schema>;
+export type MessageLabelV3 = z.infer<typeof messageLabelV3Schema>;
 export type MessageLabel = z.infer<typeof messageLabelSchema>;
 export type MessageLabelWithoutNsfw = z.infer<
 	typeof messageLabelWithoutNsfwSchema
+>;
+export type MessageLabelWithoutNsfwV2 = z.infer<
+	typeof messageLabelWithoutNsfwV2Schema
+>;
+export type MessageLabelWithoutNsfwV3 = z.infer<
+	typeof messageLabelWithoutNsfwV3Schema
 >;
 
 export const overseerProfileSchema = z.object({
@@ -462,6 +511,95 @@ export const financeIntelConfidenceSchema = z.object({
 	registryMatching: z.number().min(0).max(1),
 });
 
+export const financeFieldConfidenceSchema = z.object({
+	amount: z.number().min(0).max(1).nullable(),
+	date: z.number().min(0).max(1).nullable(),
+	counterparty: z.number().min(0).max(1).nullable(),
+	accountMapping: z.number().min(0).max(1).nullable(),
+	book: z.number().min(0).max(1).nullable(),
+	category: z.number().min(0).max(1).nullable(),
+	dedupe: z.number().min(0).max(1).nullable(),
+});
+
+export const financeBookClassificationSchema = z
+	.object({
+		scope: financeBookScopeSchema,
+		businessUsePercent: z.number().min(0).max(100).nullable(),
+		taxTreatmentHint: z.string().min(1).max(240).nullable(),
+		evidence: z.string().min(1).max(500).nullable(),
+	})
+	.superRefine((book, context) => {
+		if (book.scope === "mixed" && book.businessUsePercent === null) {
+			context.addIssue({
+				code: "custom",
+				message: "mixed book requires businessUsePercent",
+				path: ["businessUsePercent"],
+			});
+		}
+	});
+
+export const financeLedgerReadinessStatusSchema = z.enum([
+	"exportable",
+	"review",
+	"blocked",
+	"not_ledger",
+]);
+
+export const financeLedgerReadinessSchema = z.object({
+	status: financeLedgerReadinessStatusSchema,
+	reasons: z.array(z.string().min(1).max(160)).max(12),
+	requiredFixes: z.array(z.string().min(1).max(80)).max(12),
+});
+
+export const beancountAccountMappingHintSchema = z.object({
+	debitAccount: z.string().min(1).max(240).nullable(),
+	creditAccount: z.string().min(1).max(240).nullable(),
+	currency: z.string().min(1).max(16).nullable(),
+	mappingKey: z.string().min(1).max(240).nullable(),
+	confidence: z.number().min(0).max(1),
+	metadata: z.record(z.string(), z.unknown()).default({}),
+});
+
+export const financeDedupeInputsSchema = z.object({
+	externalTransactionId: z.string().min(1).max(240).nullable(),
+	statementRowId: z.string().min(1).max(240).nullable(),
+	normalizedComposite: z.string().min(1).max(500).nullable(),
+	emailEvidenceKey: z.string().min(1).max(500).nullable(),
+});
+
+export const financeTransactionCandidateV3Schema =
+	financeTransactionCandidateSchema
+		.extend({
+			externalTransactionId: z.string().min(1).max(240).nullable(),
+			postedAt: z.string().min(1).max(64).nullable(),
+			clearedAt: z.string().min(1).max(64).nullable(),
+			book: financeBookScopeSchema,
+			businessUsePercent: z.number().min(0).max(100).nullable(),
+			fieldConfidence: financeFieldConfidenceSchema,
+			dedupe: financeDedupeInputsSchema,
+			beancount: beancountAccountMappingHintSchema,
+		})
+		.superRefine((candidate, context) => {
+			if (candidate.book === "mixed" && candidate.businessUsePercent === null) {
+				context.addIssue({
+					code: "custom",
+					message: "mixed book transaction requires businessUsePercent",
+					path: ["businessUsePercent"],
+				});
+			}
+		});
+
+export const financeDocumentCandidateV3Schema =
+	financeDocumentCandidateSchema.extend({
+		sourceDocumentRefs: z.array(z.string().min(1).max(240)).max(20),
+		statementOpeningBalance: z.string().min(1).max(64).nullable(),
+		statementClosingBalance: z.string().min(1).max(64).nullable(),
+		statementTransactionCount: z.number().int().nonnegative().nullable(),
+		statementCurrency: z.string().min(1).max(16).nullable(),
+		book: financeBookScopeSchema,
+		fieldConfidence: financeFieldConfidenceSchema,
+	});
+
 export const financeIntelV1Schema = z.object({
 	schemaVersion: z.literal("finance-intel.v1"),
 	messageKind: financeMessageKindSchema,
@@ -486,13 +624,36 @@ export const financeIntelV2Schema = z.object({
 	explanation: z.string().min(1).max(400),
 });
 
+export const financeIntelV3Schema = z.object({
+	schemaVersion: z.literal("finance-intel.v3"),
+	messageKind: financeMessageKindSchema,
+	actionability: financeActionabilitySchema,
+	book: financeBookClassificationSchema,
+	ledgerReadiness: financeLedgerReadinessSchema,
+	transactionCandidates: z.array(financeTransactionCandidateV3Schema).max(20),
+	documentCandidates: z.array(financeDocumentCandidateV3Schema).max(20),
+	matchedRegistryRefs: financeMatchedRegistryRefsSchema,
+	unresolvedEntityHints: financeUnresolvedEntityHintsSchema,
+	dedupe: z.object({
+		messageEvidenceKey: z.string().min(1).max(500).nullable(),
+		sourceDocumentRefs: z.array(z.string().min(1).max(240)).max(20),
+		externalTransactionIds: z.array(z.string().min(1).max(240)).max(50),
+		normalizedComposites: z.array(z.string().min(1).max(500)).max(50),
+	}),
+	fieldConfidence: financeFieldConfidenceSchema,
+	confidence: financeIntelConfidenceSchema,
+	explanation: z.string().min(1).max(500),
+});
+
 export const financeIntelSchema = z.union([
 	financeIntelV1Schema,
 	financeIntelV2Schema,
+	financeIntelV3Schema,
 ]);
 
 export type FinanceIntelV1 = z.infer<typeof financeIntelV1Schema>;
 export type FinanceIntelV2 = z.infer<typeof financeIntelV2Schema>;
+export type FinanceIntelV3 = z.infer<typeof financeIntelV3Schema>;
 export type FinanceIntel = z.infer<typeof financeIntelSchema>;
 
 export const registryIdentitySchema = z.object({
@@ -550,12 +711,27 @@ export const registrySenderRuleSchema = z.object({
 });
 export type RegistrySenderRule = z.infer<typeof registrySenderRuleSchema>;
 
+export const financeAccountMappingSchema = z.object({
+	mappingKey: z.string().min(1).max(240),
+	book: financeBookScopeSchema.default("unknown"),
+	match: z.record(z.string(), z.unknown()).default({}),
+	debitAccount: z.string().min(1).max(240).nullable().default(null),
+	creditAccount: z.string().min(1).max(240).nullable().default(null),
+	currency: z.string().min(1).max(16).nullable().default(null),
+	confidence: z.number().min(0).max(1).default(0.75),
+	notes: z.string().min(1).max(1000).nullable().default(null),
+});
+export type FinanceAccountMapping = z.infer<typeof financeAccountMappingSchema>;
+
 export const registryIdentityFileSchema = z.array(registryIdentitySchema);
 export const registryInstitutionFileSchema = z.array(registryInstitutionSchema);
 export const registryFinancialAccountFileSchema = z.array(
 	registryFinancialAccountSchema,
 );
 export const registrySenderRuleFileSchema = z.array(registrySenderRuleSchema);
+export const financeAccountMappingFileSchema = z.array(
+	financeAccountMappingSchema,
+);
 
 export const financeEventCandidateSchema = z.object({
 	id: z.string().min(1),
@@ -763,7 +939,7 @@ export type FinanceImportTransaction = z.infer<
 	typeof financeImportTransactionSchema
 >;
 
-export const financeSourceImportSchema = z.object({
+export const financeSourceImportV1Schema = z.object({
 	schemaVersion: z.literal("finance-source-import.v1"),
 	sourceKind: financeImportSourceKindSchema,
 	sourceFile: financeImportSourceFileSchema,
@@ -781,7 +957,99 @@ export const financeSourceImportSchema = z.object({
 	transactions: z.array(financeImportTransactionSchema).default([]),
 	provenance: z.record(z.string(), z.unknown()).default({}),
 });
+export type FinanceSourceImportV1 = z.infer<typeof financeSourceImportV1Schema>;
+
+export const financeImportDocumentV2Schema = financeImportDocumentSchema.extend(
+	{
+		statementOpeningBalance: z.string().min(1).max(64).nullable().default(null),
+		statementClosingBalance: z.string().min(1).max(64).nullable().default(null),
+		statementTransactionCount: z
+			.number()
+			.int()
+			.nonnegative()
+			.nullable()
+			.default(null),
+		statementCurrency: z.string().min(1).max(16).nullable().default(null),
+		accountMappingKey: z.string().min(1).max(240).nullable().default(null),
+		extractionConfidence: z.number().min(0).max(1).default(0),
+		rawPayload: z.record(z.string(), z.unknown()).default({}),
+	},
+);
+
+export const financeImportTransactionV2Schema =
+	financeImportTransactionSchema.extend({
+		externalTransactionId: z.string().min(1).max(240).nullable().default(null),
+		clearedAt: z.string().min(1).max(64).nullable().default(null),
+		statementRowId: z.string().min(1).max(240).nullable().default(null),
+		rowIndex: z.number().int().nonnegative().nullable().default(null),
+		accountMappingKey: z.string().min(1).max(240).nullable().default(null),
+		bookHint: financeBookScopeSchema.default("unknown"),
+		businessUsePercent: z.number().min(0).max(100).nullable().default(null),
+		extractionConfidence: z.number().min(0).max(1).default(0),
+		rowProvenance: z.record(z.string(), z.unknown()).default({}),
+		rawPayload: z.record(z.string(), z.unknown()).default({}),
+	});
+
+export const financeSourceImportV2Schema = z.object({
+	schemaVersion: z.literal("finance-source-import.v2"),
+	sourceKind: financeImportSourceKindSchema,
+	sourceFile: financeImportSourceFileSchema,
+	artifactSha256: z.string().min(1),
+	extractor: financeImportExtractorSchema,
+	registrySuggestions: z.object({
+		identities: z.array(registryIdentitySuggestionSchema).default([]),
+		institutions: z.array(registryInstitutionSuggestionSchema).default([]),
+		financialAccounts: z
+			.array(registryFinancialAccountSuggestionSchema)
+			.default([]),
+		senderRules: z.array(registrySenderRuleSuggestionSchema).default([]),
+	}),
+	documents: z.array(financeImportDocumentV2Schema).default([]),
+	transactions: z.array(financeImportTransactionV2Schema).default([]),
+	provenance: z.record(z.string(), z.unknown()).default({}),
+});
+
+export const financeSourceImportSchema = z.union([
+	financeSourceImportV1Schema,
+	financeSourceImportV2Schema,
+]);
+export type FinanceSourceImportV2 = z.infer<typeof financeSourceImportV2Schema>;
 export type FinanceSourceImport = z.infer<typeof financeSourceImportSchema>;
+
+export const financeLedgerExportItemSchema = z.object({
+	canonicalKey: z.string().min(1).max(500),
+	status: z.enum(["exported", "unresolved", "blocked"]),
+	sourceKind: z.enum(["ledger_entry", "raw_sidecar"]),
+	beancountLink: z.string().min(1).max(240).nullable(),
+	messageId: z.string().min(1).nullable(),
+	sourceImportId: z.string().min(1).nullable(),
+	reason: z.string().min(1).max(500).nullable(),
+});
+
+export const financeLedgerExportSchema = z.object({
+	schemaVersion: z.literal("finance-ledger-export.v1"),
+	orgId: z.string().min(1),
+	exportRunId: z.string().min(1),
+	generatedAt: z.string().min(1),
+	strict: z.boolean(),
+	year: z.number().int().min(1900).max(2500).nullable(),
+	files: z.object({
+		main: z.string().min(1),
+		accounts: z.string().min(1),
+		generated: z.array(z.string().min(1)),
+		raw: z.string().min(1),
+		unresolved: z.string().min(1),
+		documents: z.array(z.string().min(1)),
+	}),
+	items: z.array(financeLedgerExportItemSchema),
+	unresolvedRows: z.array(z.record(z.string(), z.unknown())),
+	validation: z.object({
+		beanCheck: z.enum(["passed", "failed", "skipped"]),
+		beanCheckOutput: z.string().nullable(),
+		favaSmoke: z.enum(["manual", "skipped"]),
+	}),
+});
+export type FinanceLedgerExportV1 = z.infer<typeof financeLedgerExportSchema>;
 
 export const financeDataInputSchema = z.object({
 	year: z.number().int().min(1900).max(2500).optional(),
@@ -811,6 +1079,34 @@ function inferSecondaryBucketsFromTags(tags: string[]) {
 }
 
 export function normalizeMessageLabel(input: unknown): MessageLabelV2 | null {
+	return normalizeLegacyMessageLabel(input);
+}
+
+export function parseCurrentMessageLabel(
+	input: unknown,
+): MessageLabelV3 | null {
+	const direct = messageLabelV3Schema.safeParse(input);
+	if (!direct.success) {
+		return null;
+	}
+	return {
+		...direct.data,
+		routing: {
+			...direct.data.routing,
+			secondaryBuckets: uniqueStrings(
+				direct.data.routing.secondaryBuckets,
+			).flatMap((bucket) => {
+				const parsed = rootSecondaryBucketSchema.safeParse(bucket);
+				return parsed.success ? [parsed.data] : [];
+			}),
+			tags: uniqueStrings(direct.data.routing.tags),
+		},
+	};
+}
+
+export function normalizeLegacyMessageLabel(
+	input: unknown,
+): MessageLabelV2 | null {
 	const direct = messageLabelV2Schema.safeParse(input);
 	if (direct.success) {
 		return {
@@ -906,6 +1202,19 @@ export function normalizeMessageLabel(input: unknown): MessageLabelV2 | null {
 }
 
 export function normalizeFinanceIntel(input: unknown): FinanceIntelV2 | null {
+	return normalizeLegacyFinanceIntel(input);
+}
+
+export function parseCurrentFinanceIntel(
+	input: unknown,
+): FinanceIntelV3 | null {
+	const direct = financeIntelV3Schema.safeParse(input);
+	return direct.success ? direct.data : null;
+}
+
+export function normalizeLegacyFinanceIntel(
+	input: unknown,
+): FinanceIntelV2 | null {
 	const direct = financeIntelV2Schema.safeParse(input);
 	if (direct.success) {
 		return direct.data;
@@ -1006,19 +1315,43 @@ export const messageLabelNoNsfwJsonSchema = {
 		finance: {
 			type: "object",
 			additionalProperties: false,
-			required: ["relevant", "direction", "owner", "accountHint", "purpose"],
+			required: [
+				"relevant",
+				"signal",
+				"operational",
+				"bookHint",
+				"requiresFinanceIntel",
+				"confidence",
+				"evidence",
+			],
 			properties: {
 				relevant: { type: "boolean" },
-				direction: {
+				signal: {
 					type: "string",
-					enum: ["expense", "income", "both", "neither", "unknown"],
+					enum: [
+						"none",
+						"receipt",
+						"invoice",
+						"statement",
+						"banking",
+						"tax",
+						"payroll",
+						"investment",
+						"subscription",
+						"donation",
+						"transfer",
+						"promotion",
+						"other",
+					],
 				},
-				owner: {
+				operational: { type: "boolean" },
+				bookHint: {
 					type: "string",
 					enum: ["personal", "business", "mixed", "unknown"],
 				},
-				accountHint: { type: ["string", "null"] },
-				purpose: { type: ["string", "null"] },
+				requiresFinanceIntel: { type: "boolean" },
+				confidence: { type: "number", minimum: 0, maximum: 1 },
+				evidence: { type: ["string", "null"] },
 			},
 		},
 		people: {
@@ -1248,18 +1581,19 @@ export const financeIntelJsonSchema = {
 		"schemaVersion",
 		"messageKind",
 		"actionability",
+		"book",
+		"ledgerReadiness",
 		"transactionCandidates",
 		"documentCandidates",
 		"matchedRegistryRefs",
 		"unresolvedEntityHints",
+		"dedupe",
+		"fieldConfidence",
 		"confidence",
 		"explanation",
 	],
 	properties: {
-		schemaVersion: {
-			type: "string",
-			enum: ["finance-intel.v2"],
-		},
+		schemaVersion: { type: "string", enum: ["finance-intel.v3"] },
 		messageKind: {
 			type: "string",
 			enum: [
@@ -1290,9 +1624,52 @@ export const financeIntelJsonSchema = {
 				"manual_review",
 			],
 		},
+		book: {
+			type: "object",
+			additionalProperties: false,
+			required: ["scope", "businessUsePercent", "taxTreatmentHint", "evidence"],
+			properties: {
+				scope: {
+					type: "string",
+					enum: ["personal", "business", "mixed", "unknown"],
+				},
+				businessUsePercent: {
+					type: ["number", "null"],
+					minimum: 0,
+					maximum: 100,
+				},
+				taxTreatmentHint: {
+					type: ["string", "null"],
+					minLength: 1,
+					maxLength: 240,
+				},
+				evidence: { type: ["string", "null"], minLength: 1, maxLength: 500 },
+			},
+		},
+		ledgerReadiness: {
+			type: "object",
+			additionalProperties: false,
+			required: ["status", "reasons", "requiredFixes"],
+			properties: {
+				status: {
+					type: "string",
+					enum: ["exportable", "review", "blocked", "not_ledger"],
+				},
+				reasons: {
+					type: "array",
+					maxItems: 12,
+					items: { type: "string", minLength: 1, maxLength: 160 },
+				},
+				requiredFixes: {
+					type: "array",
+					maxItems: 12,
+					items: { type: "string", minLength: 1, maxLength: 80 },
+				},
+			},
+		},
 		transactionCandidates: {
 			type: "array",
-			maxItems: 10,
+			maxItems: 20,
 			items: {
 				type: "object",
 				additionalProperties: false,
@@ -1311,31 +1688,110 @@ export const financeIntelJsonSchema = {
 					"statementRefHint",
 					"taxRelevanceHint",
 					"evidence",
+					"externalTransactionId",
+					"postedAt",
+					"clearedAt",
+					"book",
+					"businessUsePercent",
+					"fieldConfidence",
+					"dedupe",
+					"beancount",
 				],
 				properties: {
-					kind: { type: "string" },
+					kind: { type: "string", minLength: 1, maxLength: 80 },
 					direction: {
 						type: "string",
 						enum: ["expense", "income", "both", "neither", "unknown"],
 					},
-					amount: { type: ["string", "null"] },
-					currency: { type: ["string", "null"] },
-					occurredAt: { type: ["string", "null"] },
-					merchantOrCounterparty: { type: ["string", "null"] },
-					ownerIdentityRef: { type: ["string", "null"] },
-					financialAccountRef: { type: ["string", "null"] },
-					institutionRef: { type: ["string", "null"] },
-					categoryPrimary: { type: ["string", "null"] },
-					categorySecondary: { type: ["string", "null"] },
-					statementRefHint: { type: ["string", "null"] },
-					taxRelevanceHint: { type: ["string", "null"] },
-					evidence: { type: "string" },
+					amount: { type: ["string", "null"], minLength: 1, maxLength: 64 },
+					currency: { type: ["string", "null"], minLength: 1, maxLength: 16 },
+					occurredAt: { type: ["string", "null"], minLength: 1, maxLength: 64 },
+					merchantOrCounterparty: {
+						type: ["string", "null"],
+						minLength: 1,
+						maxLength: 240,
+					},
+					ownerIdentityRef: {
+						type: ["string", "null"],
+						minLength: 1,
+						maxLength: 120,
+					},
+					financialAccountRef: {
+						type: ["string", "null"],
+						minLength: 1,
+						maxLength: 120,
+					},
+					institutionRef: {
+						type: ["string", "null"],
+						minLength: 1,
+						maxLength: 120,
+					},
+					categoryPrimary: {
+						type: ["string", "null"],
+						enum: [
+							"income",
+							"housing",
+							"utilities",
+							"banking_fees",
+							"transfers",
+							"taxes",
+							"insurance",
+							"healthcare",
+							"travel",
+							"meals",
+							"shopping",
+							"software_services",
+							"education",
+							"office_business",
+							"payroll_contractors",
+							"investments",
+							"donations",
+							"subscriptions",
+							"uncategorized",
+							null,
+						],
+					},
+					categorySecondary: {
+						type: ["string", "null"],
+						minLength: 1,
+						maxLength: 120,
+					},
+					statementRefHint: {
+						type: ["string", "null"],
+						minLength: 1,
+						maxLength: 160,
+					},
+					taxRelevanceHint: {
+						type: ["string", "null"],
+						minLength: 1,
+						maxLength: 240,
+					},
+					evidence: { type: "string", minLength: 1, maxLength: 500 },
+					externalTransactionId: {
+						type: ["string", "null"],
+						minLength: 1,
+						maxLength: 240,
+					},
+					postedAt: { type: ["string", "null"], minLength: 1, maxLength: 64 },
+					clearedAt: { type: ["string", "null"], minLength: 1, maxLength: 64 },
+					book: {
+						type: "string",
+						enum: ["personal", "business", "mixed", "unknown"],
+					},
+					businessUsePercent: {
+						type: ["number", "null"],
+						minimum: 0,
+						maximum: 100,
+					},
+					fieldConfidence: { $ref: "#/$defs/fieldConfidence" },
+					dedupe: { $ref: "#/$defs/transactionDedupe" },
+					beancount: { $ref: "#/$defs/beancount" },
 				},
 			},
 		},
 		documentCandidates: {
 			type: "array",
-			maxItems: 10,
+			maxItems: 20,
 			items: {
 				type: "object",
 				additionalProperties: false,
@@ -1348,26 +1804,86 @@ export const financeIntelJsonSchema = {
 					"dueAt",
 					"taxYear",
 					"attachmentRefs",
+					"evidence",
 					"accountRefHint",
 					"institutionRefHint",
-					"evidence",
+					"sourceDocumentRefs",
+					"statementOpeningBalance",
+					"statementClosingBalance",
+					"statementTransactionCount",
+					"statementCurrency",
+					"book",
+					"fieldConfidence",
 				],
 				properties: {
-					documentType: { type: "string" },
-					issuer: { type: ["string", "null"] },
-					externalId: { type: ["string", "null"] },
-					statementPeriodStart: { type: ["string", "null"] },
-					statementPeriodEnd: { type: ["string", "null"] },
-					dueAt: { type: ["string", "null"] },
-					taxYear: { type: ["integer", "null"] },
+					documentType: { type: "string", minLength: 1, maxLength: 80 },
+					issuer: { type: ["string", "null"], minLength: 1, maxLength: 240 },
+					externalId: {
+						type: ["string", "null"],
+						minLength: 1,
+						maxLength: 160,
+					},
+					statementPeriodStart: {
+						type: ["string", "null"],
+						minLength: 1,
+						maxLength: 64,
+					},
+					statementPeriodEnd: {
+						type: ["string", "null"],
+						minLength: 1,
+						maxLength: 64,
+					},
+					dueAt: { type: ["string", "null"], minLength: 1, maxLength: 64 },
+					taxYear: {
+						type: ["integer", "null"],
+						minimum: 1900,
+						maximum: 2500,
+					},
 					attachmentRefs: {
 						type: "array",
-						items: { type: "string" },
 						maxItems: 20,
+						items: { type: "string", minLength: 1 },
 					},
-					accountRefHint: { type: ["string", "null"] },
-					institutionRefHint: { type: ["string", "null"] },
-					evidence: { type: "string" },
+					evidence: { type: "string", minLength: 1, maxLength: 500 },
+					accountRefHint: {
+						type: ["string", "null"],
+						minLength: 1,
+						maxLength: 160,
+					},
+					institutionRefHint: {
+						type: ["string", "null"],
+						minLength: 1,
+						maxLength: 160,
+					},
+					sourceDocumentRefs: {
+						type: "array",
+						maxItems: 20,
+						items: { type: "string", minLength: 1, maxLength: 240 },
+					},
+					statementOpeningBalance: {
+						type: ["string", "null"],
+						minLength: 1,
+						maxLength: 64,
+					},
+					statementClosingBalance: {
+						type: ["string", "null"],
+						minLength: 1,
+						maxLength: 64,
+					},
+					statementTransactionCount: {
+						type: ["integer", "null"],
+						minimum: 0,
+					},
+					statementCurrency: {
+						type: ["string", "null"],
+						minLength: 1,
+						maxLength: 16,
+					},
+					book: {
+						type: "string",
+						enum: ["personal", "business", "mixed", "unknown"],
+					},
+					fieldConfidence: { $ref: "#/$defs/fieldConfidence" },
 				},
 			},
 		},
@@ -1378,15 +1894,15 @@ export const financeIntelJsonSchema = {
 			properties: {
 				identityIds: {
 					type: "array",
-					items: { type: "string" },
+					items: { type: "string", minLength: 1 },
 				},
 				institutionIds: {
 					type: "array",
-					items: { type: "string" },
+					items: { type: "string", minLength: 1 },
 				},
 				financialAccountIds: {
 					type: "array",
-					items: { type: "string" },
+					items: { type: "string", minLength: 1 },
 				},
 			},
 		},
@@ -1397,18 +1913,51 @@ export const financeIntelJsonSchema = {
 			properties: {
 				identityHints: {
 					type: "array",
-					items: { type: "string" },
+					items: { type: "string", minLength: 1 },
 				},
 				institutionHints: {
 					type: "array",
-					items: { type: "string" },
+					items: { type: "string", minLength: 1 },
 				},
 				financialAccountHints: {
 					type: "array",
-					items: { type: "string" },
+					items: { type: "string", minLength: 1 },
 				},
 			},
 		},
+		dedupe: {
+			type: "object",
+			additionalProperties: false,
+			required: [
+				"messageEvidenceKey",
+				"sourceDocumentRefs",
+				"externalTransactionIds",
+				"normalizedComposites",
+			],
+			properties: {
+				messageEvidenceKey: {
+					type: ["string", "null"],
+					minLength: 1,
+					maxLength: 500,
+				},
+				sourceDocumentRefs: {
+					type: "array",
+					maxItems: 20,
+					items: { type: "string", minLength: 1, maxLength: 240 },
+				},
+				externalTransactionIds: {
+					type: "array",
+					maxItems: 50,
+					items: { type: "string", minLength: 1, maxLength: 240 },
+				},
+				normalizedComposites: {
+					type: "array",
+					maxItems: 50,
+					items: { type: "string", minLength: 1, maxLength: 500 },
+				},
+			},
+		},
+		fieldConfidence: { $ref: "#/$defs/fieldConfidence" },
 		confidence: {
 			type: "object",
 			additionalProperties: false,
@@ -1421,18 +1970,98 @@ export const financeIntelJsonSchema = {
 			properties: {
 				overall: { type: "number", minimum: 0, maximum: 1 },
 				messageKind: { type: "number", minimum: 0, maximum: 1 },
-				transactionExtraction: {
-					type: "number",
-					minimum: 0,
-					maximum: 1,
-				},
-				registryMatching: {
-					type: "number",
-					minimum: 0,
-					maximum: 1,
-				},
+				transactionExtraction: { type: "number", minimum: 0, maximum: 1 },
+				registryMatching: { type: "number", minimum: 0, maximum: 1 },
 			},
 		},
 		explanation: { type: "string" },
+	},
+	$defs: {
+		fieldConfidence: {
+			type: "object",
+			additionalProperties: false,
+			required: [
+				"amount",
+				"date",
+				"counterparty",
+				"accountMapping",
+				"book",
+				"category",
+				"dedupe",
+			],
+			properties: {
+				amount: { type: ["number", "null"], minimum: 0, maximum: 1 },
+				date: { type: ["number", "null"], minimum: 0, maximum: 1 },
+				counterparty: { type: ["number", "null"], minimum: 0, maximum: 1 },
+				accountMapping: { type: ["number", "null"], minimum: 0, maximum: 1 },
+				book: { type: ["number", "null"], minimum: 0, maximum: 1 },
+				category: { type: ["number", "null"], minimum: 0, maximum: 1 },
+				dedupe: { type: ["number", "null"], minimum: 0, maximum: 1 },
+			},
+		},
+		transactionDedupe: {
+			type: "object",
+			additionalProperties: false,
+			required: [
+				"externalTransactionId",
+				"statementRowId",
+				"normalizedComposite",
+				"emailEvidenceKey",
+			],
+			properties: {
+				externalTransactionId: {
+					type: ["string", "null"],
+					minLength: 1,
+					maxLength: 240,
+				},
+				statementRowId: {
+					type: ["string", "null"],
+					minLength: 1,
+					maxLength: 240,
+				},
+				normalizedComposite: {
+					type: ["string", "null"],
+					minLength: 1,
+					maxLength: 500,
+				},
+				emailEvidenceKey: {
+					type: ["string", "null"],
+					minLength: 1,
+					maxLength: 500,
+				},
+			},
+		},
+		beancount: {
+			type: "object",
+			additionalProperties: false,
+			required: [
+				"debitAccount",
+				"creditAccount",
+				"currency",
+				"mappingKey",
+				"confidence",
+				"metadata",
+			],
+			properties: {
+				debitAccount: {
+					type: ["string", "null"],
+					minLength: 1,
+					maxLength: 240,
+				},
+				creditAccount: {
+					type: ["string", "null"],
+					minLength: 1,
+					maxLength: 240,
+				},
+				currency: { type: ["string", "null"], minLength: 1, maxLength: 16 },
+				mappingKey: {
+					type: ["string", "null"],
+					minLength: 1,
+					maxLength: 240,
+				},
+				confidence: { type: "number", minimum: 0, maximum: 1 },
+				metadata: { type: "object" },
+			},
+		},
 	},
 } as const;

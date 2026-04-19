@@ -30,6 +30,7 @@ const SENTINEL_PLAIN_TEXT_VALUES = new Set([
 	"null",
 	"plain text version not available",
 ]);
+const RECEIVED_AT_FUTURE_SKEW_MS = 36 * 60 * 60 * 1000;
 
 export function normalizeWhitespace(value: string) {
 	return value
@@ -136,7 +137,9 @@ export function looksLikeHtmlDocument(value: string) {
 }
 
 function buildSnippet(bodyTextPrimary: string, bodyTextForwarded: string) {
-	const source = normalizeWhitespace(bodyTextPrimary || bodyTextForwarded || "");
+	const source = normalizeWhitespace(
+		bodyTextPrimary || bodyTextForwarded || "",
+	);
 	if (!source) {
 		return "";
 	}
@@ -336,5 +339,15 @@ export function coerceReceivedAt(date: Date | null | undefined) {
 	if (Number.isNaN(time)) {
 		return null;
 	}
+	if (time > Date.now() + RECEIVED_AT_FUTURE_SKEW_MS) {
+		return null;
+	}
 	return new Date(time).toISOString();
+}
+
+export function coerceReceivedAtString(value: string | null | undefined) {
+	if (!value?.trim()) {
+		return null;
+	}
+	return coerceReceivedAt(new Date(value));
 }

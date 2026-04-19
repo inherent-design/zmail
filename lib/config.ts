@@ -1,22 +1,13 @@
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { googleOAuthRedirectUrl, loadResolvedConfig } from "#/lib/app-config";
+import { currentOrgId, dataRootDir, runtimePaths } from "#/lib/runtime";
+
 export const ROOT_DIR = process.cwd();
-export const DATA_DIR = resolve(
-	process.env.ZMAIL_DATA_DIR ?? resolve(ROOT_DIR, "data"),
-);
-export const ACCOUNTS_DIR = resolve(DATA_DIR, "accounts");
-export const OPERATOR_DIR = resolve(DATA_DIR, "operator");
-export const REGISTRY_DIR = resolve(
-	process.env.ZMAIL_REGISTRY_DIR ?? resolve(OPERATOR_DIR, "registry"),
-);
-export const CLASSIFICATION_DIR = resolve(
-	process.env.ZMAIL_CLASSIFICATION_DIR ??
-		resolve(OPERATOR_DIR, "classification"),
-);
+export const DATA_DIR = dataRootDir();
 export const TMP_DIR = resolve(DATA_DIR, "tmp");
 export const OAUTH_TMP_DIR = resolve(TMP_DIR, "oauth", "google");
-export const DB_PATH = resolve(DATA_DIR, "zmail.sqlite");
 export const PI_SUBSCRIPTION_PATH = resolve(
 	DATA_DIR,
 	"openai-subscription.json",
@@ -27,15 +18,15 @@ export const PROMPTS_DIR = resolve(
 );
 
 export function accountDir(accountId: string) {
-	return resolve(ACCOUNTS_DIR, accountId);
+	return runtimePaths().accountDir(accountId);
 }
 
 export function accountOAuthPath(accountId: string) {
-	return resolve(accountDir(accountId), "google-oauth.json");
+	return runtimePaths().accountOAuthPath(accountId);
 }
 
 export function accountRawDir(accountId: string) {
-	return resolve(accountDir(accountId), "raw");
+	return runtimePaths().accountRawDir(accountId);
 }
 
 const REMOTE_MESSAGE_ID_RE = /^[A-Za-z0-9_.-]+$/;
@@ -48,60 +39,107 @@ export function rawEmlPath(accountId: string, remoteMessageId: string) {
 	return resolve(accountRawDir(accountId), `${remoteMessageId}.eml`);
 }
 
-export const CLASSIFY_PROMPT_VERSION = "classify-email-v2";
+export function dbPath(orgId = currentOrgId()) {
+	return runtimePaths(orgId).dbPath;
+}
+
+export function accountsDir(orgId = currentOrgId()) {
+	return runtimePaths(orgId).accountsDir;
+}
+
+export function operatorDir(orgId = currentOrgId()) {
+	return runtimePaths(orgId).operatorDir;
+}
+
+export function registryDir(orgId = currentOrgId()) {
+	return runtimePaths(orgId).registryDir;
+}
+
+export function classificationDir(orgId = currentOrgId()) {
+	return runtimePaths(orgId).classificationDir;
+}
+
+export const DB_PATH = dbPath();
+export const ACCOUNTS_DIR = accountsDir();
+export const OPERATOR_DIR = operatorDir();
+export const REGISTRY_DIR = registryDir();
+export const CLASSIFICATION_DIR = classificationDir();
+const RESOLVED_CONFIG = loadResolvedConfig();
+
+function readGoogleOAuthBootstrapEnv(
+	name: "GOOGLE_OAUTH_CLIENT_ID" | "GOOGLE_OAUTH_CLIENT_SECRET",
+) {
+	const value = process.env[name]?.trim();
+	if (!value || value.startsWith("REPLACE_ME_")) {
+		return "";
+	}
+	return value;
+}
+
+export const CLASSIFY_PROMPT_VERSION = "classify-email-v3";
 export const OVERSEER_PROMPT_VERSION = "overseer-profile-v1";
 export const MODERATION_PROMPT_VERSION = "moderate-email-v2";
-export const FINANCE_INTEL_PROMPT_VERSION = "finance-intel-v2";
+export const FINANCE_INTEL_PROMPT_VERSION = "finance-intel-v3";
 export const FINANCE_KNOWLEDGE_PROMPT_VERSION = "finance-knowledge-merge-v1";
 
+export const FINANCE_MODEL_TARGET_PROMPT_VERSIONS = {
+	classify: "classify-email-v3",
+	financeIntel: "finance-intel-v3",
+	moderation: MODERATION_PROMPT_VERSION,
+} as const;
+
 export const GOOGLE_OAUTH = {
-	clientId: process.env.GOOGLE_OAUTH_CLIENT_ID ?? "",
-	clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET ?? "",
-	redirectUrl:
-		process.env.GOOGLE_OAUTH_REDIRECT_URL ??
-		"http://127.0.0.1:3000/oauth/google/callback",
+	get clientId() {
+		return readGoogleOAuthBootstrapEnv("GOOGLE_OAUTH_CLIENT_ID");
+	},
+	get clientSecret() {
+		return readGoogleOAuthBootstrapEnv("GOOGLE_OAUTH_CLIENT_SECRET");
+	},
+	get redirectUrl() {
+		return googleOAuthRedirectUrl();
+	},
 	scope: "openid email profile https://mail.google.com/",
 } as const;
 
 export const APP_CONFIG = {
-	classifierModel: process.env.ZMAIL_CLASSIFIER_MODEL ?? "gpt-5.4-mini",
-	fallbackModel: process.env.ZMAIL_FALLBACK_MODEL ?? "gpt-5-mini",
-	moderationModel:
-		process.env.ZMAIL_MODERATION_MODEL ??
-		process.env.ZMAIL_CLASSIFIER_MODEL ??
-		"gpt-5.4-mini",
-	piBackend: process.env.ZMAIL_PI_BACKEND ?? "auto",
-	liveConcurrency: Math.max(
-		1,
-		Number(process.env.ZMAIL_LIVE_CONCURRENCY ?? "2"),
-	),
+	classifierModel: RESOLVED_CONFIG.models.classifier,
+	fallbackModel: RESOLVED_CONFIG.models.fallback,
+	moderationModel: RESOLVED_CONFIG.models.moderation,
+	piBackend: RESOLVED_CONFIG.models.piBackend,
+	liveConcurrency: Math.max(1, RESOLVED_CONFIG.sync.liveConcurrency),
 	lowConfidenceThreshold: Number(process.env.LOW_CONFIDENCE_THRESHOLD ?? "0.8"),
 	nsfwThreshold: Number(process.env.NSFW_THRESHOLD ?? "0.6"),
-	overseerRebuildEvery: Number(process.env.OVERSEER_REBUILD_EVERY ?? "15000"),
-	workerPollMs: Number(process.env.ZMAIL_WORKER_POLL_MS ?? "1000"),
-	jobLeaseMs: 10 * 60 * 1000,
-	liveHeartbeatMs: Number(process.env.ZMAIL_LIVE_HEARTBEAT_MS ?? "30000"),
-	runWorker: (process.env.RUN_WORKER ?? "true") === "true",
-	registryDir: REGISTRY_DIR,
-	classificationDir: CLASSIFICATION_DIR,
-	imapFetchWindow: Math.max(
-		1,
-		Number(process.env.ZMAIL_IMAP_FETCH_WINDOW ?? "250"),
+	overseerBootstrapMinLabels: Number(
+		process.env.OVERSEER_BOOTSTRAP_MIN_LABELS ?? "25",
 	),
-	imapPollMs: Number(process.env.ZMAIL_IMAP_POLL_MS ?? "300000"),
-	imapMaxIdleMs: Number(process.env.ZMAIL_IMAP_MAX_IDLE_MS ?? "600000"),
-	syncReconcileMs: Number(process.env.ZMAIL_SYNC_RECONCILE_MS ?? "86400000"),
-} as const;
+	overseerRebuildEvery: Number(process.env.OVERSEER_REBUILD_EVERY ?? "1000"),
+	workerPollMs: RESOLVED_CONFIG.worker.pollMs,
+	jobLeaseMs: 10 * 60 * 1000,
+	liveHeartbeatMs: RESOLVED_CONFIG.worker.liveHeartbeatMs,
+	runWorker: RESOLVED_CONFIG.worker.enabled,
+	get registryDir() {
+		return registryDir();
+	},
+	get classificationDir() {
+		return classificationDir();
+	},
+	imapFetchWindow: Math.max(1, RESOLVED_CONFIG.sync.imapFetchWindow),
+	imapPollMs: RESOLVED_CONFIG.sync.imapPollMs,
+	imapMaxIdleMs: RESOLVED_CONFIG.sync.imapMaxIdleMs,
+	syncReconcileMs: RESOLVED_CONFIG.sync.reconcileMs,
+};
 
 export function ensureStorageDirs() {
+	const paths = runtimePaths();
 	for (const path of [
 		DATA_DIR,
-		ACCOUNTS_DIR,
-		OPERATOR_DIR,
-		REGISTRY_DIR,
-		CLASSIFICATION_DIR,
 		TMP_DIR,
 		OAUTH_TMP_DIR,
+		paths.rootDir,
+		paths.accountsDir,
+		paths.operatorDir,
+		paths.registryDir,
+		paths.classificationDir,
 	]) {
 		mkdirSync(path, { recursive: true });
 	}

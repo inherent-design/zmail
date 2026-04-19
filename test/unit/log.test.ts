@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import { setEnv } from "#/test/helpers/env";
@@ -193,5 +196,40 @@ describe("log", () => {
 				message: "plain failure",
 			},
 		});
+	});
+
+	it("writes redacted JSON to an optional file sink when logs are enabled", async () => {
+		const runtime = await createTestRuntime();
+		const logFile = join(runtime.root, "logs", "zmail.ndjson");
+		setEnv({
+			VITEST: undefined,
+			VITEST_LOG: "true",
+			NODE_ENV: undefined,
+			ZMAIL_LOG_FILE: logFile,
+			ZMAIL_SERVICE_INSTANCE_ID: "test-service-instance",
+		});
+		vi.resetModules();
+
+		vi.spyOn(process.stdout, "write").mockImplementation((() => true) as never);
+
+		const log =
+			await runtime.importFresh<typeof import("#/lib/log")>("#/lib/log");
+		log.startTrace({
+			kind: "test",
+			operation: "file_sink",
+		}).complete("test.file_sink", {
+			refresh_token: "secret-refresh",
+		});
+
+		const event = JSON.parse(readFileSync(logFile, "utf8").trim()) as Record<
+			string,
+			unknown
+		>;
+		expect(event).toMatchObject({
+			event: "test.file_sink",
+			service_instance_id: "test-service-instance",
+			refresh_token: "[REDACTED]",
+		});
+		expect(JSON.stringify(event)).not.toContain("secret-refresh");
 	});
 });

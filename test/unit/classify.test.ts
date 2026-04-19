@@ -1,17 +1,59 @@
-import { readFile } from "node:fs/promises";
-
 import { describe, expect, it, vi } from "vitest";
-
+import {
+	type MessageLabelV3,
+	messageLabelWithoutNsfwSchema,
+} from "#/lib/schemas";
 import {
 	bootDb,
 	insertMessageRow,
 	insertSecondaryResultRow,
 } from "#/test/helpers/db";
-import { fixturePath } from "#/test/helpers/fs";
+import { buildMessageLabelV3 } from "#/test/helpers/labels";
 import { createTestRuntime } from "#/test/helpers/runtime";
-import type { MessageLabelV2 } from "#/lib/schemas";
 
 describe("classify", () => {
+	it("normalizes invalid root secondary bucket aliases from model output", async () => {
+		const runtime = await createTestRuntime();
+		const classify =
+			await runtime.importFresh<typeof import("#/lib/classify")>(
+				"#/lib/classify",
+			);
+		const raw = buildMessageLabelV3({
+			finance: {
+				relevant: true,
+				signal: "investment",
+				operational: true,
+				bookHint: "personal",
+				requiresFinanceIntel: true,
+				confidence: 0.8,
+				evidence: "Brokerage alert.",
+			},
+			routing: {
+				primaryBucket: "finance",
+				secondaryBuckets: ["banking"],
+				tags: ["banking"],
+			},
+		}) as unknown as Record<string, unknown>;
+		raw.routing = {
+			primaryBucket: "finance",
+			secondaryBuckets: [
+				"banking",
+				"investment",
+				"transfer",
+				"tax_document",
+				"other",
+			],
+			tags: ["banking", "banking", "investment"],
+		};
+
+		const normalized = classify.normalizeMessageLabelV3ModelOutput(raw);
+		const parsed = messageLabelWithoutNsfwSchema.parse(normalized);
+
+		expect(parsed.routing.secondaryBuckets).toEqual(["banking", "tax"]);
+		expect(parsed.routing.tags).toEqual(["banking", "investment"]);
+		expect(parsed.finance.signal).toBe("investment");
+	});
+
 	it("builds attachment summaries and prompts with fallbacks", async () => {
 		const runtime = await createTestRuntime();
 		const classify =
@@ -48,41 +90,33 @@ describe("classify", () => {
 		);
 	});
 
-	it("classifies with default tags and persists low-confidence reviews", async () => {
+	it("classifies after sanitizing invalid model secondary buckets", async () => {
 		const runtime = await createTestRuntime();
+		const parsed = buildMessageLabelV3({
+			finance: {
+				relevant: true,
+				signal: "investment",
+				operational: true,
+				bookHint: "personal",
+				requiresFinanceIntel: true,
+				confidence: 0.9,
+				evidence: "Brokerage alert.",
+			},
+			routing: {
+				primaryBucket: "finance",
+				secondaryBuckets: ["banking"],
+				tags: ["banking"],
+			},
+		}) as unknown as Record<string, unknown>;
+		parsed.routing = {
+			primaryBucket: "finance",
+			secondaryBuckets: ["banking", "investment"],
+			tags: ["banking", "investment"],
+		};
 		const piJson = vi.fn(async () => ({
 			backend: "openai-subscription",
 			modelId: "gpt-5.4-mini",
-			parsed: {
-				finance: {
-					relevant: true,
-					direction: "expense",
-					owner: "business",
-					accountHint: null,
-					purpose: "lunch",
-				},
-				social: {
-					personal: false,
-					private: false,
-					social: false,
-					business: true,
-				},
-				risk: {
-					businessSensitive: false,
-					leakRisk: false,
-				},
-				routing: {
-					primaryBucket: "finance",
-					tags: ["receipt"],
-				},
-				confidence: {
-					overall: 0.4,
-					finance: 0.4,
-					social: 0.4,
-					risk: 0.4,
-				},
-				explanation: "Low confidence.",
-			},
+			parsed,
 			rawText: "{}",
 			usage: null,
 		}));
@@ -98,6 +132,64 @@ describe("classify", () => {
 		const messageId = await insertMessageRow(db);
 
 		const result = await classify.classifyMessageNow({
+			accountId: "acct-1",
+			messageId,
+			accountLabel: "Primary Gmail",
+			sender: "brokerage@example.com",
+			subject: "Investment update",
+			receivedAt: "2026-01-01",
+			bodyText: "Investment transfer update",
+			attachmentsSummary: "No attachments",
+			moderationFlag: false,
+			moderationScores: [],
+			promptPreamble: null,
+		});
+
+		expect(result.label.finance.signal).toBe("investment");
+		expect(result.label.routing.secondaryBuckets).toEqual(["banking"]);
+	});
+
+	it("classifies with default tags and persists low-confidence reviews", async () => {
+		const runtime = await createTestRuntime();
+		const piJson = vi.fn(async () => ({
+			backend: "openai-subscription",
+			modelId: "gpt-5.4-mini",
+			parsed: buildMessageLabelV3({
+				finance: {
+					relevant: true,
+					signal: "receipt",
+					operational: true,
+					bookHint: "business",
+					requiresFinanceIntel: true,
+					confidence: 0.4,
+					evidence: "Lunch receipt.",
+				},
+				people: { business: true },
+				commerce: { transactional: true },
+				routing: {
+					primaryBucket: "finance",
+					secondaryBuckets: ["receipt"],
+					tags: ["receipt"],
+				},
+				confidence: { overall: 0.4, finance: 0.4 },
+				explanation: "Low confidence.",
+			}),
+			rawText: "{}",
+			usage: null,
+		}));
+		vi.doMock("#/lib/pi", () => ({
+			piJson,
+		}));
+
+		const classify =
+			await runtime.importFresh<typeof import("#/lib/classify")>(
+				"#/lib/classify",
+			);
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		const messageId = await insertMessageRow(db);
+
+		const result = await classify.classifyMessageNow({
+			accountId: "acct-1",
 			messageId,
 			accountLabel: "Primary Gmail",
 			sender: "billing@example.com",
@@ -110,7 +202,7 @@ describe("classify", () => {
 			promptPreamble: "Known sender.",
 		});
 
-		expect(result.label.schemaVersion).toBe("message-label.v2");
+		expect(result.label.schemaVersion).toBe("message-label.v3");
 		expect(result.label.nsfw).toBe(false);
 		expect(piJson).toHaveBeenCalled();
 
@@ -123,36 +215,26 @@ describe("classify", () => {
 		const piJson = vi.fn(async () => ({
 			backend: "openai-subscription",
 			modelId: "gpt-5.4-mini",
-			parsed: {
+			parsed: buildMessageLabelV3({
 				finance: {
 					relevant: true,
-					direction: "expense",
-					owner: "business",
-					accountHint: null,
-					purpose: "receipt",
+					signal: "receipt",
+					operational: true,
+					bookHint: "business",
+					requiresFinanceIntel: true,
+					confidence: 0.4,
+					evidence: "Receipt.",
 				},
-				social: {
-					personal: false,
-					private: false,
-					social: false,
-					business: true,
-				},
-				risk: {
-					businessSensitive: false,
-					leakRisk: false,
-				},
+				people: { business: true },
+				commerce: { transactional: true },
 				routing: {
 					primaryBucket: "finance",
+					secondaryBuckets: ["receipt"],
 					tags: ["receipt"],
 				},
-				confidence: {
-					overall: 0.4,
-					finance: 0.4,
-					social: 0.4,
-					risk: 0.4,
-				},
+				confidence: { overall: 0.4, finance: 0.4 },
 				explanation: "Low confidence.",
-			},
+			}),
 			rawText: "{}",
 			usage: null,
 		}));
@@ -172,6 +254,7 @@ describe("classify", () => {
 		});
 
 		await classify.classifyMessageNow({
+			accountId: "acct-1",
 			messageId,
 			accountLabel: "Primary Gmail",
 			sender: "billing@example.com",
@@ -198,55 +281,21 @@ describe("classify", () => {
 		const messageId = await insertMessageRow(db, {
 			contentSha256: "review-refresh-sha",
 		});
-		const lowConfidenceLabel: MessageLabelV2 = {
-			schemaVersion: "message-label.v2" as const,
-			nsfw: false,
+		const lowConfidenceLabel: MessageLabelV3 = buildMessageLabelV3({
 			finance: {
 				relevant: true,
-				direction: "expense" as const,
-				owner: "business" as const,
-				accountHint: null,
-				purpose: "software",
+				signal: "receipt",
+				operational: true,
+				bookHint: "business",
+				requiresFinanceIntel: true,
+				confidence: 0.4,
+				evidence: "Software receipt.",
 			},
-			people: {
-				personal: false,
-				private: false,
-				business: true,
-				networking: false,
-				community: false,
-				recruiting: false,
-			},
-			commerce: {
-				transactional: true,
-				shopping: false,
-				subscription: true,
-				travel: false,
-				legal: false,
-			},
-			knowledge: {
-				course: false,
-				resource: true,
-				documentation: false,
-				newsletter: false,
-				research: false,
-			},
-			assets: {
-				license: false,
-				credential: false,
-				account: false,
-				document: false,
-			},
-			entertainment: {
-				gaming: false,
-				media: false,
-				fandom: false,
-			},
-			risk: {
-				businessSensitive: false,
-				leakRisk: false,
-			},
+			people: { business: true },
+			commerce: { transactional: true, subscription: true },
+			knowledge: { resource: true },
 			routing: {
-				primaryBucket: "finance" as const,
+				primaryBucket: "finance",
 				secondaryBuckets: ["subscription"],
 				tags: ["receipt"],
 			},
@@ -261,14 +310,14 @@ describe("classify", () => {
 				risk: 0.9,
 			},
 			explanation: "Low confidence.",
-		};
+		});
 
 		await classify.persistClassification({
 			jobId: null,
 			messageId,
 			model: "gpt-5.4-mini",
 			backend: "openai-subscription",
-			promptVersion: "classify-email-v2",
+			promptVersion: "classify-email-v3",
 			source: "model",
 			rawResponse: { step: 1 },
 			usage: null,
@@ -287,7 +336,7 @@ describe("classify", () => {
 			messageId,
 			model: "gpt-5.4-mini",
 			backend: "openai-subscription",
-			promptVersion: "classify-email-v2",
+			promptVersion: "classify-email-v3",
 			source: "model",
 			rawResponse: { step: 2 },
 			usage: null,
@@ -320,7 +369,9 @@ describe("classify", () => {
 			status: "open",
 			source_classification_result_id: latestResult.id,
 		});
-		expect(firstReview.source_classification_result_id).not.toBe(latestResult.id);
+		expect(firstReview.source_classification_result_id).not.toBe(
+			latestResult.id,
+		);
 	});
 
 	it("auto-resolves an open review after a higher-confidence reclassification", async () => {
@@ -333,55 +384,21 @@ describe("classify", () => {
 		const messageId = await insertMessageRow(db, {
 			contentSha256: "review-resolve-sha",
 		});
-		const lowConfidenceLabel: MessageLabelV2 = {
-			schemaVersion: "message-label.v2" as const,
-			nsfw: false,
+		const lowConfidenceLabel: MessageLabelV3 = buildMessageLabelV3({
 			finance: {
 				relevant: true,
-				direction: "expense" as const,
-				owner: "business" as const,
-				accountHint: null,
-				purpose: "software",
+				signal: "receipt",
+				operational: true,
+				bookHint: "business",
+				requiresFinanceIntel: true,
+				confidence: 0.4,
+				evidence: "Software receipt.",
 			},
-			people: {
-				personal: false,
-				private: false,
-				business: true,
-				networking: false,
-				community: false,
-				recruiting: false,
-			},
-			commerce: {
-				transactional: true,
-				shopping: false,
-				subscription: true,
-				travel: false,
-				legal: false,
-			},
-			knowledge: {
-				course: false,
-				resource: true,
-				documentation: false,
-				newsletter: false,
-				research: false,
-			},
-			assets: {
-				license: false,
-				credential: false,
-				account: false,
-				document: false,
-			},
-			entertainment: {
-				gaming: false,
-				media: false,
-				fandom: false,
-			},
-			risk: {
-				businessSensitive: false,
-				leakRisk: false,
-			},
+			people: { business: true },
+			commerce: { transactional: true, subscription: true },
+			knowledge: { resource: true },
 			routing: {
-				primaryBucket: "finance" as const,
+				primaryBucket: "finance",
 				secondaryBuckets: ["subscription"],
 				tags: ["receipt"],
 			},
@@ -396,14 +413,14 @@ describe("classify", () => {
 				risk: 0.9,
 			},
 			explanation: "Low confidence.",
-		};
+		});
 
 		await classify.persistClassification({
 			jobId: null,
 			messageId,
 			model: "gpt-5.4-mini",
 			backend: "openai-subscription",
-			promptVersion: "classify-email-v2",
+			promptVersion: "classify-email-v3",
 			source: "model",
 			rawResponse: { step: 1 },
 			usage: null,
@@ -415,7 +432,7 @@ describe("classify", () => {
 			messageId,
 			model: "gpt-5.4-mini",
 			backend: "openai-subscription",
-			promptVersion: "classify-email-v2",
+			promptVersion: "classify-email-v3",
 			source: "model",
 			rawResponse: { step: 2 },
 			usage: null,
@@ -456,9 +473,22 @@ describe("classify", () => {
 				"#/lib/classify",
 			);
 		const messageId = await insertMessageRow(db);
-		const manualLabel = JSON.parse(
-			await readFile(fixturePath("review", "manual-override.json"), "utf8"),
-		);
+		const manualLabel = buildMessageLabelV3({
+			finance: {
+				relevant: true,
+				signal: "receipt",
+				operational: true,
+				bookHint: "business",
+				requiresFinanceIntel: true,
+				confidence: 0.4,
+				evidence: "Manual receipt override.",
+			},
+			routing: {
+				primaryBucket: "finance",
+				secondaryBuckets: ["receipt"],
+				tags: ["receipt"],
+			},
+		});
 		await classify.persistClassification({
 			jobId: null,
 			messageId,
@@ -473,7 +503,11 @@ describe("classify", () => {
 				confidence: {
 					overall: 0.4,
 					finance: 0.4,
-					social: 0.4,
+					people: 0.4,
+					commerce: 0.4,
+					knowledge: 0.4,
+					assets: 0.4,
+					entertainment: 0.4,
 					risk: 0.4,
 				},
 			},
@@ -527,7 +561,7 @@ describe("classify", () => {
 		expect(current.source).toBe("manual");
 		expect(current.nsfw).toBe(1);
 		expect(review.status).toBe("resolved");
-		expect(review.override_label_json).toContain('"message-label.v2"');
+		expect(review.override_label_json).toContain('"message-label.v3"');
 	});
 
 	it("marks finance secondary heads stale when the current root label changes", async () => {
@@ -551,57 +585,24 @@ describe("classify", () => {
 			messageId,
 			model: "gpt-5.4-mini",
 			backend: "openai-subscription",
-			promptVersion: "classify-email-v2",
+			promptVersion: "classify-email-v3",
 			source: "model",
 			rawResponse: {},
 			usage: null,
-			label: {
-				schemaVersion: "message-label.v2",
-				nsfw: false,
+			label: buildMessageLabelV3({
 				finance: {
 					relevant: true,
-					direction: "expense",
-					owner: "business",
-					accountHint: null,
-					purpose: "software",
+					signal: "receipt",
+					operational: true,
+					bookHint: "business",
+					requiresFinanceIntel: true,
+					confidence: 0.9,
+					evidence: "Software receipt.",
 				},
-				people: {
-					personal: false,
-					private: false,
-					business: true,
-					networking: false,
-					community: false,
-					recruiting: false,
-				},
-				commerce: {
-					transactional: true,
-					shopping: false,
-					subscription: true,
-					travel: false,
-					legal: false,
-				},
-				knowledge: {
-					course: false,
-					resource: true,
-					documentation: false,
-					newsletter: false,
-					research: false,
-				},
-				assets: {
-					license: true,
-					credential: false,
-					account: true,
-					document: false,
-				},
-				entertainment: {
-					gaming: false,
-					media: false,
-					fandom: false,
-				},
-				risk: {
-					businessSensitive: false,
-					leakRisk: false,
-				},
+				people: { business: true },
+				commerce: { transactional: true, subscription: true },
+				knowledge: { resource: true },
+				assets: { license: true, account: true },
 				routing: {
 					primaryBucket: "finance",
 					secondaryBuckets: ["receipt", "subscription", "resources"],
@@ -618,7 +619,7 @@ describe("classify", () => {
 					risk: 0.9,
 				},
 				explanation: "Confident.",
-			},
+			}),
 		});
 
 		const head = await db

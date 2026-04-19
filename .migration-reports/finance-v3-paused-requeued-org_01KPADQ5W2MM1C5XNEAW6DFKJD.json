@@ -1,0 +1,114 @@
+{
+  "orgId": "org_01KPADQ5W2MM1C5XNEAW6DFKJD",
+  "requeued": [
+    {
+      "id": "f8cdb4fe-40ad-4333-ad9e-da8ac3f9df3d",
+      "kind": "classify_account_backlog",
+      "scopeId": "13e5d47f-07ea-4e8f-bd45-f992a3210e4f",
+      "status": "running",
+      "promptVersion": "classify-email-v3",
+      "successCount": 145,
+      "errorCount": 0,
+      "requestCount": 250,
+      "leaseExpiresAt": "2026-04-18T22:29:33.268Z"
+    }
+  ],
+  "openJobs": [
+    {
+      "id": "f8cdb4fe-40ad-4333-ad9e-da8ac3f9df3d",
+      "kind": "classify_account_backlog",
+      "scopeId": "13e5d47f-07ea-4e8f-bd45-f992a3210e4f",
+      "status": "queued",
+      "promptVersion": "classify-email-v3",
+      "attempts": 1,
+      "successCount": 145,
+      "errorCount": 0,
+      "lastError": "operator paused worker drain; safe to resume",
+      "createdAt": "2026-04-18T22:04:55.671Z"
+    },
+    {
+      "id": "ec9cb41d-9f6e-4006-965c-a5e58051c8c7",
+      "kind": "classify_finance_backlog",
+      "scopeId": "13e5d47f-07ea-4e8f-bd45-f992a3210e4f",
+      "status": "queued",
+      "promptVersion": "finance-intel-v3",
+      "attempts": 0,
+      "successCount": 0,
+      "errorCount": 0,
+      "lastError": null,
+      "createdAt": "2026-04-18T22:04:55.672Z"
+    },
+    {
+      "id": "1871cb1f-aabe-49ee-99d3-313383673c85",
+      "kind": "classify_account_backlog",
+      "scopeId": "bb57fb8f-5b38-4b24-84c8-f35da8170a7b",
+      "status": "queued",
+      "promptVersion": "classify-email-v3",
+      "attempts": 0,
+      "successCount": 0,
+      "errorCount": 0,
+      "lastError": null,
+      "createdAt": "2026-04-18T22:04:55.674Z"
+    },
+    {
+      "id": "8ee52239-8a45-4972-85d7-368619fbc471",
+      "kind": "classify_finance_backlog",
+      "scopeId": "bb57fb8f-5b38-4b24-84c8-f35da8170a7b",
+      "status": "queued",
+      "promptVersion": "finance-intel-v3",
+      "attempts": 0,
+      "successCount": 0,
+      "errorCount": 0,
+      "lastError": null,
+      "createdAt": "2026-04-18T22:04:55.674Z"
+    },
+    {
+      "id": "c067d9cf-cf52-4325-b5f8-2af6b955c2a2",
+      "kind": "classify_finance_backlog",
+      "scopeId": "c5fcb5f9-e46b-460d-8277-3d0160265e85",
+      "status": "queued",
+      "promptVersion": "finance-intel-v3",
+      "attempts": 0,
+      "successCount": 0,
+      "errorCount": 0,
+      "lastError": null,
+      "createdAt": "2026-04-18T22:04:55.676Z"
+    },
+    {
+      "id": "49a99eeb-045c-4950-9b9b-e912d57362c5",
+      "kind": "classify_account_backlog",
+      "scopeId": "c676d516-3350-42d3-89e9-eb4042f421eb",
+      "status": "queued",
+      "promptVersion": "classify-email-v3",
+      "attempts": 0,
+      "successCount": 0,
+      "errorCount": 0,
+      "lastError": null,
+      "createdAt": "2026-04-18T22:04:55.677Z"
+    },
+    {
+      "id": "b7baf152-e1ef-4a1c-acda-8796c1747827",
+      "kind": "classify_finance_backlog",
+      "scopeId": "c676d516-3350-42d3-89e9-eb4042f421eb",
+      "status": "queued",
+      "promptVersion": "finance-intel-v3",
+      "attempts": 0,
+      "successCount": 0,
+      "errorCount": 0,
+      "lastError": null,
+      "createdAt": "2026-04-18T22:04:55.677Z"
+    },
+    {
+      "id": "a27a28b2-a5d4-4953-a5f9-3fbd172e7735",
+      "kind": "classify_account_backlog",
+      "scopeId": "c5fcb5f9-e46b-460d-8277-3d0160265e85",
+      "status": "queued",
+      "promptVersion": "classify-email-v3",
+      "attempts": 0,
+      "successCount": 0,
+      "errorCount": 0,
+      "lastError": null,
+      "createdAt": "2026-04-18T22:06:39.649Z"
+    }
+  ]
+}

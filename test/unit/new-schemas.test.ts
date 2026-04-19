@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+	accountConnectionStateSchema,
 	accountIdInputSchema,
 	accountRecordSchema,
 	accountSyncStateSchema,
@@ -11,6 +12,12 @@ import {
 
 describe("new schemas", () => {
 	const now = new Date().toISOString();
+
+	it("accepts config_error as an account connection state", () => {
+		expect(accountConnectionStateSchema.parse("config_error")).toBe(
+			"config_error",
+		);
+	});
 
 	describe("accountRecordSchema", () => {
 		const validAccount = {

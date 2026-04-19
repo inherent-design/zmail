@@ -222,7 +222,7 @@ describe("watchers", () => {
 
 		const account = await db
 			.selectFrom("accounts")
-			.select(["sync_status"])
+			.select(["sync_status", "last_error"])
 			.where("id", "=", "acct-2")
 			.executeTakeFirstOrThrow();
 		const syncState = await db
@@ -232,8 +232,65 @@ describe("watchers", () => {
 			.executeTakeFirstOrThrow();
 
 		expect(account.sync_status).toBe("needs_reconnect");
+		expect(account.last_error).toBe(
+			"Gmail OAuth token is missing or no longer valid. Reconnect this Gmail account.",
+		);
 		expect(syncState.watcher_status).toBe("error");
 		expect(watchers.getWatcherStatus("acct-2")).toBe("stopped");
+	});
+
+	it("stops and records a config error when Google rejects bootstrap credentials", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-bootstrap-error",
+			syncEnabled: 1,
+		});
+		await insertSyncState("acct-bootstrap-error");
+
+		const createImapClient = vi.fn();
+		vi.doMock("#/lib/google-oauth", () => ({
+			ensureFreshToken: vi.fn(async () => {
+				const error = new Error(
+					"Google OAuth client credentials were rejected by Google. Verify GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET for redirect URL http://127.0.0.1:56711/oauth/google/callback. Start local server with mise run dev.",
+				);
+				error.name = "GoogleOAuthBootstrapError";
+				throw error;
+			}),
+		}));
+		vi.doMock("#/lib/imap", () => ({
+			createImapClient,
+		}));
+		vi.doMock("#/lib/jobs", async () => {
+			const actual =
+				await vi.importActual<typeof import("#/lib/jobs")>("#/lib/jobs");
+			return actual;
+		});
+
+		const watchers =
+			await runtime.importFresh<typeof import("#/lib/watchers")>(
+				"#/lib/watchers",
+			);
+		await watchers.startWatcher("acct-bootstrap-error");
+
+		const account = await db
+			.selectFrom("accounts")
+			.select(["sync_status", "last_error"])
+			.where("id", "=", "acct-bootstrap-error")
+			.executeTakeFirstOrThrow();
+		const syncState = await db
+			.selectFrom("account_sync_state")
+			.select(["watcher_status"])
+			.where("account_id", "=", "acct-bootstrap-error")
+			.executeTakeFirstOrThrow();
+
+		expect(createImapClient).not.toHaveBeenCalled();
+		expect(account.sync_status).toBe("idle");
+		expect(account.last_error).toContain(
+			"Google OAuth client credentials were rejected by Google.",
+		);
+		expect(syncState.watcher_status).toBe("error");
+		expect(watchers.getWatcherStatus("acct-bootstrap-error")).toBe("stopped");
 	});
 
 	it("stopping an unknown watcher is a no-op", async () => {

@@ -1,280 +1,185 @@
 # Contributing to zmail
 
-## Prerequisites
+## Start Here
 
-- Node 24+
-- pnpm
-- mise
-- macOS or Linux
-- access to the org age key used for repo-managed SOPS secrets
-- one live inference backend for credentialed flows:
-  - ChatGPT or Codex subscription connected through `pnpm pi:connect`
-  - `OPENAI_API_KEY`
+The canonical architecture and contract surface is:
 
-## Getting Started
+- [`docs/specs/README.md`](./docs/specs/README.md)
 
-```bash
-git clone <repository-url>
-cd zmail
-pnpm install
-mise trust mise.toml
-mise run db:migrate
-mise run check
-```
+Do not treat the current source tree as the architecture source of truth during
+the refactor. The goal is to move source toward the vNext spec set.
 
-A fresh local database starts empty. Connect Gmail accounts through
-`/accounts/new`. Reconnect an existing account through
-`/accounts/$accountId/reconnect`, use `Disconnect Gmail` on
-`/accounts/$accountId` to preserve the local corpus while removing OAuth
-credentials, and use `/accounts/$accountId/delete` for typed-confirm local
-account deletion. Do not expect a seeded default account.
+## Working Rules
 
-For Gmail-authenticated local runs, prefer `mise run ...` so the repo-managed
-encrypted Google OAuth secrets are loaded automatically.
-`mise` requires a one-time trust step per checkout before it will load
-`mise.toml`: `mise trust mise.toml`.
+1. update the owning spec in the same change whenever a public contract changes
+2. do not preserve stale TanStack or single-tenant assumptions in active docs
+3. when source is wider than spec and still belongs in vNext, update the spec
+4. when the spec is wider than source and still desired, implementation is
+   behind and should move toward the spec
+5. prefer deleting stale docs over keeping contradictory notes around
 
-For a destructive local reset, run:
+## Canonical Spec Areas
 
-```bash
-mise run db:reset && mise run db:migrate
-```
+- platform:
+  - Hono
+  - Hono JSX + enhanced MPA + SSE
+  - WorkOS auth and organizations
+  - runtime storage and tenancy
+  - jobs/workers/observability
+- domain:
+  - Gmail sync and ingestion
+  - message model
+  - moderation and root classification
+  - secondary classifiers and projections
+  - operator registry and taxonomy
+  - finance imports
+  - finance knowledge and rollups
+- operations:
+  - migrations and script policy
+  - testing and proof
+  - security and secrets
 
-`pnpm db:reset:messages` preserves account rows and `data/accounts/<accountId>/google-oauth.json`, drops corpus state and raw `.eml` files, recreates the DB on the current schema, and queues fresh `sync_account_full` jobs for enabled accounts.
+## Source Layout
 
-`pnpm db:reset:jobs` clears only the `jobs` table.
-
-`pnpm db:migrate` repairs mixed local DBs that already have the V2 message model but are missing the additive secondary/registry/finance tables.
-
-If the runtime reports that the local DB predates the rewritten baseline, prefer `pnpm db:reset:messages`. Use `pnpm db:reset` plus `pnpm db:migrate` only when you also want to discard account storage and reconnect Gmail accounts.
-
-`pnpm reextract:parse-errors` is a supported recovery path only for fresh V2 DBs when a parser regression leaves messages stuck in `parse_status = 'error'`. It is not a rescue path for old pre-secondary local DBs.
-
-`pnpm reextract:bad-bodies` is the repair path for rows that parsed
-successfully but stored unusable body output such as `undefined`, `null`,
-`Plain text version not available`, or literal HTML in `body_text_primary` or
-`snippet`. It reparses from the saved raw MIME, preserves row identity, and
-queues normal root reclassification for affected accounts.
-
-The operator source of truth lives on disk, not in SQLite:
-
-- `data/operator/classification/root-taxonomy.yaml`
-- `data/operator/classification/finance-taxonomy.yaml`
-- `data/operator/classification/rules.yaml`
-- `data/operator/registry/identities.yaml`
-- `data/operator/registry/institutions.yaml`
-- `data/operator/registry/financial-accounts.yaml`
-- `data/operator/registry/sender-rules.yaml`
-
-Runtime tables are imported caches. Missing YAML files are auto-written with
-defaults or empty schema-valid documents on first runtime boot or config load.
-Existing files are never overwritten automatically.
-
-Install the Playwright browser only when you need the live browser suite:
-
-```bash
-pnpm playwright:install
-```
-
-## Current Workspace Layout
+The legacy TanStack route/component tree has been removed. Treat this as the
+live runtime ownership split:
 
 ```txt
-zmail/
-  app/                 active TanStack route tree and server functions
-  db/                  SQL migrations
-  docs/                active specs, architecture notes, testing docs, roadmap
-  lib/                 sync, SQLite, worker, inference, parsing, and overseer logic
-  prompts/             moderation, classification, and overseer prompts
-  scripts/             small CLI entrypoints
-  test/                unit, integration, and Playwright harness
-  data/                local runtime state
+db/                  SQL migrations
+docs/specs/          canonical vNext specs
+lib/                 domain logic and runtime services
+prompts/             moderation and classification prompts
+public/client/       browser shell, navigation, and page modules
+scripts/             operator, admin, and test harness tooling
+server/              Hono entrypoint, auth, actions, and SSR UI
+test/                unit, integration, and Playwright harness
 ```
 
-## Development Workflow
+## Local Development
 
-1. branch from the active integration branch
-2. make the smallest change that closes one real behavior or contract gap
-3. update docs in the same change when behavior, commands, or workflow changed
-4. run the verification commands
-5. submit the change with a narrow summary and explicit verification notes
-
-## Commands
+Current local commands remain available while the rewrite is underway:
 
 ```bash
+pnpm install
+mise trust mise.toml
 mise run dev
+mise run test
+mise run test:quick
+mise run test:coverage
+mise run test:unit
+mise run test:unit -- finance
+mise run test:integration
+mise run test:e2e
+mise run test:fuzz
+mise run test:stress
+mise run test:list
+mise run obs:up
+mise run obs:down
 mise run db:migrate
-mise run db:reset
-mise run check
-mise run check:full
-pnpm dev
-pnpm build
-pnpm preview
-pnpm router:generate
-pnpm typecheck
-pnpm test:unit
-pnpm coverage
-pnpm lint
-pnpm check
-pnpm test:e2e:live
-pnpm check:full
-pnpm db:migrate
-pnpm db:reset
-pnpm db:reset:messages
-pnpm db:reset:jobs
-pnpm reextract:parse-errors
-pnpm reextract:bad-bodies
-pnpm worker:drain
-pnpm pi:connect
-pnpm playwright:install
+mise run audit:corpus
 ```
 
-`pnpm check` is the default pre-review gate.
+Use `mise` as the canonical test interface. `mise run test` runs the quick
+local gate: lint, typecheck, unit, and integration. `mise run test:coverage`
+runs the full gate: lint, typecheck, covered unit buckets, integration, browser
+e2e, fuzz, and stress. Benchmarks are explicit and are not part of the coverage
+gate.
 
-## Secrets
+Use `mise run ...` for server-side commands that need repo-managed bootstrap
+secrets. `mise` loads `secrets.enc.yaml` natively for those tasks. `pnpm raw:*`
+scripts are implementation details used by mise tasks. Non-secret runtime
+defaults live in `zmail.toml`, and `.env.example` documents local override
+names.
 
-zmail now uses the org-wide `SOPS + age + mise` pattern for repo-managed Google
-OAuth bootstrap secrets.
+For local server startup, `mise run dev` is the supported entrypoint when you
+rely on repo-managed WorkOS or Google bootstrap secrets. Plain `pnpm raw:dev`
+is the raw runtime entrypoint and does not load `secrets.enc.yaml`.
 
-- committed encrypted files:
-  - `.sops.yaml`
-  - `secrets.enc.yaml`
-  - `mise.toml`
-- one-time local trust command:
-  - `mise trust mise.toml`
-- repo-managed encrypted values:
-  - `GOOGLE_OAUTH_CLIENT_ID`
-  - `GOOGLE_OAUTH_CLIENT_SECRET`
-- user-local values that remain out of repo secret storage:
-  - `OPENAI_API_KEY`
-  - `data/openai-subscription.json`
-  - Gmail account token files under `data/accounts/<accountId>/google-oauth.json`
+For local observability, enable metrics and the JSON log file sink explicitly:
 
-## Testing Strategy
+```bash
+mkdir -p .observability/logs
+ZMAIL_METRICS_ENABLED=true \
+ZMAIL_LOG_FILE=.observability/logs/zmail.ndjson \
+mise run dev
+```
 
-zmail uses deterministic unit and integration coverage as the primary proof layer, then an opt-in credentialed Playwright harness over the real `server + worker + browser` flow.
+`mise run obs:up` starts the local Grafana, Loki, Prometheus, and Alloy stack.
 
-Do not make live browser tests the only proof for behavior that can be tested cheaper and more deterministically.
+The shared local WorkOS bootstrap set is:
 
-The current proof layers are:
+- `WORKOS_API_KEY`
+- `WORKOS_CLIENT_ID`
+- `WORKOS_COOKIE_PASSWORD`
+- optional for machine-token finance import automation:
+  - `WORKOS_M2M_CLIENT_ID`
+  - `WORKOS_M2M_CLIENT_SECRET`
 
-- unit tests for parsers, schemas, sync helpers, watcher logic, and small state transitions
-- integration tests for SQLite, worker jobs, server actions, and persistence seams
-- live Playwright for seeded connected-account flows with real inference
-- manual Gmail smoke testing for real Google OAuth and IMAP behavior
+Resolution order is:
 
-`pnpm test:e2e:live` is opt-in. It requires a connected subscription record or `OPENAI_API_KEY`. It does not attempt a real Google login. Use [docs/testing/gmail-live-sync-manual-smoke.md](docs/testing/gmail-live-sync-manual-smoke.md) for real Gmail smoke validation.
+1. environment variables
+2. `zmail.toml`
+3. built-in defaults
 
-## Dependency Policy
+Canonical local defaults:
 
-- use `pnpm add` and `pnpm add -D`
-- keep the tree small and explicit
-- prefer built-in Node facilities and narrow libraries over framework sprawl
-- do not add dependencies for one-off helpers that can be handled with platform APIs
+- `ZMAIL_PUBLIC_ORIGIN=http://127.0.0.1:56711`
+- `ZMAIL_BASE_PATH=/`
+- derived WorkOS callback:
+  - `http://127.0.0.1:56711/auth/callback`
+- derived Google OAuth callback:
+  - `http://127.0.0.1:56711/oauth/google/callback`
 
-## Architecture and Contract Policy
+Shared local bootstrap secrets should not carry the default local
+`WORKOS_REDIRECT_URI`; keep callback derivation driven by `ZMAIL_PUBLIC_ORIGIN`
+unless you intentionally set an override outside the shared secret file.
 
-The active runtime scope is narrow:
+Deployment/runtime env ownership for hosted environments lives under:
 
-- Gmail OAuth connect flow with IMAP live sync
-- corpus-only mirror of `[Gmail]/All Mail`
-- live direct inference only
-- same-process TanStack Start + Node + Kysely + SQLite
-- no active batch mode
+- `~/production/inherent.design/platform/services`
 
-Credentialed local workflows should use `mise run ...` so the encrypted Google
-OAuth bootstrap secrets are available without manual env export.
+Do not mistake current commands for the final vNext operational contract. The
+target command model lives in:
 
-When behavior changes across one of these seams, update the relevant prompt, docs, or command reference in the same change:
+- [`docs/specs/operations/migrations-cleanups-and-one-off-scripts.md`](./docs/specs/operations/migrations-cleanups-and-one-off-scripts.md)
 
-- Gmail OAuth and token lifecycle
-- IMAP sync and watcher behavior
-- SQLite schema and job state
-- server action contracts
-- review and override semantics
-- live inference backend selection
+## Testing Expectations
 
-Dead starter code and deferred runtime paths should be removed, not left half-supported.
+Follow:
 
-## Logging and Observability
+- [`docs/specs/operations/testing-and-proof.md`](./docs/specs/operations/testing-and-proof.md)
 
-Use `lib/log.ts` as the only runtime logger.
+Normal expectations:
 
-- use wide JSON events with stable `event`, `operation`, correlation ids, outcome, and duration fields
-- prefer one bounded start or complete envelope per server action, job, sync phase, watcher lifecycle change, or CLI command
-- for long-running operations, emit cumulative milestone events instead of noisy per-item success logs
-- include safe metadata only: ids, counts, mailbox names, backend or model names, watcher status, and retry state
-- never log message content, email addresses, subjects, snippets, bodies, raw RFC822, OAuth codes, access tokens, refresh tokens, auth headers, API keys, or provider payloads
-- temporary debug logging should be replaced with structured events or removed before finishing the change
+- unit and integration coverage for deterministic behavior
+- browser e2e only for real interactive boundaries
+- manual smoke for real WorkOS/Gmail flows once the rewrite slice lands
 
-## Code Style
+## Security Expectations
 
-### General
+Follow:
 
-- TypeScript, ESM, strict typing
-- technical reference tone in docs and comments
-- no em dashes in prose
-- no filler, flattery, or marketing cadence
-- small concrete functions over speculative abstractions
+- [`docs/specs/operations/security-and-secrets.md`](./docs/specs/operations/security-and-secrets.md)
 
-### Comments
+Never:
 
-Default to no comments. Comment only when the reason is non-obvious, when a workaround exists, or when an external constraint matters.
+- commit runtime DB files
+- commit org-local OAuth or raw mail files
+- log tokens, auth headers, email bodies, snippets, or raw artifacts
 
-### Errors
+## Documentation Hygiene
 
-- fail with clear operational messages
-- do not branch on free-form error text when a structured condition is available
-- preserve the useful context needed to debug the failure
-
-## Test Expectations for New Work
-
-Every feature starts with tests.
-
-For parser, sync, state, and server-boundary work, expected proof usually means:
-
-- schema or helper tests
-- failure-path tests
-- SQLite-backed integration coverage when persistence changes
-- UI or Playwright coverage only when the behavior is specifically interactive
-
-If a behavior cannot yet be tested, add the smallest missing harness first.
-
-## Coverage Policy
-
-Coverage is enforced at 100 percent for the active source tree.
-
-That means:
-
-- cover the active code
-- delete dead starter files
-- delete deferred runtime paths that are not part of the product contract
-
-Do not game the number with shallow tests around trivial wrappers. Raise coverage by closing real behavior gaps.
+- `docs/specs/` is authoritative
+- `README.md` and this file are secondary entrypoints
+- `docs/testing/` is procedural, not architectural
+- stale architecture notes should be removed, not left half-correct
 
 ## Commits
 
-Use conventional-style prefixes:
+Use narrow, conventional-style commit messages such as:
 
 - `feat:`
 - `fix:`
 - `docs:`
-- `test:`
-- `refactor:`
-- `chore:`
-- `build:`
 
-Use imperative mood. Keep the subject under 72 characters. Explain why in the body when a body is needed.
-
-## Agent Guidelines
-
-These rules also apply to coding agents working in the repo.
-
-- do not reopen settled scope without evidence
-- do not add abstractions for future providers unless current runtime or tests require them
-- do not leave starter or deferred code half-integrated
-- do update docs when the command surface or behavior changed
-- do include verification commands in handoff summaries
-
-## License
-
-By contributing, you agree that your contributions will be licensed under the project license in this repository.
+Keep the change summary aligned with the owning spec area.

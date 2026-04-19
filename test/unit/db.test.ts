@@ -2,12 +2,21 @@ import { describe, expect, it } from "vitest";
 
 import {
 	seedLegacyPreSecondarySchema,
-	seedSecondaryTablesMissingSchema,
+	seedStaleCanonicalMigrationHistory,
 } from "#/test/helpers/db";
 import { createTestRuntime } from "#/test/helpers/runtime";
 
+const ACTIVE_MIGRATIONS = [
+	{ name: "001_init.sql" },
+	{ name: "002_connection_state.sql" },
+	{ name: "003_finance_ledger_export.sql" },
+	{ name: "004_finance_v3_archive.sql" },
+	{ name: "005_finance_v3_target.sql" },
+	{ name: "006_finance_v3_clean.sql" },
+];
+
 describe("db", () => {
-	it("creates the baseline schema and records both migrations", async () => {
+	it("creates the baseline schema and records all active migrations", async () => {
 		const runtime = await createTestRuntime();
 		const dbModule =
 			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
@@ -19,10 +28,7 @@ describe("db", () => {
 			.prepare("SELECT name FROM _migrations ORDER BY name")
 			.all();
 
-		expect(migrations).toEqual([
-			{ name: "001_init.sql" },
-			{ name: "002_secondary_schema.sql" },
-		]);
+		expect(migrations).toEqual(ACTIVE_MIGRATIONS);
 
 		const tables = dbModule
 			.getSqlite()
@@ -83,6 +89,22 @@ describe("db", () => {
 		expect(messageIndexes.map((index) => index.name)).toContain(
 			"messages_conversation_idx",
 		);
+		const financeImportRunIndexes = dbModule
+			.getSqlite()
+			.prepare("PRAGMA index_list(finance_import_runs)")
+			.all() as Array<{ name: string; unique: number }>;
+		expect(financeImportRunIndexes).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					name: "finance_import_runs_artifact_sha_idx",
+					unique: 1,
+				}),
+				expect.objectContaining({
+					name: "finance_import_runs_source_file_sha_idx",
+					unique: 0,
+				}),
+			]),
+		);
 		const conversationIndexes = dbModule
 			.getSqlite()
 			.prepare("PRAGMA index_list(conversations)")
@@ -116,6 +138,46 @@ describe("db", () => {
 				"backfill_completed_at",
 			]),
 		);
+
+		const accountColumns = dbModule
+			.getSqlite()
+			.prepare("PRAGMA table_info(accounts)")
+			.all() as Array<{ name: string }>;
+		expect(accountColumns.map((column) => column.name)).toContain(
+			"owner_principal_email",
+		);
+		expect(accountColumns.map((column) => column.name)).toContain(
+			"connection_state",
+		);
+
+		const classificationColumns = dbModule
+			.getSqlite()
+			.prepare("PRAGMA table_info(classification_results)")
+			.all() as Array<{ name: string }>;
+		expect(classificationColumns.map((column) => column.name)).toContain(
+			"schema_version",
+		);
+
+		const labelColumns = dbModule
+			.getSqlite()
+			.prepare("PRAGMA table_info(message_labels)")
+			.all() as Array<{ name: string }>;
+		expect(labelColumns.map((column) => column.name)).toContain(
+			"schema_version",
+		);
+
+		const registryIdentityColumns = dbModule
+			.getSqlite()
+			.prepare("PRAGMA table_info(registry_identities)")
+			.all() as Array<{ name: string }>;
+		expect(registryIdentityColumns.map((column) => column.name)).toContain(
+			"source_kind",
+		);
+
+		expect(tableNames).toContain("runtime_events");
+		expect(tableNames).toContain("finance_ledger_entries");
+		expect(tableNames).toContain("finance_model_migration_runs");
+		expect(tableNames).toContain("finance_v3_clean_guard");
 	});
 
 	it("parses safe json with fallback and exposes fileName", async () => {
@@ -133,6 +195,25 @@ describe("db", () => {
 		expect(dbModule.fileName("/tmp/file.txt")).toBe("file.txt");
 	});
 
+	it("leaves fully stamped databases unchanged on repeated migration runs", async () => {
+		const runtime = await createTestRuntime();
+		const dbModule =
+			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
+		const sqlite = dbModule.getSqlite();
+
+		dbModule.runMigrations();
+		const first = sqlite
+			.prepare("SELECT name FROM _migrations ORDER BY name")
+			.all();
+
+		dbModule.runMigrations();
+
+		expect(
+			sqlite.prepare("SELECT name FROM _migrations ORDER BY name").all(),
+		).toEqual(first);
+		expect(first).toEqual(ACTIVE_MIGRATIONS);
+	});
+
 	it("builds a reset-required message without schema details when none are supplied", async () => {
 		const runtime = await createTestRuntime();
 		const dbModule =
@@ -146,6 +227,24 @@ describe("db", () => {
 		expect(message).toContain("1. pnpm db:reset");
 		expect(message).not.toContain("Missing tables:");
 		expect(message).not.toContain("Missing messages columns:");
+		expect(message).not.toContain("Missing columns:");
+	});
+
+	it("builds an adoption-required message for stale migration history", async () => {
+		const runtime = await createTestRuntime();
+		const dbModule =
+			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
+
+		const message = dbModule.buildSchemaAdoptionRequiredMessage({
+			missingColumns: ["accounts.owner_principal_email"],
+			staleAppliedMigrations: ["002_secondary_schema.sql"],
+		});
+		expect(message).toContain(
+			"pre-cleanup zmail migration history and must be adopted",
+		);
+		expect(message).toContain("pnpm db:migrate -- --all-orgs --adopt-history");
+		expect(message).toContain("accounts.owner_principal_email");
+		expect(message).toContain("002_secondary_schema.sql");
 	});
 
 	it("fails fast when a local DB predates the rewritten baseline", async () => {
@@ -163,39 +262,205 @@ describe("db", () => {
 		expect(() => dbModule.runMigrations()).toThrowError(/parse_error_reason/);
 	});
 
-	it("repairs mixed databases that only need the secondary schema tables", async () => {
+	it("requires adoption for stale migration history after canonical cleanup", async () => {
 		const runtime = await createTestRuntime();
-		await seedSecondaryTablesMissingSchema();
+		await seedStaleCanonicalMigrationHistory();
 		const dbModule =
 			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
 
-		expect(() => dbModule.runMigrations()).not.toThrow();
+		expect(() => dbModule.runMigrations()).toThrowError(
+			/pre-cleanup zmail migration history and must be adopted/,
+		);
+		expect(() => dbModule.runMigrations()).toThrowError(
+			/pnpm db:migrate -- --all-orgs --adopt-history/,
+		);
+	});
 
-		const migrations = dbModule
-			.getSqlite()
+	it("records no-op migration stamps when partial active history is already compatible", async () => {
+		const runtime = await createTestRuntime();
+		await seedStaleCanonicalMigrationHistory({
+			missingOwnerPrincipalEmail: false,
+			migrationNames: ["001_init.sql"],
+			withSampleData: true,
+		});
+		const dbModule =
+			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
+		const sqlite = dbModule.getSqlite();
+
+		expect(
+			sqlite.prepare("SELECT name FROM _migrations ORDER BY name").all(),
+		).toEqual([{ name: "001_init.sql" }]);
+
+		expect(() => dbModule.runMigrations()).not.toThrow();
+		expect(
+			sqlite.prepare("SELECT name FROM _migrations ORDER BY name").all(),
+		).toEqual(ACTIVE_MIGRATIONS);
+		expect(
+			sqlite.prepare("SELECT COUNT(*) AS count FROM accounts").get() as {
+				count: number;
+			},
+		).toEqual({ count: 1 });
+	});
+
+	it("adopts stale canonical migration history and restamps active migrations", async () => {
+		const runtime = await createTestRuntime();
+		await seedStaleCanonicalMigrationHistory({ withSampleData: true });
+		const dbModule =
+			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
+		const sqlite = dbModule.getSqlite();
+
+		expect(
+			sqlite
+				.prepare("SELECT COUNT(*) AS count FROM classification_results")
+				.get() as { count: number },
+		).toEqual({ count: 1 });
+		expect(
+			sqlite.prepare("SELECT COUNT(*) AS count FROM message_labels").get() as {
+				count: number;
+			},
+		).toEqual({ count: 1 });
+
+		await dbModule.adoptCanonicalMigrationHistory();
+
+		const migrations = sqlite
 			.prepare("SELECT name FROM _migrations ORDER BY name")
 			.all();
-		expect(migrations).toEqual([
-			{ name: "001_init.sql" },
-			{ name: "002_secondary_schema.sql" },
-		]);
+		expect(migrations).toEqual(ACTIVE_MIGRATIONS);
 
-		const tables = dbModule
-			.getSqlite()
-			.prepare(
-				"SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
-			)
-			.all() as Array<{ name: string }>;
-		expect(tables.map((table) => table.name)).toEqual(
-			expect.arrayContaining([
-				"message_secondary_results",
-				"message_secondary_heads",
-				"registry_import_state",
-				"finance_event_candidates",
-				"finance_document_candidates",
-				"finance_event_evidence",
-			]),
+		const accountColumns = sqlite
+			.prepare("PRAGMA table_info(accounts)")
+			.all() as Array<{
+			name: string;
+		}>;
+		expect(accountColumns.map((column) => column.name)).toContain(
+			"owner_principal_email",
 		);
+
+		expect(
+			sqlite
+				.prepare(
+					"SELECT owner_principal_email FROM accounts WHERE id = 'acct-stale'",
+				)
+				.get(),
+		).toEqual({
+			owner_principal_email: "mannie@inherent.design",
+		});
+
+		expect(
+			sqlite
+				.prepare("SELECT COUNT(*) AS count FROM classification_results")
+				.get() as { count: number },
+		).toEqual({ count: 1 });
+		expect(
+			sqlite.prepare("SELECT COUNT(*) AS count FROM message_labels").get() as {
+				count: number;
+			},
+		).toEqual({ count: 1 });
+	});
+
+	it("adopts partial active history when connection_state already exists", async () => {
+		const runtime = await createTestRuntime();
+		await seedStaleCanonicalMigrationHistory({
+			missingOwnerPrincipalEmail: false,
+			migrationNames: ["001_init.sql"],
+			withSampleData: true,
+		});
+		const dbModule =
+			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
+		const sqlite = dbModule.getSqlite();
+
+		await dbModule.adoptCanonicalMigrationHistory();
+
+		expect(
+			sqlite.prepare("SELECT name FROM _migrations ORDER BY name").all(),
+		).toEqual(ACTIVE_MIGRATIONS);
+		expect(
+			sqlite
+				.prepare("SELECT COUNT(*) AS count FROM classification_results")
+				.get() as { count: number },
+		).toEqual({ count: 1 });
+	});
+
+	it("adds and backfills connection_state during canonical adoption", async () => {
+		const runtime = await createTestRuntime();
+		await seedStaleCanonicalMigrationHistory({
+			missingConnectionState: true,
+			withSampleData: true,
+		});
+		const dbModule =
+			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
+		const sqlite = dbModule.getSqlite();
+		sqlite.exec(`
+			INSERT INTO accounts (
+				id,
+				label,
+				email_address,
+				provider_kind,
+				sync_enabled,
+				sync_status,
+				source_truth,
+				selected_mailbox,
+				last_synced_at,
+				last_error,
+				created_at,
+				updated_at
+			)
+			VALUES
+				(
+					'acct-config',
+					'Config',
+					'config@example.com',
+					'gmail',
+					1,
+					'idle',
+					'corpus_mirror',
+					'[Gmail]/All Mail',
+					NULL,
+					'Google OAuth client credentials were rejected by Google. retry',
+					'2026-01-01T00:00:00.000Z',
+					'2026-01-01T00:00:00.000Z'
+				),
+				(
+					'acct-reconnect',
+					'Reconnect',
+					'reconnect@example.com',
+					'gmail',
+					1,
+					'needs_reconnect',
+					'corpus_mirror',
+					'[Gmail]/All Mail',
+					NULL,
+					NULL,
+					'2026-01-01T00:00:00.000Z',
+					'2026-01-01T00:00:00.000Z'
+				),
+				(
+					'acct-paused',
+					'Paused',
+					'paused@example.com',
+					'gmail',
+					0,
+					'idle',
+					'corpus_mirror',
+					'[Gmail]/All Mail',
+					NULL,
+					NULL,
+					'2026-01-01T00:00:00.000Z',
+					'2026-01-01T00:00:00.000Z'
+				);
+		`);
+
+		await dbModule.adoptCanonicalMigrationHistory();
+
+		const states = sqlite
+			.prepare("SELECT id, connection_state FROM accounts ORDER BY id")
+			.all();
+		expect(states).toEqual([
+			{ id: "acct-config", connection_state: "config_error" },
+			{ id: "acct-paused", connection_state: "paused" },
+			{ id: "acct-reconnect", connection_state: "needs_reconnect" },
+			{ id: "acct-stale", connection_state: "connected" },
+		]);
 	});
 
 	it("accounts table uses the live-only schema with provider_kind and sync columns", async () => {

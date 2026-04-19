@@ -8,20 +8,15 @@ export default defineConfig({
 		exclude: ["test/e2e-playwright/**"],
 		coverage: {
 			provider: "v8",
-			include: [
-				"app/**/*.ts",
-				"app/**/*.tsx",
-				"lib/**/*.ts",
-				"scripts/**/*.ts",
-				"config/**/*.ts",
-			],
+			include: ["server/**/*.ts", "lib/**/*.ts", "scripts/**/*.ts"],
+			reporter: ["text", "json-summary"],
 			exclude: [
-				"app/routeTree.gen.ts",
-				"app/styles.css",
+				"server/index.tsx",
+				"server/ui.tsx",
 				"db/**",
 				"prompts/**",
 				"test/**",
-				"test/e2e-playwright/**",
+				"public/**",
 			],
 			thresholds: {
 				statements: 100,

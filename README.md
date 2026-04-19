@@ -1,261 +1,243 @@
 # zmail
 
-zmail is a local-first Gmail live-sync analyzer. It connects Gmail accounts through Google OAuth, mirrors `[Gmail]/All Mail` into a local SQLite corpus, stores raw RFC822 on disk, and runs live moderation, classification, review, and overseer synthesis over that mirrored corpus.
+zmail is a local-first Gmail corpus mirror and analysis system.
 
-## Current Scope
+The canonical architecture and contract surface for the in-progress refactor
+lives under [`docs/specs/`](./docs/specs/README.md).
 
-- Gmail OAuth connect flow with IMAP live sync
-- corpus-only mirror of `[Gmail]/All Mail`
-- live direct inference through `pi-ai`
-- subscription-first, API fallback
-- same-process TanStack Start + Node + Kysely + SQLite
-- no active batch mode
-- no send, compose, move, delete, or label-write behavior
+## Canonical Docs
 
-## Prerequisites
+Read these first:
 
-- Node 24+
-- pnpm
-- mise
-- one live inference backend:
-  - ChatGPT or Codex subscription connected through `pnpm pi:connect`
-  - `OPENAI_API_KEY`
-- access to the org age key used for repo-managed SOPS secrets
+- [Spec index](./docs/specs/README.md)
+- [System overview](./docs/specs/system-overview.md)
+- [Hono application](./docs/specs/platform/hono-application.md)
+- [Hono JSX UI](./docs/specs/platform/hono-jsx-ui.md)
+- [ADR 001: Hono JSX over Ripple](./docs/specs/platform/adr-001-hono-jsx-over-ripple.md)
+- [Auth and organizations](./docs/specs/platform/auth-and-organizations.md)
+- [Runtime storage and tenancy](./docs/specs/platform/runtime-storage-and-tenancy.md)
+- [Gmail sync and ingestion](./docs/specs/domain/gmail-sync-and-ingestion.md)
+- [Finance imports](./docs/specs/domain/finance-imports.md)
+- [Finance knowledge and rollups](./docs/specs/domain/finance-knowledge-and-rollups.md)
+- [Observability](./docs/specs/operations/observability.md)
+- [Migrations, cleanups, and scripts](./docs/specs/operations/migrations-cleanups-and-one-off-scripts.md)
 
-## Quickstart
+## vNext Architecture
+
+The target runtime is:
+
+- `Hono` as the only HTTP server and route owner
+- `Hono JSX` as the only HTML rendering layer
+- `WorkOS` as the auth and organization plane
+- per-org runtime roots under `data/orgs/<orgId>/...`
+- authenticated SSE plus enhanced MPA navigation
+- authenticated, artifact-idempotent finance imports
+
+The legacy TanStack route/component tree has been purged. Live runtime
+ownership now sits under:
+
+- `server/**`
+- `public/client/**`
+- `lib/**`
+- `scripts/**`
+
+When source and spec disagree, the spec is the target contract unless corrected
+in the same change.
+
+## Hosted Deployment Contract
+
+The first hosted deployment stays intentionally narrow:
+
+- public route: `zmail.inherent.design`
+- canonical hosted WorkOS callback:
+  - `https://zmail.inherent.design/auth/callback`
+- no Cloudflare Access interstitial; WorkOS auth happens inside the app
+- one Node 24 process runs HTTP and the worker together
+- one mounted runtime root is provided through `ZMAIL_DATA_DIR`
+- runtime state stays under `data/orgs/<orgId>/...` beneath that root
+
+The services stack supplies this bootstrap env set:
+
+- required:
+  - `ZMAIL_PUBLIC_ORIGIN`
+  - `WORKOS_API_KEY`
+  - `WORKOS_CLIENT_ID`
+  - `WORKOS_COOKIE_PASSWORD`
+  - `GOOGLE_OAUTH_CLIENT_ID`
+  - `GOOGLE_OAUTH_CLIENT_SECRET`
+- optional:
+  - `ZMAIL_BASE_PATH`
+  - `WORKOS_REDIRECT_URI`
+  - `GOOGLE_OAUTH_REDIRECT_URL`
+  - `WORKOS_M2M_CLIENT_ID`
+  - `WORKOS_M2M_CLIENT_SECRET`
+  - only needed when machine-token finance import automation is enabled
+
+This pass does not move inference credentials into the hosted bootstrap
+contract. `OPENAI_API_KEY` and `data/openai-subscription.json` remain separate.
+
+The repo now includes a Node 24 container build in [`Dockerfile`](./Dockerfile)
+and keeps the runtime entrypoint equivalent to:
 
 ```bash
-pnpm install
-mise trust mise.toml
-mise run db:migrate
+tsx server/index.tsx
+```
+
+## Runtime Config
+
+Non-secret runtime defaults live in [`zmail.toml`](./zmail.toml).
+
+Resolution order is:
+
+1. environment variables
+2. `zmail.toml`
+3. built-in defaults
+
+Example local overrides live in [`.env.example`](./.env.example).
+
+Canonical local defaults:
+
+- `ZMAIL_PUBLIC_ORIGIN=http://127.0.0.1:56711`
+- `ZMAIL_BASE_PATH=/`
+- derived WorkOS callback:
+  - `http://127.0.0.1:56711/auth/callback`
+- derived Google OAuth callback:
+  - `http://127.0.0.1:56711/oauth/google/callback`
+
+If you want local development on `localhost`, override
+`ZMAIL_PUBLIC_ORIGIN=http://localhost:56711`.
+
+Local startup with repo-managed bootstrap secrets uses `mise run dev`. Plain
+`pnpm raw:dev` is the raw runtime entrypoint and does not load
+`secrets.enc.yaml`.
+
+Local observability is optional and disabled by default. To run with Prometheus
+metrics and a Loki-tailored JSON log file:
+
+```bash
+mkdir -p .observability/logs
+ZMAIL_METRICS_ENABLED=true \
+ZMAIL_LOG_FILE=.observability/logs/zmail.ndjson \
 mise run dev
 ```
 
-Open `http://localhost:3000/accounts/new` to connect the first Gmail account.
-
-A fresh local database starts empty. The OAuth callback completes at `/oauth/google/callback`, reuses the same account row when the same Gmail address reconnects, queues the initial bootstrap sync, ingests the newest mailbox window first, and lets the worker start the watcher after that bootstrap window succeeds. Older history then continues in the background through resumable backfill jobs.
-
-`/accounts/$accountId` is the main sync-control page. It exposes explicit
-reconnect and disconnect behavior:
-
-- `Disconnect Gmail` removes local OAuth credentials and disables remote sync
-  while preserving the local corpus.
-- `Reconnect Gmail` is account-specific, starts from
-  `/accounts/$accountId/reconnect`, and refuses to silently rebind a different
-  Gmail identity.
-- `Delete local account` lives at `/accounts/$accountId/delete`, requires typed
-  email confirmation, removes mailbox-local account state, and leaves global
-  registry/taxonomy/import data intact.
-
-The same detail page also exposes `Full sync`, `Delta sync`, `Reconcile`,
-`Classify backlog`, `Classify finance backlog`, `Pause`, and `Resume` when the
-current connection state allows them. `Full sync` is an idempotent bootstrap or
-resume control, not a destructive reset. `/messages/$messageId` exposes
-`Classify now`, and `/profiles/$accountId` exposes manual overseer rebuilds.
-
-For a clean local reset, run:
+Start the local Grafana, Loki, Prometheus, and Alloy stack with:
 
 ```bash
-mise run db:reset && mise run db:migrate
+mise run obs:up
 ```
 
-`pnpm db:reset` removes the local SQLite files, account storage, and temporary OAuth state. It is the full destructive reset.
+Grafana is available at `http://127.0.0.1:3000`.
 
-`pnpm db:reset:messages` rebuilds the message corpus while preserving account rows and `data/accounts/<accountId>/google-oauth.json`. It wipes message/state data, deletes stored raw `.eml` files, recreates the DB on the current schema, and queues fresh `sync_account_full` jobs for enabled accounts.
+The shared local WorkOS bootstrap contract is:
 
-`pnpm db:reset:jobs` clears only the `jobs` table.
+- required browser/session bootstrap:
+  - `WORKOS_API_KEY`
+  - `WORKOS_CLIENT_ID`
+  - `WORKOS_COOKIE_PASSWORD`
+- optional machine-token bootstrap for finance import automation:
+  - `WORKOS_M2M_CLIENT_ID`
+  - `WORKOS_M2M_CLIENT_SECRET`
 
-`pnpm db:migrate` now also repairs mixed local DBs that already have the V2 message model but are missing the additive secondary/registry/finance tables.
+Shared local secrets should rely on derived callback behavior from
+`ZMAIL_PUBLIC_ORIGIN` and should not carry the default local
+`WORKOS_REDIRECT_URI`.
 
-If the app reports that the local DB predates the rewritten baseline, use the lower-disruption recovery first:
+Deployment and runtime env ownership stays under:
 
-```bash
-pnpm db:reset:messages
-```
+- `~/production/inherent.design/platform/services`
 
-Use the full wipe only when you also want to drop account storage:
+## Repo Scope
 
-```bash
-pnpm db:reset
-pnpm db:migrate
-```
+Active product scope:
 
-`pnpm reextract:parse-errors` is a supported recovery path only for fresh V2 DBs when a parser regression leaves messages in `parse_status = 'error'`. It is not a rescue path for old pre-secondary local DBs.
+- Gmail OAuth connect and reconnect
+- IMAP sync of `[Gmail]/All Mail`
+- org-scoped local SQLite corpus
+- moderation, root classification, finance secondary classification
+- deterministic category projection
+- finance artifact import, registry suggestion reconciliation, and rollups
 
-`pnpm reextract:bad-bodies` repairs already-parsed rows whose stored primary
-body or snippet collapsed into placeholder values like `undefined`, `null`,
-`Plain text version not available`, or literal HTML. It preserves row identity
-and queues normal root reclassification for affected accounts.
+Not in the active scope:
 
-Operator-owned classification and registry config lives on disk under:
+- sending or mutating Gmail state
+- open unauthenticated APIs
+- shared row-level multitenancy inside one DB
 
-- `data/operator/classification/root-taxonomy.yaml`
-- `data/operator/classification/finance-taxonomy.yaml`
-- `data/operator/classification/rules.yaml`
-- `data/operator/registry/identities.yaml`
-- `data/operator/registry/institutions.yaml`
-- `data/operator/registry/financial-accounts.yaml`
-- `data/operator/registry/sender-rules.yaml`
+## Transitional Local Commands
 
-Those YAML files are the operator source of truth. SQLite stores imported
-runtime caches. Missing files are auto-written with defaults or empty
-schema-valid documents on first runtime boot or config load, and existing files
-are never overwritten automatically.
-
-## Secrets
-
-Google OAuth bootstrap credentials are committed in repo-tracked encrypted
-secrets and loaded through `mise`.
-
-- secret files:
-  - `.sops.yaml`
-  - `secrets.enc.yaml`
-  - `mise.toml`
-- canonical local startup for Gmail-authenticated flows:
-  - `mise run dev`
-- one-time local trust step before `mise` will load repo config:
-  - `mise trust mise.toml`
-- manual env export still works if needed, but it is no longer the default
-
-The encrypted repo secret surface only includes:
-
-- `GOOGLE_OAUTH_CLIENT_ID`
-- `GOOGLE_OAUTH_CLIENT_SECRET`
-
-Inference credentials remain user-local and are not stored in repo encrypted
-secrets.
-
-## Inference Backends
-
-zmail uses `pi-ai` for all active inference work.
-
-- `ZMAIL_PI_BACKEND=auto`
-  - try `openai-subscription` first
-  - fall back to `openai-api`
-- `ZMAIL_PI_BACKEND=openai-subscription`
-  - require `data/openai-subscription.json`
-- `ZMAIL_PI_BACKEND=openai-api`
-  - require `OPENAI_API_KEY`
-
-Connect a local subscription with:
-
-```bash
-pnpm pi:connect
-```
-
-You still need one live inference backend even though Google OAuth credentials
-are now repo-managed:
-
-- `pnpm pi:connect`
-- or `OPENAI_API_KEY`
-
-## Commands
+The repository still ships current implementation scripts while the rewrite is
+underway. Treat them as transitional tooling, not architecture truth.
 
 ```bash
 mise run dev
+mise run test
+mise run test:quick
+mise run test:coverage
+mise run test:unit
+mise run test:unit -- finance
+mise run test:integration
+mise run test:e2e
+mise run test:fuzz
+mise run test:stress
+mise run test:list
 mise run db:migrate
-mise run db:reset
-mise run check
-mise run check:full
-pnpm dev
-pnpm build
-pnpm preview
-pnpm router:generate
-pnpm worker:drain
-pnpm pi:connect
-pnpm db:migrate
 pnpm db:reset
 pnpm db:reset:messages
 pnpm db:reset:jobs
+mise run audit:corpus
 pnpm reextract:parse-errors
 pnpm reextract:bad-bodies
-pnpm test:unit
-pnpm coverage
-pnpm check
-pnpm test:e2e:live
-pnpm check:full
+mise run finance:import
+mise run obs:up
+mise run obs:down
+mise run worker:drain
+pnpm pi:connect
+mise run bench:http
+mise run bench:sse
 ```
 
-## Data Layout
+Use `mise run dev` when you expect repo-managed WorkOS or Google bootstrap
+secrets to be loaded for local development. Do not expect plain
+`pnpm raw:dev` to load `secrets.enc.yaml`.
 
-```txt
-data/
-  zmail.sqlite
-  openai-subscription.json
-  accounts/
-    <accountId>/
-      google-oauth.json
-      raw/
-        <remoteMessageId>.eml
-  tmp/
-    oauth/google/
-      <state>.json
-```
+Use `mise` as the canonical test interface. `pnpm raw:*` scripts are
+implementation details used by mise tasks. `mise run test` runs the quick local
+gate: lint, typecheck, unit, and integration. `mise run test:coverage` runs the
+full gate: lint, typecheck, covered unit buckets, integration, browser e2e,
+fuzz, and stress. Benchmarks are explicit and are not part of the coverage
+gate.
 
-You can override the runtime data root with `ZMAIL_DATA_DIR`.
+The target command model is documented in:
 
-## Runtime Logging
+- [operations/migrations-cleanups-and-one-off-scripts.md](./docs/specs/operations/migrations-cleanups-and-one-off-scripts.md)
 
-zmail emits structured JSON logs to stdout through `pino`.
+## Runtime State
 
-- `ZMAIL_LOG_LEVEL` controls the minimum level and defaults to `info`
-- `ZMAIL_SERVICE_VERSION` overrides the base `version` field and defaults to `dev`
-- `ZMAIL_COMMIT_SHA` overrides the base `commit_hash` field and defaults to `uncommitted`
-- logs are metadata-only and should include ids, counts, outcomes, and durations, never email content or secrets
+All local runtime state belongs under `data/` and must stay out of git.
+
+The target tenancy layout is documented in:
+
+- [runtime-storage-and-tenancy.md](./docs/specs/platform/runtime-storage-and-tenancy.md)
 
 ## Testing
 
-Deterministic Vitest coverage is the default proof layer:
+Testing expectations are defined in:
 
-```bash
-pnpm coverage
-```
+- [operations/testing-and-proof.md](./docs/specs/operations/testing-and-proof.md)
+- [manual smoke](./docs/testing/gmail-live-sync-manual-smoke.md)
 
-Live Playwright is opt-in. It seeds a connected-account runtime state and uses real inference, but it does not automate Google login:
+## Security
 
-```bash
-pnpm test:e2e:live
-```
+Security and secret handling are defined in:
 
-Before real Gmail runtime verification, run the full local proof gate:
+- [operations/security-and-secrets.md](./docs/specs/operations/security-and-secrets.md)
 
-```bash
-mise run check:full
-```
+Repo-managed bootstrap secrets live in `secrets.enc.yaml` and are loaded into
+server-side task env through native `mise` loading. Hosted deployments receive
+the same values through orchestration/runtime env injection.
 
-For a real Gmail OAuth and IMAP smoke pass, use [docs/testing/gmail-live-sync-manual-smoke.md](docs/testing/gmail-live-sync-manual-smoke.md).
+`WORKOS_CLIENT_SECRET` is not part of the current zmail runtime contract.
 
-The normal 1.0 operator flow is:
-
-1. connect Gmail
-2. wait for first full sync
-3. use the account detail page for sync and backlog controls
-4. use `Classify now` from message detail when needed
-5. review low-confidence results
-6. open overseer from the account detail page
-7. queue an overseer rebuild when needed
-
-The worker may also auto-queue `rebuild_overseer` after backlog classification
-when enough newly labeled messages have accumulated since the latest profile.
-
-During active live sync, account detail also shows the two-sided cursor state:
-
-- `latest uid cursor`
-- `earliest uid cursor`
-- `backfill next uid`
-- `backfill snapshot uid`
-
-This allows new-mail delta sync and older historical backfill to continue
-independently across restarts.
-
-For Gmail-authenticated local runs, prefer starting the app with `mise run dev`
-so the repo-managed encrypted Google OAuth secrets are loaded automatically.
-
-## Docs
-
-- Active spec: [docs/specs/gmail-imap-live-sync.md](docs/specs/gmail-imap-live-sync.md)
-- Runtime flow: [docs/architecture/gmail-live-sync-flow.md](docs/architecture/gmail-live-sync-flow.md)
-- Manual Gmail smoke: [docs/testing/gmail-live-sync-manual-smoke.md](docs/testing/gmail-live-sync-manual-smoke.md)
-- Roadmap: [docs/roadmap/multi-lens-analysis.md](docs/roadmap/multi-lens-analysis.md), [docs/roadmap/semantic-search-and-attachments.md](docs/roadmap/semantic-search-and-attachments.md), [docs/roadmap/bulk-backfill.md](docs/roadmap/bulk-backfill.md)
-
-Deferred work such as embeddings, attachment extraction, clustering, and semantic search is intentionally outside the active runtime contract.
+Never treat localhost reachability as sufficient authorization for operator or
+automation APIs.

@@ -3,13 +3,12 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { cp, mkdir, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-
+import { buildMessageLabelV3 } from "#/test/helpers/labels";
 import {
-	PLAYWRIGHT_SCENARIOS,
 	buildFinanceScenarioIntel,
 	buildSeededReviewLabel,
+	PLAYWRIGHT_SCENARIOS,
 } from "./scenarios";
-import { buildMessageLabelV2 } from "#/test/helpers/labels";
 
 function sha256(input: string) {
 	return createHash("sha256").update(input).digest("hex");
@@ -52,6 +51,7 @@ async function seedRuntime(dataDir: string) {
 			insertAccountSyncStateRow,
 			insertAttachmentRow,
 			insertConversationRow,
+			insertModerationResultRow,
 			insertMessageLabelRow,
 			insertMessageRow,
 			insertMessageSourceRow,
@@ -226,6 +226,9 @@ async function seedRuntime(dataDir: string) {
 				contentSha256,
 				label: input.label.label,
 			});
+			await insertModerationResultRow(db, {
+				messageId,
+			});
 		}
 
 		if (input.review) {
@@ -291,13 +294,15 @@ async function seedRuntime(dataDir: string) {
 		accountId: PLAYWRIGHT_SCENARIOS.finance.account.id,
 		message: PLAYWRIGHT_SCENARIOS.finance.emailMessage,
 		label: {
-			label: buildMessageLabelV2({
+			label: buildMessageLabelV3({
 				finance: {
 					relevant: true,
-					direction: "expense",
-					owner: "business",
-					accountHint: "acct:finance",
-					purpose: "software_services",
+					signal: "receipt",
+					operational: true,
+					bookHint: "business",
+					requiresFinanceIntel: true,
+					confidence: 0.95,
+					evidence: "Seeded finance message for Playwright.",
 				},
 				commerce: {
 					transactional: true,
@@ -332,7 +337,9 @@ async function seedRuntime(dataDir: string) {
 			extractor_prompt_version: "finance-source-import.v1",
 			extracted_text_hash: "pw-finance-text-sha",
 			status: "imported",
-			raw_artifact_json: JSON.stringify({ schemaVersion: "finance-source-import.v1" }),
+			raw_artifact_json: JSON.stringify({
+				schemaVersion: "finance-source-import.v1",
+			}),
 			imported_at: now,
 		})
 		.execute();
@@ -382,11 +389,111 @@ async function seedRuntime(dataDir: string) {
 			created_at: now,
 		})
 		.execute();
+	await db
+		.insertInto("finance_ledger_entries")
+		.values([
+			{
+				id: "pw-ledger-email",
+				canonical_key: "email:pw-message-finance-email:42.00:2026-03-15",
+				status: "ready",
+				source_authority: "email",
+				occurred_at: "2026-03-15",
+				posted_at: null,
+				cleared_at: null,
+				description: "Acme Cloud",
+				counterparty: "Acme Cloud",
+				direction: "expense",
+				amount_value: "42.00",
+				amount_minor: 4200,
+				currency: "USD",
+				book: "business",
+				business_use_percent: null,
+				debit_account: "Expenses:Business:Software",
+				credit_account: "Assets:Business:Bank:Checking",
+				account_mapping_key: "acct:finance",
+				field_confidence_json: JSON.stringify({ overall: 0.95 }),
+				ledger_metadata_json: JSON.stringify({
+					categoryPrimary: "software_services",
+					categorySecondary: "saas",
+					ownerIdentityId: "owner:finance",
+					institutionId: "inst:finance-bank",
+					financialAccountId: "acct:finance",
+				}),
+				raw_payload_json: JSON.stringify({ seeded: true }),
+				created_at: now,
+				updated_at: now,
+			},
+			{
+				id: "pw-ledger-pdf",
+				canonical_key: "import:pw-finance-artifact-sha:0",
+				status: "ready",
+				source_authority: "pdf",
+				occurred_at: "2026-03-20",
+				posted_at: "2026-03-21",
+				cleared_at: null,
+				description: "Imported PDF software charge",
+				counterparty: "PDF Services",
+				direction: "expense",
+				amount_value: "51.00",
+				amount_minor: 5100,
+				currency: "USD",
+				book: "business",
+				business_use_percent: null,
+				debit_account: "Expenses:Business:Software",
+				credit_account: "Assets:Business:Bank:Checking",
+				account_mapping_key: "acct:pdf",
+				field_confidence_json: JSON.stringify({ overall: 0.99 }),
+				ledger_metadata_json: JSON.stringify({
+					categoryPrimary: "software_services",
+					categorySecondary: "statement_import",
+					ownerIdentityId: "owner:pdf",
+					institutionId: "inst:pdf-bank",
+					financialAccountId: "acct:pdf",
+				}),
+				raw_payload_json: JSON.stringify({ seeded: true }),
+				created_at: now,
+				updated_at: now,
+			},
+		])
+		.execute();
+	await db
+		.insertInto("finance_ledger_entry_sources")
+		.values([
+			{
+				id: "pw-ledger-source-email",
+				ledger_entry_id: "pw-ledger-email",
+				source_kind: "email",
+				message_id: PLAYWRIGHT_SCENARIOS.finance.emailMessage.id,
+				secondary_result_id: `secondary-${PLAYWRIGHT_SCENARIOS.finance.emailMessage.id}`,
+				import_run_id: null,
+				import_transaction_id: null,
+				import_document_id: null,
+				evidence_json: JSON.stringify({ seeded: true }),
+				created_at: now,
+			},
+			{
+				id: "pw-ledger-source-pdf",
+				ledger_entry_id: "pw-ledger-pdf",
+				source_kind: "import",
+				message_id: null,
+				secondary_result_id: null,
+				import_run_id: "pw-finance-import-run",
+				import_transaction_id: "pw-finance-transaction",
+				import_document_id: "pw-finance-document",
+				evidence_json: JSON.stringify({ seeded: true }),
+				created_at: now,
+			},
+		])
+		.execute();
 }
 
-async function main() {
-	const runtimeRoot = resolve(process.cwd(), "test/.runtime/e2e-live");
-	const dataDir = resolve(runtimeRoot, "data");
+export async function seedRuntimeForPlaywrightAt(input?: {
+	runtimeRoot?: string;
+	dataDir?: string;
+}) {
+	const runtimeRoot =
+		input?.runtimeRoot ?? resolve(process.cwd(), "test/.runtime/e2e-live");
+	const dataDir = input?.dataDir ?? resolve(runtimeRoot, "data");
 
 	const hasSubscription =
 		Boolean(process.env.OPENAI_API_KEY) ||
@@ -421,6 +528,10 @@ async function main() {
 	});
 
 	await seedRuntime(dataDir);
+}
+
+async function main() {
+	await seedRuntimeForPlaywrightAt();
 }
 
 export default main;

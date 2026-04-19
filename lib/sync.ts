@@ -18,6 +18,23 @@ import {
 import { queueJobIdempotent } from "#/lib/jobs";
 import { type LogTrace, startTrace } from "#/lib/log";
 import { isBadNormalizedBody } from "#/lib/normalize";
+import { recordSyncBatch } from "#/lib/observability";
+import { currentOrgId } from "#/lib/runtime";
+import { publishActionEvent } from "#/lib/runtime-events";
+
+const OAUTH_RECONNECT_REQUIRED_MESSAGE =
+	"Gmail OAuth token is missing or no longer valid. Reconnect this Gmail account.";
+
+export interface SyncProgressSink {
+	onProgress(input: {
+		phase: "full" | "delta" | "backfill";
+		fetched: number;
+		total: number | null;
+		rangeStart?: number | null;
+		rangeEnd?: number | null;
+		backfillNextUid?: number | null;
+	}): Promise<void> | void;
+}
 
 function parsedMessageValues(
 	parsed: Awaited<ReturnType<typeof parseRawMessage>>,
@@ -426,12 +443,33 @@ async function updateAccountSyncStatus(input: {
 		})
 		.where("id", "=", input.accountId)
 		.execute();
+	const payload = {
+		accountId: input.accountId,
+		syncStatus: input.status,
+		lastSyncedAt: input.lastSyncedAt ?? null,
+		lastError: input.lastError ?? null,
+	};
+	await publishActionEvent({
+		topic: `account:${input.accountId}`,
+		eventType: "account.sync_status",
+		entityKind: "account",
+		entityId: input.accountId,
+		payload,
+	});
+	await publishActionEvent({
+		topic: "accounts",
+		eventType: "account.sync_status",
+		entityKind: "account",
+		entityId: input.accountId,
+		payload,
+	});
 }
 
 async function markNeedsReconnect(accountId: string) {
 	await updateAccountSyncStatus({
 		accountId,
 		status: "needs_reconnect",
+		lastError: OAUTH_RECONNECT_REQUIRED_MESSAGE,
 	});
 }
 
@@ -440,6 +478,37 @@ async function markResyncRequired(accountId: string) {
 		accountId,
 		status: "resync_required",
 	});
+}
+
+async function setAccountLastError(
+	accountId: string,
+	lastError: string | null,
+) {
+	await getDb()
+		.updateTable("accounts")
+		.set({
+			last_error: lastError,
+			updated_at: nowIso(),
+		})
+		.where("id", "=", accountId)
+		.execute();
+}
+
+async function requireFreshTokenForSync(accountId: string) {
+	try {
+		const token = await ensureFreshToken(accountId);
+		if (!token) {
+			await markNeedsReconnect(accountId);
+			throw new Error(OAUTH_RECONNECT_REQUIRED_MESSAGE);
+		}
+		return token;
+	} catch (error) {
+		await setAccountLastError(
+			accountId,
+			error instanceof Error ? error.message : String(error),
+		);
+		throw error;
+	}
 }
 
 async function ensureBootstrapStateRow(accountId: string, startedAt: string) {
@@ -541,7 +610,46 @@ async function queueBackfillIfNeeded(
 	return true;
 }
 
-export async function runFullSync(accountId: string, trace?: LogTrace) {
+function createProgressEmitter(
+	progress: SyncProgressSink | undefined,
+	phase: "full" | "delta" | "backfill",
+) {
+	let lastEmittedAt = Date.now();
+	return async (
+		input: {
+			fetched: number;
+			total: number | null;
+			rangeStart?: number | null;
+			rangeEnd?: number | null;
+			backfillNextUid?: number | null;
+		},
+		force = false,
+	) => {
+		if (!progress) {
+			return;
+		}
+		const now = Date.now();
+		if (!force && input.fetched % 25 !== 0 && now - lastEmittedAt < 2000) {
+			return;
+		}
+		if (!force && now - lastEmittedAt < 2000) {
+			return;
+		}
+		lastEmittedAt = now;
+		await progress.onProgress({
+			phase,
+			...input,
+		});
+	};
+}
+
+export async function runFullSync(
+	accountId: string,
+	trace?: LogTrace,
+	progress?: SyncProgressSink,
+) {
+	const syncStartedAt = Date.now();
+	const reportProgress = createProgressEmitter(progress, "full");
 	const syncTrace =
 		trace?.child({
 			kind: "sync",
@@ -583,11 +691,7 @@ export async function runFullSync(accountId: string, trace?: LogTrace) {
 	}
 
 	try {
-		const token = await ensureFreshToken(accountId);
-		if (!token) {
-			await markNeedsReconnect(accountId);
-			throw new Error("No valid OAuth token for account");
-		}
+		const token = await requireFreshTokenForSync(accountId);
 
 		await updateAccountSyncStatus({
 			accountId,
@@ -639,6 +743,7 @@ export async function runFullSync(accountId: string, trace?: LogTrace) {
 							rangeStart,
 							currentHeadUid,
 						);
+						const total = currentHeadUid - rangeStart + 1;
 
 						for (const msg of batch) {
 							await ingestMessage(
@@ -649,7 +754,23 @@ export async function runFullSync(accountId: string, trace?: LogTrace) {
 								syncTrace,
 							);
 							fetched += 1;
+							await reportProgress({
+								fetched,
+								total,
+								rangeStart,
+								rangeEnd: currentHeadUid,
+							});
 						}
+						await reportProgress(
+							{
+								fetched,
+								total,
+								rangeStart,
+								rangeEnd: currentHeadUid,
+								backfillNextUid: rangeStart > 1 ? rangeStart - 1 : null,
+							},
+							true,
+						);
 
 						latestUidCursor = currentHeadUid;
 						earliestUidCursor = rangeStart;
@@ -683,6 +804,7 @@ export async function runFullSync(accountId: string, trace?: LogTrace) {
 							startUid + APP_CONFIG.imapFetchWindow - 1,
 						);
 						const batch = await fetchMessageRange(client, startUid, rangeEnd);
+						const total = rangeEnd - startUid + 1;
 
 						for (const msg of batch) {
 							await ingestMessage(
@@ -693,7 +815,22 @@ export async function runFullSync(accountId: string, trace?: LogTrace) {
 								syncTrace,
 							);
 							fetched += 1;
+							await reportProgress({
+								fetched,
+								total,
+								rangeStart: startUid,
+								rangeEnd,
+							});
 						}
+						await reportProgress(
+							{
+								fetched,
+								total,
+								rangeStart: startUid,
+								rangeEnd,
+							},
+							true,
+						);
 
 						latestUidCursor = rangeEnd;
 
@@ -743,6 +880,13 @@ export async function runFullSync(accountId: string, trace?: LogTrace) {
 			lastSyncedAt: completedAt,
 			lastError: null,
 		});
+		recordSyncBatch({
+			orgId: currentOrgId(),
+			accountId,
+			phase: "full",
+			fetched,
+			durationMs: Date.now() - syncStartedAt,
+		});
 
 		syncTrace.complete("sync.bootstrap.complete", {
 			outcome: phase === "bootstrap" ? "bootstrapped" : "resumed",
@@ -772,7 +916,13 @@ export async function runFullSync(accountId: string, trace?: LogTrace) {
 	}
 }
 
-export async function runDeltaSync(accountId: string, trace?: LogTrace) {
+export async function runDeltaSync(
+	accountId: string,
+	trace?: LogTrace,
+	progress?: SyncProgressSink,
+) {
+	const syncStartedAt = Date.now();
+	const reportProgress = createProgressEmitter(progress, "delta");
 	const syncTrace =
 		trace?.child({
 			kind: "sync",
@@ -816,11 +966,7 @@ export async function runDeltaSync(accountId: string, trace?: LogTrace) {
 	}
 
 	try {
-		const token = await ensureFreshToken(accountId);
-		if (!token) {
-			await markNeedsReconnect(accountId);
-			throw new Error("No valid OAuth token for account");
-		}
+		const token = await requireFreshTokenForSync(accountId);
 
 		await updateAccountSyncStatus({
 			accountId,
@@ -876,6 +1022,7 @@ export async function runDeltaSync(accountId: string, trace?: LogTrace) {
 						startUid + APP_CONFIG.imapFetchWindow - 1,
 					);
 					const batch = await fetchMessageRange(client, startUid, rangeEnd);
+					const total = rangeEnd - startUid + 1;
 
 					for (const msg of batch) {
 						await ingestMessage(
@@ -886,7 +1033,24 @@ export async function runDeltaSync(accountId: string, trace?: LogTrace) {
 							syncTrace,
 						);
 						fetched += 1;
+						await reportProgress({
+							fetched,
+							total,
+							rangeStart: startUid,
+							rangeEnd,
+							backfillNextUid: syncState.backfill_next_uid,
+						});
 					}
+					await reportProgress(
+						{
+							fetched,
+							total,
+							rangeStart: startUid,
+							rangeEnd,
+							backfillNextUid: syncState.backfill_next_uid,
+						},
+						true,
+					);
 
 					latestUidCursor = rangeEnd;
 					const completedAt = nowIso();
@@ -933,6 +1097,13 @@ export async function runDeltaSync(accountId: string, trace?: LogTrace) {
 			lastSyncedAt: completedAt,
 			lastError: null,
 		});
+		recordSyncBatch({
+			orgId: currentOrgId(),
+			accountId,
+			phase: "delta",
+			fetched,
+			durationMs: Date.now() - syncStartedAt,
+		});
 
 		syncTrace.complete("sync.delta.complete", {
 			fetched,
@@ -954,7 +1125,13 @@ export async function runDeltaSync(accountId: string, trace?: LogTrace) {
 	}
 }
 
-export async function runBackfillSync(accountId: string, trace?: LogTrace) {
+export async function runBackfillSync(
+	accountId: string,
+	trace?: LogTrace,
+	progress?: SyncProgressSink,
+) {
+	const syncStartedAt = Date.now();
+	const reportProgress = createProgressEmitter(progress, "backfill");
 	const syncTrace =
 		trace?.child({
 			kind: "sync",
@@ -1023,11 +1200,7 @@ export async function runBackfillSync(accountId: string, trace?: LogTrace) {
 	}
 
 	try {
-		const token = await ensureFreshToken(accountId);
-		if (!token) {
-			await markNeedsReconnect(accountId);
-			throw new Error("No valid OAuth token for account");
-		}
+		const token = await requireFreshTokenForSync(accountId);
 
 		await updateAccountSyncStatus({
 			accountId,
@@ -1085,6 +1258,7 @@ export async function runBackfillSync(accountId: string, trace?: LogTrace) {
 					rangeEnd,
 					APP_CONFIG.imapFetchWindow,
 				);
+				const total = rangeEnd - rangeStart + 1;
 
 				for (const msg of batch) {
 					await ingestMessage(
@@ -1095,10 +1269,27 @@ export async function runBackfillSync(accountId: string, trace?: LogTrace) {
 						syncTrace,
 					);
 					fetched += 1;
+					await reportProgress({
+						fetched,
+						total,
+						rangeStart,
+						rangeEnd,
+						backfillNextUid,
+					});
 				}
 
 				earliestUidCursor = rangeStart;
 				backfillNextUid = rangeStart > 1 ? rangeStart - 1 : null;
+				await reportProgress(
+					{
+						fetched,
+						total,
+						rangeStart,
+						rangeEnd,
+						backfillNextUid,
+					},
+					true,
+				);
 				const completedAt = nowIso();
 				await db
 					.updateTable("account_sync_state")
@@ -1132,6 +1323,13 @@ export async function runBackfillSync(accountId: string, trace?: LogTrace) {
 			status: activeSyncStatus(backfillNextUid),
 			lastSyncedAt: completedAt,
 			lastError: null,
+		});
+		recordSyncBatch({
+			orgId: currentOrgId(),
+			accountId,
+			phase: "backfill",
+			fetched,
+			durationMs: Date.now() - syncStartedAt,
 		});
 
 		syncTrace.complete("sync.backfill.complete", {
@@ -1215,11 +1413,7 @@ export async function runReconcile(accountId: string, trace?: LogTrace) {
 	});
 
 	try {
-		const token = await ensureFreshToken(accountId);
-		if (!token) {
-			await markNeedsReconnect(accountId);
-			throw new Error("No valid OAuth token for account");
-		}
+		const token = await requireFreshTokenForSync(accountId);
 
 		const client = createImapClient({
 			email: account.email_address,
@@ -1318,6 +1512,7 @@ export async function runReconcile(accountId: string, trace?: LogTrace) {
 			.set({ last_reconcile_at: completedAt, updated_at: completedAt })
 			.where("account_id", "=", accountId)
 			.execute();
+		await setAccountLastError(accountId, null);
 
 		syncTrace.complete("sync.reconcile.complete", {
 			tombstoned,

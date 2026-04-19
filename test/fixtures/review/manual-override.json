@@ -1,12 +1,14 @@
 {
-	"schemaVersion": "message-label.v2",
+	"schemaVersion": "message-label.v3",
 	"nsfw": false,
 	"finance": {
 		"relevant": true,
-		"direction": "expense",
-		"owner": "business",
-		"accountHint": "amex",
-		"purpose": "client lunch"
+		"signal": "receipt",
+		"operational": true,
+		"bookHint": "business",
+		"requiresFinanceIntel": true,
+		"confidence": 0.95,
+		"evidence": "Client lunch receipt."
 	},
 	"people": {
 		"personal": false,

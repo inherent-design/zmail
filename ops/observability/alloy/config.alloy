@@ -1,0 +1,45 @@
+local.file_match "zmail_logs" {
+  path_targets = [{
+    "__path__" = "/var/lib/zmail/logs/zmail.ndjson",
+    "service" = "zmail",
+    "environment" = "development",
+  }]
+}
+
+loki.source.file "zmail_logs" {
+  targets = local.file_match.zmail_logs.targets
+  forward_to = [loki.process.zmail.receiver]
+}
+
+loki.process "zmail" {
+  stage.json {
+    expressions = {
+      service = "service",
+      environment = "environment",
+      level = "level",
+      kind = "kind",
+      operation = "operation",
+      event = "event",
+    }
+  }
+
+  stage.labels {
+    values = {
+      service = "",
+      environment = "",
+      level = "",
+      kind = "",
+      operation = "",
+      event = "",
+    }
+  }
+
+  forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
+

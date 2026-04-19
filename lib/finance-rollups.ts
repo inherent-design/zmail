@@ -2,8 +2,6 @@ import { randomUUID } from "node:crypto";
 
 import { nowIso } from "#/lib/config";
 import { getDb, safeJsonParse } from "#/lib/db";
-import { parseAmountMinor } from "#/lib/finance-imports";
-import { normalizeFinanceIntel } from "#/lib/schemas";
 
 function extractYear(value: string | null | undefined) {
 	if (!value) {
@@ -26,6 +24,9 @@ export interface FinanceLedgerEntry {
 	institutionId: string | null;
 	financialAccountId: string | null;
 	description: string | null;
+	status: string;
+	canonicalKey: string;
+	book: string;
 }
 
 export interface FinanceImportDocumentEntry {
@@ -68,109 +69,74 @@ export interface FinanceSubcategoryRollup {
 
 export async function loadCombinedFinanceLedger() {
 	const db = getDb();
-	const [emailRows, importRows] = await Promise.all([
-		db
-			.selectFrom("message_secondary_heads")
-			.innerJoin(
-				"message_secondary_results",
-				"message_secondary_results.id",
-				"message_secondary_heads.secondary_result_id",
-			)
-			.innerJoin(
-				"messages",
-				"messages.id",
-				"message_secondary_heads.message_id",
-			)
-			.select([
-				"message_secondary_results.result_json",
-				"messages.received_at",
-				"messages.account_id",
-			])
-			.where("message_secondary_heads.classifier_key", "=", "finance_intel")
-			.where("message_secondary_heads.status", "in", ["ready", "review"])
-			.execute(),
-		db
-			.selectFrom("finance_import_transactions")
-			.innerJoin(
-				"finance_import_runs",
-				"finance_import_runs.id",
-				"finance_import_transactions.import_run_id",
-			)
-			.select([
-				"finance_import_transactions.id",
-				"finance_import_transactions.import_run_id",
-				"finance_import_transactions.source_document_ref",
-				"finance_import_transactions.occurred_at",
-				"finance_import_transactions.posted_at",
-				"finance_import_transactions.amount_value",
-				"finance_import_transactions.amount_minor",
-				"finance_import_transactions.currency",
-				"finance_import_transactions.direction",
-				"finance_import_transactions.description",
-				"finance_import_transactions.merchant_or_counterparty",
-				"finance_import_transactions.balance_value",
-				"finance_import_transactions.owner_identity_hint",
-				"finance_import_transactions.financial_account_hint",
-				"finance_import_transactions.institution_hint",
-				"finance_import_transactions.category_primary",
-				"finance_import_transactions.category_secondary",
-				"finance_import_runs.source_kind as import_source_kind",
-			])
-			.execute(),
-	]);
+	const rows = await db
+		.selectFrom("finance_ledger_entries")
+		.leftJoin(
+			"finance_ledger_entry_sources",
+			"finance_ledger_entry_sources.ledger_entry_id",
+			"finance_ledger_entries.id",
+		)
+		.leftJoin(
+			"messages",
+			"messages.id",
+			"finance_ledger_entry_sources.message_id",
+		)
+		.select([
+			"finance_ledger_entries.id",
+			"finance_ledger_entries.canonical_key",
+			"finance_ledger_entries.status",
+			"finance_ledger_entries.source_authority",
+			"finance_ledger_entries.occurred_at",
+			"finance_ledger_entries.posted_at",
+			"finance_ledger_entries.direction",
+			"finance_ledger_entries.amount_minor",
+			"finance_ledger_entries.counterparty",
+			"finance_ledger_entries.description",
+			"finance_ledger_entries.book",
+			"finance_ledger_entries.ledger_metadata_json",
+			"messages.account_id",
+		])
+		.orderBy("finance_ledger_entries.occurred_at", "desc")
+		.orderBy("finance_ledger_entries.posted_at", "desc")
+		.execute();
 
+	const seen = new Set<string>();
 	const entries: FinanceLedgerEntry[] = [];
-	for (const row of emailRows) {
-		const financeIntel = normalizeFinanceIntel(
-			safeJsonParse(row.result_json, null),
-		);
-		if (!financeIntel) {
+	for (const row of rows) {
+		if (seen.has(row.id)) {
 			continue;
 		}
-		for (const transaction of financeIntel.transactionCandidates) {
-			const year =
-				extractYear(transaction.occurredAt) ?? extractYear(row.received_at);
-			if (!year) {
-				continue;
-			}
-			entries.push({
-				sourceKind: "email",
-				year,
-				accountId: row.account_id,
-				primaryCategory: transaction.categoryPrimary ?? "uncategorized",
-				secondaryCategory: transaction.categorySecondary,
-				direction: transaction.direction,
-				amountMinor: parseAmountMinor(transaction.amount),
-				occurredAt: transaction.occurredAt,
-				ownerIdentityId: transaction.ownerIdentityRef,
-				institutionId: transaction.institutionRef,
-				financialAccountId: transaction.financialAccountRef,
-				description: transaction.merchantOrCounterparty,
-			});
-		}
-	}
-
-	for (const row of importRows) {
-		const year = extractYear(row.occurred_at) ?? extractYear(row.posted_at);
+		seen.add(row.id);
+		const occurredAt = row.occurred_at ?? row.posted_at;
+		const year = extractYear(occurredAt);
 		if (!year) {
 			continue;
 		}
+		const metadata = safeJsonParse<{
+			categoryPrimary?: string | null;
+			categorySecondary?: string | null;
+			ownerIdentityId?: string | null;
+			institutionId?: string | null;
+			financialAccountId?: string | null;
+		}>(row.ledger_metadata_json, {});
 		entries.push({
-			sourceKind: row.import_source_kind,
+			sourceKind: row.source_authority,
 			year,
-			accountId: null,
-			primaryCategory: row.category_primary ?? "uncategorized",
-			secondaryCategory: row.category_secondary,
+			accountId: row.account_id,
+			primaryCategory: metadata.categoryPrimary ?? "uncategorized",
+			secondaryCategory: metadata.categorySecondary ?? null,
 			direction: row.direction,
 			amountMinor: row.amount_minor,
-			occurredAt: row.occurred_at,
-			ownerIdentityId: row.owner_identity_hint,
-			institutionId: row.institution_hint,
-			financialAccountId: row.financial_account_hint,
-			description: row.merchant_or_counterparty ?? row.description,
+			occurredAt,
+			ownerIdentityId: metadata.ownerIdentityId ?? null,
+			institutionId: metadata.institutionId ?? null,
+			financialAccountId: metadata.financialAccountId ?? null,
+			description: row.counterparty ?? row.description,
+			status: row.status,
+			canonicalKey: row.canonical_key,
+			book: row.book,
 		});
 	}
-
 	return entries;
 }
 
@@ -182,6 +148,9 @@ export function buildFinanceRollupView(input: {
 	const subcategory = new Map<string, FinanceSubcategoryRollup>();
 
 	for (const entry of input.ledger) {
+		if (entry.status === "duplicate") {
+			continue;
+		}
 		const yearlyKey = `${entry.year}:${entry.sourceKind}:${entry.primaryCategory}`;
 		const currentYearly = yearly.get(yearlyKey) ?? {
 			year: entry.year,
@@ -196,7 +165,7 @@ export function buildFinanceRollupView(input: {
 			uncategorizedCount: 0,
 		};
 
-		const amount = entry.amountMinor ?? 0;
+		const amount = Math.abs(entry.amountMinor ?? 0);
 		if (entry.direction === "income") {
 			currentYearly.inflowMinor += amount;
 			currentYearly.netMinor += amount;
@@ -259,7 +228,10 @@ export function buildFinanceRollupView(input: {
 
 	const summary = input.ledger.reduce<FinanceSummary>(
 		(acc, entry) => {
-			const amount = entry.amountMinor ?? 0;
+			if (entry.status === "duplicate") {
+				return acc;
+			}
+			const amount = Math.abs(entry.amountMinor ?? 0);
 			if (entry.direction === "income") {
 				acc.inflowMinor += amount;
 				acc.netMinor += amount;
@@ -283,33 +255,37 @@ export function buildFinanceRollupView(input: {
 		},
 	);
 
-	const rollups = [...yearly.values()].sort((left, right) => {
-		if (left.year !== right.year) {
-			return right.year - left.year;
-		}
-		if (left.sourceKind !== right.sourceKind) {
-			return left.sourceKind.localeCompare(right.sourceKind);
-		}
-		return left.primaryCategory.localeCompare(right.primaryCategory);
-	});
-	const subcategoryRollups = [...subcategory.values()].sort((left, right) => {
-		if (left.year !== right.year) {
-			return right.year - left.year;
-		}
-		if (left.sourceKind !== right.sourceKind) {
-			return left.sourceKind.localeCompare(right.sourceKind);
-		}
-		if (left.primaryCategory !== right.primaryCategory) {
-			return left.primaryCategory.localeCompare(right.primaryCategory);
-		}
-		return left.secondaryCategory.localeCompare(right.secondaryCategory);
-	});
-
 	return {
 		summary,
-		rollups,
-		subcategoryRollups,
+		rollups: [...yearly.values()].sort(sortRollup),
+		subcategoryRollups: [...subcategory.values()].sort(sortSubcategoryRollup),
 	};
+}
+
+function sortRollup(left: FinancePrimaryRollup, right: FinancePrimaryRollup) {
+	if (left.year !== right.year) {
+		return right.year - left.year;
+	}
+	if (left.sourceKind !== right.sourceKind) {
+		return left.sourceKind.localeCompare(right.sourceKind);
+	}
+	return left.primaryCategory.localeCompare(right.primaryCategory);
+}
+
+function sortSubcategoryRollup(
+	left: FinanceSubcategoryRollup,
+	right: FinanceSubcategoryRollup,
+) {
+	if (left.year !== right.year) {
+		return right.year - left.year;
+	}
+	if (left.sourceKind !== right.sourceKind) {
+		return left.sourceKind.localeCompare(right.sourceKind);
+	}
+	if (left.primaryCategory !== right.primaryCategory) {
+		return left.primaryCategory.localeCompare(right.primaryCategory);
+	}
+	return left.secondaryCategory.localeCompare(right.secondaryCategory);
 }
 
 export async function rebuildFinanceRollups() {

@@ -1,7 +1,11 @@
 import { expect, type Page } from "@playwright/test";
 
 export async function waitForHydration(page: Page) {
-	await page.waitForFunction(() => typeof window.$_TSR === "undefined");
+	await page.waitForFunction(
+		() =>
+			typeof (window as typeof window & { Zmail?: { refresh?: unknown } }).Zmail
+				?.refresh === "function",
+	);
 }
 
 export async function gotoAndHydrate(page: Page, path: string) {
@@ -18,7 +22,8 @@ export async function clickAndWaitForServerAction(
 			const request = response.request();
 			return (
 				request.method() === "POST" &&
-				response.url().includes("/_serverFn/") &&
+				(response.url().includes("/rpc/") ||
+					response.url().includes("/api/")) &&
 				response.status() >= 200 &&
 				response.status() < 400
 			);

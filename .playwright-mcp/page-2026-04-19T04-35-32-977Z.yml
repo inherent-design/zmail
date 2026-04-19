@@ -1,0 +1,27 @@
+- generic [ref=e4]:
+  - link "Skip to main content" [ref=e5] [cursor=pointer]:
+    - /url: "#pageContent"
+    - generic [ref=e6]: Skip to main content
+  - banner [ref=e7]:
+    - generic [ref=e8]:
+      - generic [ref=e9]:
+        - button "Open menu" [ref=e10] [cursor=pointer]:
+          - img "Grafana" [ref=e13]
+        - navigation "Breadcrumbs" [ref=e15]:
+          - list [ref=e16]:
+            - listitem [ref=e17]:
+              - link "Home" [ref=e18] [cursor=pointer]:
+                - /url: /
+            - listitem [ref=e21]:
+              - generic "Dashboards" [ref=e22]
+      - generic [ref=e23]:
+        - generic [ref=e25]:
+          - button "Search or jump to..." [ref=e28] [cursor=pointer]
+          - generic [ref=e31]: ⌘+k
+        - button "New" [ref=e32] [cursor=pointer]
+        - button "Help" [ref=e36] [cursor=pointer]
+        - button "News" [ref=e38] [cursor=pointer]
+        - button "Enable kiosk mode" [ref=e40] [cursor=pointer]
+        - link "Sign in" [ref=e42] [cursor=pointer]:
+          - /url: /d/zmail-overview/zmail-overview?orgId=1&from=now-1h&to=now&timezone=browser&forceLogin=true
+  - main [ref=e45]

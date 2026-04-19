@@ -1,15 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-
+import { summarizeMessageLabelForPrompt } from "#/lib/classify";
 import { APP_CONFIG, nowIso, PROMPTS_DIR } from "#/lib/config";
 import { getDb, jsonText, safeJsonParse } from "#/lib/db";
 import { piJson } from "#/lib/pi";
 import {
-	normalizeMessageLabel,
 	type OverseerProfileV1,
 	overseerProfileJsonSchema,
 	overseerProfileSchema,
+	parseCurrentMessageLabel,
 } from "#/lib/schemas";
 
 function readPrompt(name: string) {
@@ -34,6 +34,35 @@ export function extractDomain(address: string | null) {
 	return parts[parts.length - 1];
 }
 
+function buildReviewPromptExamples(
+	reviews: Array<{
+		override_label_json: string | null;
+		reviewer_note: string | null;
+		sender_address: string | null;
+		subject: string | null;
+		source_result_json: string;
+	}>,
+) {
+	return reviews.slice(0, 40).map((review) => {
+		const before = summarizeMessageLabelForPrompt(
+			safeJsonParse(review.source_result_json, null),
+		);
+		const override = review.override_label_json
+			? summarizeMessageLabelForPrompt(
+					safeJsonParse(review.override_label_json, null),
+				)
+			: null;
+		return {
+			sender: review.sender_address,
+			subject: review.subject,
+			decision: override ? "overridden" : "accepted",
+			reviewerNote: review.reviewer_note,
+			before,
+			after: override ?? before,
+		};
+	});
+}
+
 export async function buildOverseerProfile(accountId: string) {
 	const db = getDb();
 	const labels = await db
@@ -50,12 +79,22 @@ export async function buildOverseerProfile(accountId: string) {
 	const reviews = await db
 		.selectFrom("reviews")
 		.innerJoin("messages", "messages.id", "reviews.message_id")
+		.innerJoin(
+			"classification_results",
+			"classification_results.id",
+			"reviews.source_classification_result_id",
+		)
 		.select([
-			"reviews.status",
+			"reviews.reviewer_note",
 			"reviews.override_label_json",
 			"messages.sender_address",
+			"messages.subject",
+			"classification_results.result_json as source_result_json",
 		])
 		.where("messages.account_id", "=", accountId)
+		.where("reviews.status", "=", "resolved")
+		.orderBy("reviews.resolved_at", "desc")
+		.limit(40)
 		.execute();
 
 	const domainCounts = new Map<string, number>();
@@ -72,7 +111,7 @@ export async function buildOverseerProfile(accountId: string) {
 			domainCounts.set(domain, (domainCounts.get(domain) ?? 0) + 1);
 		}
 
-		const label = normalizeMessageLabel(safeJsonParse(row.label_json, null));
+		const label = parseCurrentMessageLabel(safeJsonParse(row.label_json, null));
 		if (!label || typeof label !== "object") {
 			continue;
 		}
@@ -95,10 +134,7 @@ export async function buildOverseerProfile(accountId: string) {
 			}
 		}
 
-		const purpose =
-			typeof label.finance.purpose === "string"
-				? label.finance.purpose.trim()
-				: "";
+		const purpose = label.finance.signal === "none" ? "" : label.finance.signal;
 		if (purpose) {
 			financePurposeCounts.set(
 				purpose,
@@ -190,6 +226,7 @@ export async function buildOverseerProfile(accountId: string) {
 					10,
 				),
 				reviewOverrides: reviews.length,
+				reviewExamples: buildReviewPromptExamples(reviews),
 			},
 			null,
 			2,
@@ -262,6 +299,9 @@ export async function maybeQueueOverseerForAccount(accountId: string) {
 		.executeTakeFirst();
 
 	const lastBuilt = latestProfile?.built_from_messages ?? 0;
+	if (!latestProfile) {
+		return Number(labelCount.count) >= APP_CONFIG.overseerBootstrapMinLabels;
+	}
 	return (
 		Number(labelCount.count) - lastBuilt >= APP_CONFIG.overseerRebuildEvery
 	);

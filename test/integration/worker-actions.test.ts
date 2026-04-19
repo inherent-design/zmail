@@ -10,10 +10,63 @@ import {
 } from "#/test/helpers/db";
 import { fixturePath } from "#/test/helpers/fs";
 import {
-	buildFinanceIntelV2,
-	buildMessageLabelV2,
+	buildFinanceIntelV3,
+	buildMessageLabelV3,
 } from "#/test/helpers/labels";
 import { createTestRuntime } from "#/test/helpers/runtime";
+
+async function runWorkerUntilQuiet(
+	worker: typeof import("#/lib/worker"),
+	db: Awaited<ReturnType<typeof bootDb>>["db"],
+	maxIterations = 12,
+) {
+	for (let iteration = 0; iteration < maxIterations; iteration += 1) {
+		const handled = await worker.runWorkerIteration({ waitOnIdle: false });
+		if (!handled) {
+			return;
+		}
+	}
+
+	const openJobs = await db
+		.selectFrom("jobs")
+		.select(["kind", "status", "scope_type", "scope_id"])
+		.where("status", "in", ["queued", "running"])
+		.orderBy("created_at", "asc")
+		.execute();
+	const financeHeads = await db
+		.selectFrom("message_secondary_heads")
+		.leftJoin(
+			"message_secondary_results",
+			"message_secondary_results.id",
+			"message_secondary_heads.secondary_result_id",
+		)
+		.select([
+			"message_secondary_heads.message_id",
+			"message_secondary_heads.status",
+			"message_secondary_heads.content_sha256",
+			"message_secondary_heads.registry_sha256",
+			"message_secondary_results.schema_version as result_schema_version",
+		])
+		.where("message_secondary_heads.classifier_key", "=", "finance_intel")
+		.orderBy("message_secondary_heads.message_id", "asc")
+		.execute();
+	const recentJobs = await db
+		.selectFrom("jobs")
+		.select([
+			"kind",
+			"status",
+			"attempts",
+			"last_error",
+			"scope_type",
+			"scope_id",
+		])
+		.orderBy("created_at", "asc")
+		.execute();
+
+	throw new Error(
+		`Worker did not go idle within ${String(maxIterations)} iterations. Open jobs: ${JSON.stringify(openJobs)}. Finance heads: ${JSON.stringify(financeHeads)}. Jobs: ${JSON.stringify(recentJobs)}`,
+	);
+}
 
 function mockPiModule() {
 	vi.doMock("#/lib/pi", () => ({
@@ -23,13 +76,15 @@ function mockPiModule() {
 				return {
 					backend: "openai-subscription",
 					modelId: "gpt-5.4-mini",
-					parsed: buildMessageLabelV2({
+					parsed: buildMessageLabelV3({
 						finance: {
 							relevant: !lowConfidence,
-							direction: lowConfidence ? "neither" : "expense",
-							owner: lowConfidence ? "unknown" : "business",
-							accountHint: lowConfidence ? null : "amex",
-							purpose: lowConfidence ? null : "client lunch",
+							signal: lowConfidence ? "none" : "receipt",
+							operational: !lowConfidence,
+							bookHint: lowConfidence ? "unknown" : "business",
+							requiresFinanceIntel: !lowConfidence,
+							confidence: 0.9,
+							evidence: lowConfidence ? null : "Client lunch receipt.",
 						},
 						people: {
 							personal: lowConfidence,
@@ -63,7 +118,8 @@ function mockPiModule() {
 
 			if (
 				input.userPrompt.includes("Sender:") &&
-				input.userPrompt.includes("Normalized body:")
+				input.userPrompt.includes("Normalized body:") &&
+				!input.userPrompt.includes("Current root label:")
 			) {
 				return {
 					backend: "openai-subscription",
@@ -100,7 +156,7 @@ function mockPiModule() {
 				return {
 					backend: "openai-subscription",
 					modelId: "gpt-5.4-mini",
-					parsed: buildFinanceIntelV2({
+					parsed: buildFinanceIntelV3({
 						messageKind: "receipt",
 						transactionCandidates: [
 							{
@@ -118,6 +174,34 @@ function mockPiModule() {
 								statementRefHint: null,
 								taxRelevanceHint: "business expense",
 								evidence: "Expense receipt for client lunch",
+								externalTransactionId: null,
+								postedAt: null,
+								clearedAt: null,
+								book: "business",
+								businessUsePercent: null,
+								fieldConfidence: {
+									amount: 0.95,
+									date: 0.95,
+									counterparty: 0.95,
+									accountMapping: 0.95,
+									book: 0.95,
+									category: 0.95,
+									dedupe: 0.95,
+								},
+								dedupe: {
+									externalTransactionId: null,
+									statementRowId: null,
+									normalizedComposite: null,
+									emailEvidenceKey: "msg-receipt:42:2026-01-01",
+								},
+								beancount: {
+									debitAccount: "Expenses:Business:Meals",
+									creditAccount: "Assets:Business:Bank:Checking",
+									currency: "USD",
+									mappingKey: "amex",
+									confidence: 0.95,
+									metadata: {},
+								},
 							},
 						],
 						documentCandidates: [
@@ -133,6 +217,21 @@ function mockPiModule() {
 								institutionRefHint: null,
 								attachmentRefs: ["receipt.pdf"],
 								evidence: "Receipt attachment present",
+								sourceDocumentRefs: ["receipt.pdf"],
+								statementOpeningBalance: null,
+								statementClosingBalance: null,
+								statementTransactionCount: null,
+								statementCurrency: "USD",
+								book: "business",
+								fieldConfidence: {
+									amount: null,
+									date: 0.9,
+									counterparty: 0.9,
+									accountMapping: 0.8,
+									book: 0.95,
+									category: 0.9,
+									dedupe: 0.8,
+								},
 							},
 						],
 						explanation: "Finance intel.",
@@ -175,9 +274,10 @@ describe("worker and server actions", () => {
 		const runtime = await createTestRuntime();
 		mockPiModule();
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		const worker =
 			await runtime.importFresh<typeof import("#/lib/worker")>("#/lib/worker");
 		const { db } = await bootDb();
@@ -241,7 +341,7 @@ describe("worker and server actions", () => {
 		});
 
 		await actions.queueAccountClassifyBacklogCommand({ accountId: "acct-1" });
-		await worker.drainWorkerUntilIdle();
+		await runWorkerUntilQuiet(worker, db);
 
 		const labels = await db.selectFrom("message_labels").selectAll().execute();
 		const reviews = await db.selectFrom("reviews").selectAll().execute();
@@ -265,7 +365,7 @@ describe("worker and server actions", () => {
 		).toBe(true);
 
 		const messagesData = await actions.loadMessagesData();
-		expect(messagesData).toHaveLength(2);
+		expect(messagesData.rows).toHaveLength(2);
 
 		const detail = await actions.loadMessageDetailData({
 			messageId: receiptMessageId,
@@ -284,7 +384,7 @@ describe("worker and server actions", () => {
 		).rejects.toThrow("Override label is required for override action");
 
 		await actions.enqueueOverseerCommand({ accountId: "acct-1" });
-		await worker.drainWorkerUntilIdle();
+		await runWorkerUntilQuiet(worker, db);
 		const profileData = await actions.loadProfileData({ accountId: "acct-1" });
 		expect(profileData.profiles.length).toBeGreaterThan(0);
 		expect(
@@ -296,11 +396,11 @@ describe("worker and server actions", () => {
 		expect(detailAfterProfile.latestProfile).toBeTruthy();
 
 		await actions.queueAccountFinanceBacklogCommand({ accountId: "acct-1" });
-		await worker.drainWorkerUntilIdle();
+		await runWorkerUntilQuiet(worker, db);
 		const financeData = await actions.loadFinanceData();
 		expect(financeData.coverage).toBeTruthy();
-		expect(Array.isArray(financeData.eventCandidates)).toBe(true);
-		expect(Array.isArray(financeData.documentCandidates)).toBe(true);
+		expect(Array.isArray(financeData.ledgerPreview)).toBe(true);
+		expect(Array.isArray(financeData.reviewRows)).toBe(true);
 
 		const classifyNow = await actions.classifyOneNowCommand({
 			messageId: receiptMessageId,
@@ -311,7 +411,7 @@ describe("worker and server actions", () => {
 			.select(["label_json"])
 			.where("message_id", "=", receiptMessageId)
 			.executeTakeFirstOrThrow();
-		expect(classifyNowLabel.label_json).toContain("message-label.v2");
+		expect(classifyNowLabel.label_json).toContain("message-label.v3");
 
 		const accepted = await actions.resolveReviewCommand({
 			reviewId: reviewData[0].id,
@@ -328,7 +428,7 @@ describe("worker and server actions", () => {
 			contentSha256: "sha-override",
 		});
 		await actions.queueAccountClassifyBacklogCommand({ accountId: "acct-1" });
-		await worker.drainWorkerUntilIdle();
+		await runWorkerUntilQuiet(worker, db);
 
 		const overrideReview = await db
 			.selectFrom("reviews")
@@ -351,9 +451,10 @@ describe("worker and server actions", () => {
 		const runtime = await createTestRuntime();
 		mockPiModule();
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		const dbModule =
 			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
 		const { db } = await bootDb({ seedDefaultAccount: true });
@@ -373,7 +474,9 @@ describe("worker and server actions", () => {
 		expect(detail.latestProfile).toBeNull();
 		const rowsBeforeLabel = await actions.loadMessagesData();
 		expect(
-			rowsBeforeLabel.some((row) => row.id === messageId && row.label === null),
+			rowsBeforeLabel.rows.some(
+				(row) => row.id === messageId && row.label === null,
+			),
 		).toBe(true);
 
 		const result = await actions.classifyOneNowCommand({ messageId });

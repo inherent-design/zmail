@@ -1,0 +1,327 @@
+{
+  "orgId": "org_01KPADQ5W2MM1C5XNEAW6DFKJD",
+  "beforeCapturedAt": "2026-04-18T22:04:37.756Z",
+  "afterCapturedAt": "2026-04-18T22:06:58.513Z",
+  "tableDiff": [
+    {
+      "table": "accounts",
+      "before": 4,
+      "after": 4,
+      "delta": 0
+    },
+    {
+      "table": "classification_results",
+      "before": 20815,
+      "after": 0,
+      "delta": -20815
+    },
+    {
+      "table": "finance_document_candidates",
+      "before": 796,
+      "after": 0,
+      "delta": -796
+    },
+    {
+      "table": "finance_event_candidates",
+      "before": 553,
+      "after": 0,
+      "delta": -553
+    },
+    {
+      "table": "finance_event_evidence",
+      "before": 1429,
+      "after": 0,
+      "delta": -1429
+    },
+    {
+      "table": "finance_export_items",
+      "before": 0,
+      "after": 0,
+      "delta": 0
+    },
+    {
+      "table": "finance_export_runs",
+      "before": 0,
+      "after": 0,
+      "delta": 0
+    },
+    {
+      "table": "finance_ledger_entries",
+      "before": 0,
+      "after": 0,
+      "delta": 0
+    },
+    {
+      "table": "finance_ledger_entry_sources",
+      "before": 0,
+      "after": 0,
+      "delta": 0
+    },
+    {
+      "table": "finance_model_migration_runs",
+      "before": 0,
+      "after": 1,
+      "delta": 1
+    },
+    {
+      "table": "finance_patterns",
+      "before": 0,
+      "after": 0,
+      "delta": 0
+    },
+    {
+      "table": "finance_v3_archive_rows",
+      "before": 0,
+      "after": 74672,
+      "delta": 74672
+    },
+    {
+      "table": "finance_yearly_rollups",
+      "before": 21,
+      "after": 0,
+      "delta": -21
+    },
+    {
+      "table": "finance_yearly_subcategory_rollups",
+      "before": 31,
+      "after": 0,
+      "delta": -31
+    },
+    {
+      "table": "jobs",
+      "before": 836,
+      "after": 844,
+      "delta": 8
+    },
+    {
+      "table": "message_category_assignment_heads",
+      "before": 10742,
+      "after": 0,
+      "delta": -10742
+    },
+    {
+      "table": "message_category_assignments",
+      "before": 22790,
+      "after": 0,
+      "delta": -22790
+    },
+    {
+      "table": "message_labels",
+      "before": 10742,
+      "after": 0,
+      "delta": -10742
+    },
+    {
+      "table": "message_secondary_heads",
+      "before": 2094,
+      "after": 0,
+      "delta": -2094
+    },
+    {
+      "table": "message_secondary_results",
+      "before": 4601,
+      "after": 0,
+      "delta": -4601
+    },
+    {
+      "table": "messages",
+      "before": 11452,
+      "after": 11452,
+      "delta": 0
+    },
+    {
+      "table": "reviews",
+      "before": 58,
+      "after": 0,
+      "delta": -58
+    },
+    {
+      "table": "runtime_events",
+      "before": 18,
+      "after": 31,
+      "delta": 13
+    }
+  ],
+  "archiveChecks": [
+    {
+      "table": "classification_results",
+      "before": 20815,
+      "archived": 20815,
+      "ok": true
+    },
+    {
+      "table": "message_labels",
+      "before": 10742,
+      "archived": 10742,
+      "ok": true
+    },
+    {
+      "table": "reviews",
+      "before": 58,
+      "archived": 58,
+      "ok": true
+    },
+    {
+      "table": "message_secondary_results",
+      "before": 4601,
+      "archived": 4601,
+      "ok": true
+    },
+    {
+      "table": "message_secondary_heads",
+      "before": 2094,
+      "archived": 2094,
+      "ok": true
+    },
+    {
+      "table": "message_category_assignments",
+      "before": 22790,
+      "archived": 22790,
+      "ok": true
+    },
+    {
+      "table": "message_category_assignment_heads",
+      "before": 10742,
+      "archived": 10742,
+      "ok": true
+    },
+    {
+      "table": "finance_event_evidence",
+      "before": 1429,
+      "archived": 1429,
+      "ok": true
+    },
+    {
+      "table": "finance_event_candidates",
+      "before": 553,
+      "archived": 553,
+      "ok": true
+    },
+    {
+      "table": "finance_document_candidates",
+      "before": 796,
+      "archived": 796,
+      "ok": true
+    },
+    {
+      "table": "finance_yearly_rollups",
+      "before": 21,
+      "archived": 21,
+      "ok": true
+    },
+    {
+      "table": "finance_yearly_subcategory_rollups",
+      "before": 31,
+      "archived": 31,
+      "ok": true
+    }
+  ],
+  "queuedV3": {
+    "root": 4,
+    "finance": 4
+  },
+  "openJobs": [
+    {
+      "kind": "sync_account_full",
+      "scopeId": "c5fcb5f9-e46b-460d-8277-3d0160265e85",
+      "status": "queued",
+      "promptVersion": null,
+      "createdAt": "2026-04-17T20:23:27.069Z"
+    },
+    {
+      "kind": "sync_account_full",
+      "scopeId": "c676d516-3350-42d3-89e9-eb4042f421eb",
+      "status": "queued",
+      "promptVersion": null,
+      "createdAt": "2026-04-17T20:23:44.677Z"
+    },
+    {
+      "kind": "sync_account_full",
+      "scopeId": "13e5d47f-07ea-4e8f-bd45-f992a3210e4f",
+      "status": "queued",
+      "promptVersion": null,
+      "createdAt": "2026-04-17T20:24:03.928Z"
+    },
+    {
+      "kind": "sync_account_full",
+      "scopeId": "bb57fb8f-5b38-4b24-84c8-f35da8170a7b",
+      "status": "queued",
+      "promptVersion": null,
+      "createdAt": "2026-04-17T20:24:19.066Z"
+    },
+    {
+      "kind": "rebuild_finance_knowledge",
+      "scopeId": "finance",
+      "status": "queued",
+      "promptVersion": "finance-knowledge-merge-v1",
+      "createdAt": "2026-04-17T20:24:35.350Z"
+    },
+    {
+      "kind": "rebuild_finance_rollups",
+      "scopeId": "finance_rollups",
+      "status": "queued",
+      "promptVersion": "finance-knowledge-merge-v1",
+      "createdAt": "2026-04-17T20:24:35.350Z"
+    },
+    {
+      "kind": "classify_account_backlog",
+      "scopeId": "13e5d47f-07ea-4e8f-bd45-f992a3210e4f",
+      "status": "queued",
+      "promptVersion": "classify-email-v3",
+      "createdAt": "2026-04-18T22:04:55.671Z"
+    },
+    {
+      "kind": "classify_finance_backlog",
+      "scopeId": "13e5d47f-07ea-4e8f-bd45-f992a3210e4f",
+      "status": "queued",
+      "promptVersion": "finance-intel-v3",
+      "createdAt": "2026-04-18T22:04:55.672Z"
+    },
+    {
+      "kind": "classify_account_backlog",
+      "scopeId": "bb57fb8f-5b38-4b24-84c8-f35da8170a7b",
+      "status": "queued",
+      "promptVersion": "classify-email-v3",
+      "createdAt": "2026-04-18T22:04:55.674Z"
+    },
+    {
+      "kind": "classify_finance_backlog",
+      "scopeId": "bb57fb8f-5b38-4b24-84c8-f35da8170a7b",
+      "status": "queued",
+      "promptVersion": "finance-intel-v3",
+      "createdAt": "2026-04-18T22:04:55.674Z"
+    },
+    {
+      "kind": "classify_finance_backlog",
+      "scopeId": "c5fcb5f9-e46b-460d-8277-3d0160265e85",
+      "status": "queued",
+      "promptVersion": "finance-intel-v3",
+      "createdAt": "2026-04-18T22:04:55.676Z"
+    },
+    {
+      "kind": "classify_account_backlog",
+      "scopeId": "c676d516-3350-42d3-89e9-eb4042f421eb",
+      "status": "queued",
+      "promptVersion": "classify-email-v3",
+      "createdAt": "2026-04-18T22:04:55.677Z"
+    },
+    {
+      "kind": "classify_finance_backlog",
+      "scopeId": "c676d516-3350-42d3-89e9-eb4042f421eb",
+      "status": "queued",
+      "promptVersion": "finance-intel-v3",
+      "createdAt": "2026-04-18T22:04:55.677Z"
+    },
+    {
+      "kind": "classify_account_backlog",
+      "scopeId": "c5fcb5f9-e46b-460d-8277-3d0160265e85",
+      "status": "queued",
+      "promptVersion": "classify-email-v3",
+      "createdAt": "2026-04-18T22:06:39.649Z"
+    }
+  ],
+  "issues": [
+    "legacy open jobs remain: 2",
+    "pre-existing queued non-migration jobs ahead of reclassification: 6"
+  ]
+}

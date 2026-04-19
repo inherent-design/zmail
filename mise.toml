@@ -1,26 +1,127 @@
-[env]
-_.file = ["secrets.enc.yaml"]
-
 [tasks.dev]
-description = "Start the local app with repo-managed Google OAuth secrets loaded"
-run = "pnpm dev"
+description = "Start the local app with repo-managed secrets loaded through mise"
+env = { _.file = ["secrets.enc.yaml", ".env"] }
+run = "pnpm raw:dev"
+
+[tasks.preview]
+description = "Start the preview server with repo-managed secrets loaded through mise"
+env = { _.file = ["secrets.enc.yaml", ".env"] }
+run = "pnpm raw:preview"
 
 [tasks."db:migrate"]
-description = "Run database migrations with repo-managed Google OAuth secrets loaded"
+description = "Run database migrations with repo-managed secrets loaded through mise"
+env = { _.file = ["secrets.enc.yaml", ".env"] }
 run = "pnpm db:migrate"
 
 [tasks."db:reset"]
 description = "Reset the local database and storage"
 run = "pnpm db:reset"
 
-[tasks.check]
-description = "Run the deterministic proof gate"
-run = "pnpm check"
+[tasks.test]
+alias = "t"
+description = "Run quick zmail test suite"
+run = "mise run test:quick"
 
-[tasks."check:full"]
-description = "Run the full proof gate including live Playwright"
-run = "pnpm check:full"
+[tasks."test:quick"]
+description = "Run lint, typecheck, unit, and integration tests"
+run = "pnpm raw:test quick"
+
+[tasks."test:coverage"]
+alias = "cov"
+description = "Run full coverage gate"
+env = { _.file = ["secrets.enc.yaml", ".env"] }
+run = "pnpm raw:test coverage"
+
+[tasks."test:unit"]
+description = "Run unit tests, optionally filtered by domain"
+run = "pnpm raw:test unit"
+
+[tasks."test:integration"]
+description = "Run integration tests"
+run = "pnpm raw:test integration"
+
+[tasks."test:e2e"]
+description = "Run browser E2E tests"
+env = { _.file = ["secrets.enc.yaml", ".env"] }
+run = "pnpm raw:test e2e"
+
+[tasks."test:fuzz"]
+description = "Run property and fuzz tests"
+run = "pnpm raw:test fuzz"
+
+[tasks."test:stress"]
+description = "Run stress tests with suite-managed server"
+env = { _.file = ["secrets.enc.yaml", ".env"] }
+run = "pnpm raw:test stress"
+
+[tasks."test:list"]
+description = "List test suites, domains, buckets, and files"
+run = "pnpm raw:test list"
 
 [tasks."worker:drain"]
 description = "Drain the worker queue once"
+env = { _.file = ["secrets.enc.yaml", ".env"] }
 run = "pnpm worker:drain"
+
+[tasks."finance:import"]
+description = "Import a finance artifact with repo-managed secrets loaded through mise"
+env = { _.file = ["secrets.enc.yaml", ".env"] }
+run = "pnpm finance:import"
+
+[tasks."finance:export"]
+description = "Export current finance ledger to Beancount"
+env = { _.file = ["secrets.enc.yaml", ".env"] }
+run = "pnpm finance:export -- \"$@\""
+
+[tasks."finance:fava"]
+description = "Open a generated finance export package in Fava"
+env = { _.file = ["secrets.enc.yaml", ".env"] }
+run = '''
+out="${1:-}"
+if [ -z "$out" ]; then
+  echo "usage: mise run finance:fava -- <export-dir>" >&2
+  exit 2
+fi
+main="$out/main.beancount"
+if command -v fava >/dev/null 2>&1; then
+  exec fava "$main"
+fi
+exec uvx fava "$main"
+'''
+
+[tasks."audit:corpus"]
+description = "Audit the current org runtime with repo-managed secrets loaded through mise"
+env = { _.file = ["secrets.enc.yaml", ".env"] }
+run = "pnpm audit:corpus"
+
+[tasks."bench:http"]
+description = "Run HTTP benchmarks with repo-managed secrets loaded through mise"
+env = { _.file = ["secrets.enc.yaml", ".env"] }
+run = "pnpm raw:bench:http"
+
+[tasks."bench:sse"]
+description = "Run SSE benchmarks with repo-managed secrets loaded through mise"
+env = { _.file = ["secrets.enc.yaml", ".env"] }
+run = "pnpm raw:bench:sse"
+
+[tasks."obs:up"]
+description = "Start the local Grafana, Loki, Prometheus, and Alloy stack"
+run = "pnpm obs:up"
+
+[tasks."obs:down"]
+description = "Stop the local observability stack"
+run = "pnpm obs:down"
+
+[tasks."obs:logs"]
+description = "Tail local observability stack logs"
+run = "pnpm obs:logs"
+
+[tasks."profile:cpu"]
+description = "Start the server with CPU profiling and repo-managed secrets loaded through mise"
+env = { _.file = ["secrets.enc.yaml", ".env"] }
+run = "pnpm profile:cpu"
+
+[tasks."profile:heap"]
+description = "Start the server with heap profiling and repo-managed secrets loaded through mise"
+env = { _.file = ["secrets.enc.yaml", ".env"] }
+run = "pnpm profile:heap"

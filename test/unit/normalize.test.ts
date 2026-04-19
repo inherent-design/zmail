@@ -320,6 +320,7 @@ describe("normalize", () => {
 			"2026-01-01T00:00:00.000Z",
 		);
 		expect(coerceReceivedAt(new Date("bad"))).toBeNull();
+		expect(coerceReceivedAt(new Date("2611-09-27T03:45:20.000Z"))).toBeNull();
 		expect(coerceReceivedAt(null)).toBeNull();
 	});
 });

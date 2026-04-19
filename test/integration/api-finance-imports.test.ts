@@ -1,65 +1,262 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { createTestRuntime } from "#/test/helpers/runtime";
+
+function buildActionsServerMock(
+	queueImportFinanceArtifactCommand: ReturnType<typeof vi.fn>,
+) {
+	const unused = vi.fn(async () => {
+		throw new Error("not used in this test");
+	});
+	return {
+		beginGoogleConnectCommand: unused,
+		beginGoogleReconnectCommand: unused,
+		classifyOneNowCommand: unused,
+		completeGoogleConnectCommand: unused,
+		disconnectAccountCommand: unused,
+		loadAccountDeleteData: unused,
+		loadAccountDetailData: unused,
+		loadAccountNewData: unused,
+		loadAccountReconnectData: unused,
+		loadAccountsData: unused,
+		loadFinanceData: unused,
+		loadHomeData: unused,
+		loadMessageDetailData: unused,
+		loadMessagesData: unused,
+		loadProfileData: unused,
+		loadReviewData: unused,
+		loadRunsData: unused,
+		pauseAccountSyncCommand: unused,
+		purgeAccountCommand: unused,
+		queueAccountClassifyBacklogCommand: unused,
+		queueAccountDeltaSyncCommand: unused,
+		queueAccountFinanceBacklogCommand: unused,
+		queueAccountFullSyncCommand: unused,
+		queueAccountReconcileCommand: unused,
+		queueImportFinanceArtifactCommand,
+		queueImportOperatorRegistryCommand: unused,
+		queueRebuildFinanceKnowledgeCommand: unused,
+		queueRebuildFinanceRollupsCommand: unused,
+		queueReconcileRegistrySuggestionsCommand: unused,
+		resolveReviewCommand: unused,
+		resumeAccountSyncCommand: unused,
+	};
+}
+
+function buildArtifact(artifactSha256: string) {
+	return {
+		schemaVersion: "finance-source-import.v1",
+		sourceKind: "pdf",
+		sourceFile: {
+			absolutePath: "/tmp/statement.pdf",
+			sha256: "statement-sha",
+			filename: "statement.pdf",
+			importedAt: "2026-04-15T00:00:00.000Z",
+		},
+		artifactSha256,
+		extractor: {
+			runner: "pytest",
+			model: "claude-opus",
+			promptVersion: "finance-source-import.v1",
+			extractedTextHash: "text-sha",
+		},
+		registrySuggestions: {},
+		documents: [],
+		transactions: [],
+		provenance: {},
+	};
+}
 
 describe("POST /api/finance/imports", () => {
-	it("returns 202 and queues a finance import job", async () => {
+	beforeEach(async () => {
+		await createTestRuntime();
+		process.env.NODE_ENV = "test";
+		process.env.ZMAIL_TEST_AUTH_BYPASS = "true";
+		process.env.ZMAIL_TEST_AUTH_ORG_ID = "org-test";
+		process.env.ZMAIL_TEST_AUTH_ROLE = "org_admin";
+		delete process.env.ZMAIL_BASE_PATH;
+		vi.resetModules();
+	});
+
+	for (const role of ["org_admin", "org_operator"] as const) {
+		it(`returns 202 and queues a finance import job for ${role} browser sessions`, async () => {
+			process.env.ZMAIL_TEST_AUTH_ROLE = role;
+			const queueImportFinanceArtifactCommand = vi.fn(
+				async () => `job-import-${role}`,
+			);
+
+			vi.doMock("#/server/actions", () =>
+				buildActionsServerMock(queueImportFinanceArtifactCommand),
+			);
+
+			const { app } = await import("#/server/index");
+			const artifactSha256 = `artifact-sha-${role}`;
+			const response = await app.fetch(
+				new Request("http://localhost/api/finance/imports", {
+					method: "POST",
+					headers: {
+						"content-type": "application/json",
+					},
+					body: JSON.stringify(buildArtifact(artifactSha256)),
+				}),
+			);
+
+			expect(response.status).toBe(202);
+			await expect(response.json()).resolves.toEqual({
+				ok: true,
+				status: "queued",
+				jobId: `job-import-${role}`,
+				artifactSha256,
+			});
+			expect(queueImportFinanceArtifactCommand).toHaveBeenCalledWith({
+				artifact: expect.objectContaining({
+					schemaVersion: "finance-source-import.v1",
+					sourceKind: "pdf",
+				}),
+			});
+		});
+	}
+
+	it("returns 403 for org_viewer browser sessions", async () => {
+		process.env.ZMAIL_TEST_AUTH_ROLE = "org_viewer";
 		const queueImportFinanceArtifactCommand = vi.fn(async () => "job-import-1");
 
-		vi.doMock("@tanstack/react-router", () => ({
-			createFileRoute: () => (config: Record<string, unknown>) => config,
-		}));
-		vi.doMock("#/app/server/actions.server", () => ({
-			queueImportFinanceArtifactCommand,
-		}));
+		vi.doMock("#/server/actions", () =>
+			buildActionsServerMock(queueImportFinanceArtifactCommand),
+		);
 
-		const route = await import("#/app/routes/api.finance.imports");
-		const response = await (
-			route.Route as unknown as {
-				server: {
-					handlers: {
-						POST: (input: { request: Request }) => Promise<Response>;
-					};
-				};
-			}
-		).server.handlers.POST({
-			request: new Request("http://localhost/api/finance/imports", {
+		const { app } = await import("#/server/index");
+		const response = await app.fetch(
+			new Request("http://localhost/api/finance/imports", {
 				method: "POST",
 				headers: {
 					"content-type": "application/json",
 				},
-				body: JSON.stringify({
-					schemaVersion: "finance-source-import.v1",
-					sourceKind: "pdf",
-					sourceFile: {
-						absolutePath: "/tmp/statement.pdf",
-						fileSha256: "statement-sha",
-						filename: "statement.pdf",
-						importedAt: "2026-04-15T00:00:00.000Z",
-					},
-					artifactSha256: "artifact-sha",
-					extractor: {
-						runner: "pytest",
-						model: "claude-opus",
-						promptVersion: "finance-source-import.v1",
-						extractedTextHash: "text-sha",
-					},
-					registrySuggestions: {},
-					documents: [],
-					transactions: [],
-					provenance: {},
-				}),
+				body: JSON.stringify(buildArtifact("artifact-sha-viewer")),
 			}),
+		);
+
+		expect(response.status).toBe(403);
+		await expect(response.json()).resolves.toEqual({
+			ok: false,
+			error: "forbidden",
 		});
+		expect(queueImportFinanceArtifactCommand).not.toHaveBeenCalled();
+	});
+
+	it("returns 400 for invalid JSON", async () => {
+		const queueImportFinanceArtifactCommand = vi.fn(async () => "job-import-1");
+		vi.doMock("#/server/actions", () =>
+			buildActionsServerMock(queueImportFinanceArtifactCommand),
+		);
+
+		const { app } = await import("#/server/index");
+		const response = await app.fetch(
+			new Request("http://localhost/api/finance/imports", {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+				},
+				body: "{",
+			}),
+		);
+
+		expect(response.status).toBe(400);
+		await expect(response.json()).resolves.toEqual({
+			ok: false,
+			error: "invalid_json",
+		});
+		expect(queueImportFinanceArtifactCommand).not.toHaveBeenCalled();
+	});
+
+	it("accepts a validated machine principal on the finance import route", async () => {
+		const queueImportFinanceArtifactCommand = vi.fn(
+			async () => "job-import-m2m",
+		);
+
+		vi.doMock("#/server/actions", () =>
+			buildActionsServerMock(queueImportFinanceArtifactCommand),
+		);
+		vi.doMock("#/server/machine-auth", () => ({
+			bearerTokenFromRequest: vi.fn(() => "machine-token"),
+			authenticateMachineToken: vi.fn(async () => ({
+				kind: "machine" as const,
+				sub: "machine-user",
+				orgId: "org-machine",
+				authMode: "workos_m2m" as const,
+			})),
+		}));
+
+		const { app } = await import("#/server/index");
+		const response = await app.fetch(
+			new Request("http://localhost/api/finance/imports", {
+				method: "POST",
+				headers: {
+					authorization: "Bearer machine-token",
+					"content-type": "application/json",
+				},
+				body: JSON.stringify(buildArtifact("artifact-sha-machine")),
+			}),
+		);
 
 		expect(response.status).toBe(202);
 		await expect(response.json()).resolves.toEqual({
 			ok: true,
-			jobId: "job-import-1",
+			status: "queued",
+			jobId: "job-import-m2m",
+			artifactSha256: "artifact-sha-machine",
 		});
-		expect(queueImportFinanceArtifactCommand).toHaveBeenCalledWith({
-			artifact: expect.objectContaining({
-				schemaVersion: "finance-source-import.v1",
-				sourceKind: "pdf",
+	});
+
+	it("rejects bearer tokens on browser-only rpc routes", async () => {
+		const queueImportFinanceArtifactCommand = vi.fn(async () => "job-import-1");
+
+		vi.doMock("#/server/actions", () =>
+			buildActionsServerMock(queueImportFinanceArtifactCommand),
+		);
+
+		const { app } = await import("#/server/index");
+		const response = await app.fetch(
+			new Request("http://localhost/rpc/finance/registry/import", {
+				method: "POST",
+				headers: {
+					authorization: "Bearer machine-token",
+				},
 			}),
+		);
+
+		expect(response.status).toBe(401);
+		await expect(response.json()).resolves.toEqual({
+			ok: false,
+			error: "machine_tokens_not_allowed",
+		});
+	});
+
+	it("serves the finance import api under the configured base path", async () => {
+		process.env.ZMAIL_BASE_PATH = "/zmail";
+		const queueImportFinanceArtifactCommand = vi.fn(async () => "job-import-2");
+
+		vi.doMock("#/server/actions", () =>
+			buildActionsServerMock(queueImportFinanceArtifactCommand),
+		);
+
+		const { app } = await import("#/server/index");
+		const response = await app.fetch(
+			new Request("http://localhost/zmail/api/finance/imports", {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+				},
+				body: JSON.stringify(buildArtifact("artifact-sha-zmail")),
+			}),
+		);
+
+		expect(response.status).toBe(202);
+		await expect(response.json()).resolves.toEqual({
+			ok: true,
+			status: "queued",
+			jobId: "job-import-2",
+			artifactSha256: "artifact-sha-zmail",
 		});
 	});
 });

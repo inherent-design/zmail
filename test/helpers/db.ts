@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 type TestDb = Awaited<ReturnType<typeof import("#/lib/db")["getDb"]>>;
 
@@ -8,6 +10,7 @@ export async function seedTestAccount(
 		id?: string;
 		label?: string;
 		emailAddress?: string;
+		ownerPrincipalEmail?: string | null;
 		syncEnabled?: number;
 		syncStatus?:
 			| "idle"
@@ -29,6 +32,7 @@ export async function seedTestAccount(
 			id,
 			label: input?.label ?? "Test Account",
 			email_address: emailAddress,
+			owner_principal_email: input?.ownerPrincipalEmail ?? null,
 			provider_kind: "gmail",
 			sync_enabled: input?.syncEnabled ?? 1,
 			sync_status: input?.syncStatus ?? "idle",
@@ -43,6 +47,11 @@ export async function seedTestAccount(
 			oc.column("id").doUpdateSet({
 				label: input?.label ?? "Test Account",
 				email_address: emailAddress,
+				...(input?.ownerPrincipalEmail !== undefined
+					? {
+							owner_principal_email: input.ownerPrincipalEmail,
+						}
+					: {}),
 				sync_enabled: input?.syncEnabled ?? 1,
 				sync_status: input?.syncStatus ?? "idle",
 				updated_at: nowIso(),
@@ -146,9 +155,47 @@ export async function seedLegacyPreSecondarySchema() {
 	`);
 }
 
-export async function seedSecondaryTablesMissingSchema() {
+export async function seedStaleCanonicalMigrationHistory(input?: {
+	orgId?: string;
+	withSampleData?: boolean;
+	missingOwnerPrincipalEmail?: boolean;
+	missingConnectionState?: boolean;
+	migrationNames?: string[];
+}) {
 	const dbModule = await import("#/lib/db");
-	const sqlite = dbModule.getSqlite();
+	const sqlite = dbModule.getSqlite(input?.orgId);
+	const canonicalSql = readFileSync(
+		resolve(process.cwd(), "db", "migrations", "001_init.sql"),
+		"utf8",
+	);
+	let staleSql = canonicalSql;
+	if (input?.missingOwnerPrincipalEmail !== false) {
+		staleSql = staleSql.replace("  owner_principal_email TEXT,\n", "");
+	}
+	if (input?.missingConnectionState) {
+		staleSql = staleSql.replace(
+			/ {2}updated_at TEXT NOT NULL,\n {2}connection_state TEXT NOT NULL DEFAULT 'connected'\n {2}CHECK \(connection_state IN \('connected', 'config_error', 'paused', 'needs_reconnect', 'disconnected'\)\)\);/,
+			"  updated_at TEXT NOT NULL\n);",
+		);
+	}
+	if (
+		staleSql === canonicalSql &&
+		(input?.missingOwnerPrincipalEmail !== false ||
+			input?.missingConnectionState)
+	) {
+		throw new Error("Expected canonical 001_init.sql to contain owner column");
+	}
+	const migrationNames = input?.migrationNames ?? [
+		"001_init.sql",
+		"002_secondary_schema.sql",
+		"003_finance_imports_and_taxonomy.sql",
+		"004_runtime_events.sql",
+	];
+	const migrationRows = migrationNames
+		.map((name, index) => `('${name}', '2026-04-15T0${index}:00:00.000Z')`)
+		.join(",\n\t\t\t");
+
+	sqlite.exec(staleSql);
 	sqlite.exec(`
 		CREATE TABLE IF NOT EXISTS _migrations (
 			name TEXT PRIMARY KEY,
@@ -156,193 +203,157 @@ export async function seedSecondaryTablesMissingSchema() {
 		);
 		DELETE FROM _migrations;
 		INSERT INTO _migrations (name, applied_at)
-		VALUES ('001_init.sql', '2026-04-14T17:27:01.540Z');
+		VALUES
+			${migrationRows};
+	`);
 
-		CREATE TABLE IF NOT EXISTS accounts (
-			id TEXT PRIMARY KEY,
-			label TEXT NOT NULL,
-			email_address TEXT NOT NULL,
-			provider_kind TEXT NOT NULL DEFAULT 'gmail',
-			sync_enabled INTEGER NOT NULL DEFAULT 0,
-			sync_status TEXT NOT NULL DEFAULT 'idle',
-			source_truth TEXT NOT NULL DEFAULT 'corpus_mirror',
-			selected_mailbox TEXT NOT NULL DEFAULT '[Gmail]/All Mail',
-			last_synced_at TEXT,
-			last_error TEXT,
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
+	if (!input?.withSampleData) {
+		return;
+	}
+
+	sqlite.exec(`
+		INSERT INTO accounts (
+			id,
+			label,
+			email_address,
+			provider_kind,
+			sync_enabled,
+			sync_status,
+			source_truth,
+			selected_mailbox,
+			last_synced_at,
+			last_error,
+			created_at,
+			updated_at
+		)
+		VALUES (
+			'acct-stale',
+			'Stale Account',
+			'stale@example.com',
+			'gmail',
+			1,
+			'idle',
+			'corpus_mirror',
+			'[Gmail]/All Mail',
+			NULL,
+			NULL,
+			'2026-01-01T00:00:00.000Z',
+			'2026-01-01T00:00:00.000Z'
 		);
 
-		CREATE TABLE IF NOT EXISTS account_sync_state (
-			account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
-			uidvalidity INTEGER,
-			latest_uid_cursor INTEGER,
-			earliest_uid_cursor INTEGER,
-			backfill_snapshot_uid INTEGER,
-			backfill_next_uid INTEGER,
-			last_bootstrap_started_at TEXT,
-			last_bootstrap_completed_at TEXT,
-			last_delta_sync_at TEXT,
-			last_reconcile_at TEXT,
-			last_backfill_sync_at TEXT,
-			backfill_completed_at TEXT,
-			last_idle_started_at TEXT,
-			last_idle_heartbeat_at TEXT,
-			watcher_status TEXT NOT NULL DEFAULT 'stopped',
-			consecutive_failures INTEGER NOT NULL DEFAULT 0,
-			backoff_until TEXT,
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
+		INSERT INTO messages (
+			id,
+			account_id,
+			message_id,
+			thread_key,
+			received_at,
+			ingested_at,
+			conversation_id,
+			sender_name,
+			sender_address,
+			to_json,
+			cc_json,
+			subject,
+			in_reply_to,
+			body_text_primary,
+			body_text_forwarded,
+			body_text_normalized,
+			snippet,
+			attachment_count,
+			has_html,
+			raw_byte_start,
+			raw_byte_end,
+			parse_status,
+			body_extraction_strategy,
+			parse_error_reason,
+			token_estimate,
+			content_sha256,
+			created_at
+		)
+		VALUES (
+			'msg-stale',
+			'acct-stale',
+			'remote-stale',
+			'thread-stale',
+			'2026-01-01T00:00:00.000Z',
+			'2026-01-01T00:00:00.000Z',
+			NULL,
+			'Sender',
+			'sender@example.com',
+			'[]',
+			'[]',
+			'Subject',
+			NULL,
+			'Primary body',
+			'',
+			'Primary body',
+			'Snippet',
+			0,
+			0,
+			0,
+			0,
+			'parsed',
+			'plain_text',
+			NULL,
+			10,
+			'sha-msg-stale',
+			'2026-01-01T00:00:00.000Z'
 		);
 
-		CREATE TABLE IF NOT EXISTS conversations (
-			id TEXT PRIMARY KEY,
-			account_id TEXT NOT NULL,
-			gmail_thread_id TEXT NOT NULL,
-			first_message_received_at TEXT,
-			last_message_received_at TEXT,
-			message_count INTEGER NOT NULL DEFAULT 0,
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
+		INSERT INTO classification_results (
+			id,
+			job_id,
+			message_id,
+			schema_version,
+			model,
+			prompt_version,
+			source,
+			result_json,
+			raw_response_json,
+			usage_json,
+			low_confidence,
+			input_content_sha256,
+			created_at
+		)
+		VALUES (
+			'class-stale',
+			NULL,
+			'msg-stale',
+			'message-label.v2',
+			'gpt-test',
+			'classify-email-v2',
+			'model',
+			'{}',
+			'{}',
+			NULL,
+			0,
+			'sha-msg-stale',
+			'2026-01-01T00:00:00.000Z'
 		);
 
-		CREATE TABLE IF NOT EXISTS messages (
-			id TEXT PRIMARY KEY,
-			account_id TEXT NOT NULL,
-			message_id TEXT NOT NULL,
-			thread_key TEXT NOT NULL,
-			received_at TEXT,
-			ingested_at TEXT NOT NULL,
-			conversation_id TEXT,
-			sender_name TEXT,
-			sender_address TEXT,
-			to_json TEXT NOT NULL,
-			cc_json TEXT NOT NULL,
-			subject TEXT,
-			in_reply_to TEXT,
-			body_text_primary TEXT NOT NULL DEFAULT '',
-			body_text_forwarded TEXT NOT NULL DEFAULT '',
-			body_text_normalized TEXT NOT NULL,
-			snippet TEXT NOT NULL,
-			attachment_count INTEGER NOT NULL DEFAULT 0,
-			has_html INTEGER NOT NULL DEFAULT 0,
-			raw_byte_start INTEGER NOT NULL DEFAULT 0,
-			raw_byte_end INTEGER NOT NULL DEFAULT 0,
-			parse_status TEXT NOT NULL,
-			body_extraction_strategy TEXT NOT NULL DEFAULT 'plain_text',
-			parse_error_reason TEXT,
-			token_estimate INTEGER NOT NULL DEFAULT 0,
-			content_sha256 TEXT,
-			created_at TEXT NOT NULL
-		);
-
-		CREATE TABLE IF NOT EXISTS attachments (
-			id TEXT PRIMARY KEY,
-			message_id TEXT NOT NULL,
-			filename TEXT,
-			mime_type TEXT,
-			size_bytes INTEGER NOT NULL DEFAULT 0,
-			content_id TEXT,
-			is_inline INTEGER NOT NULL DEFAULT 0
-		);
-
-		CREATE TABLE IF NOT EXISTS message_sources (
-			id TEXT PRIMARY KEY,
-			message_id TEXT NOT NULL,
-			account_id TEXT NOT NULL,
-			remote_message_id TEXT,
-			remote_thread_id TEXT,
-			mailbox TEXT,
-			imap_uid INTEGER,
-			uidvalidity INTEGER,
-			raw_rfc822_path TEXT,
-			raw_sha256 TEXT,
-			state TEXT NOT NULL DEFAULT 'active',
-			first_seen_at TEXT NOT NULL,
-			last_seen_at TEXT NOT NULL,
-			tombstoned_at TEXT,
-			updated_at TEXT NOT NULL
-		);
-
-		CREATE TABLE IF NOT EXISTS jobs (
-			id TEXT PRIMARY KEY,
-			kind TEXT NOT NULL,
-			scope_type TEXT NOT NULL,
-			scope_id TEXT NOT NULL,
-			status TEXT NOT NULL,
-			model TEXT,
-			prompt_version TEXT,
-			request_count INTEGER NOT NULL DEFAULT 0,
-			success_count INTEGER NOT NULL DEFAULT 0,
-			error_count INTEGER NOT NULL DEFAULT 0,
-			claimed_at TEXT,
-			lease_expires_at TEXT,
-			attempts INTEGER NOT NULL DEFAULT 0,
-			last_error TEXT,
-			created_at TEXT NOT NULL,
-			started_at TEXT,
-			finished_at TEXT,
-			meta_json TEXT NOT NULL DEFAULT '{}'
-		);
-
-		CREATE TABLE IF NOT EXISTS moderation_results (
-			id TEXT PRIMARY KEY,
-			job_id TEXT,
-			message_id TEXT NOT NULL UNIQUE,
-			model TEXT NOT NULL,
-			categories_json TEXT NOT NULL,
-			category_scores_json TEXT NOT NULL,
-			raw_response_json TEXT NOT NULL,
-			nsfw_flag INTEGER NOT NULL DEFAULT 0,
-			created_at TEXT NOT NULL
-		);
-
-		CREATE TABLE IF NOT EXISTS classification_results (
-			id TEXT PRIMARY KEY,
-			job_id TEXT,
-			message_id TEXT NOT NULL,
-			model TEXT NOT NULL,
-			prompt_version TEXT NOT NULL,
-			source TEXT NOT NULL,
-			result_json TEXT NOT NULL,
-			raw_response_json TEXT NOT NULL,
-			usage_json TEXT,
-			low_confidence INTEGER NOT NULL DEFAULT 0,
-			input_content_sha256 TEXT,
-			created_at TEXT NOT NULL
-		);
-
-		CREATE TABLE IF NOT EXISTS message_labels (
-			message_id TEXT PRIMARY KEY,
-			classification_result_id TEXT NOT NULL,
-			source TEXT NOT NULL,
-			label_json TEXT NOT NULL,
-			primary_bucket TEXT NOT NULL,
-			low_confidence INTEGER NOT NULL DEFAULT 0,
-			nsfw INTEGER NOT NULL DEFAULT 0,
-			content_sha256 TEXT,
-			updated_at TEXT NOT NULL
-		);
-
-		CREATE TABLE IF NOT EXISTS reviews (
-			id TEXT PRIMARY KEY,
-			message_id TEXT NOT NULL,
-			source_classification_result_id TEXT NOT NULL,
-			status TEXT NOT NULL,
-			reviewer_note TEXT,
-			override_label_json TEXT,
-			created_at TEXT NOT NULL,
-			resolved_at TEXT
-		);
-
-		CREATE TABLE IF NOT EXISTS overseer_profiles (
-			id TEXT PRIMARY KEY,
-			account_id TEXT NOT NULL,
-			built_from_messages INTEGER NOT NULL DEFAULT 0,
-			promoted_tags_json TEXT NOT NULL,
-			prompt_preamble TEXT NOT NULL,
-			profile_json TEXT NOT NULL,
-			created_at TEXT NOT NULL
+		INSERT INTO message_labels (
+			message_id,
+			classification_result_id,
+			schema_version,
+			source,
+			label_json,
+			primary_bucket,
+			low_confidence,
+			nsfw,
+			content_sha256,
+			updated_at
+		)
+		VALUES (
+			'msg-stale',
+			'class-stale',
+			'message-label.v2',
+			'model',
+			'{}',
+			'finance',
+			0,
+			0,
+			'sha-msg-stale',
+			'2026-01-01T00:00:00.000Z'
 		);
 	`);
 }
@@ -449,20 +460,26 @@ export async function insertMessageLabelRow(
 		nsfw?: number;
 		contentSha256?: string | null;
 		label?: Record<string, unknown>;
+		promptVersion?: string;
+		promptSha256?: string | null;
 	},
 ) {
 	const { nowIso } = await import("#/lib/config");
+	const { CLASSIFY_PROMPT_VERSION } = await import("#/lib/config");
+	const { promptSha256ForName } = await import("#/lib/prompt-identity");
 	const label =
 		input.label ??
 		({
-			schemaVersion: "message-label.v2",
+			schemaVersion: "message-label.v3",
 			nsfw: false,
 			finance: {
 				relevant: false,
-				direction: "unknown",
-				owner: "unknown",
-				accountHint: null,
-				purpose: null,
+				signal: "none",
+				operational: false,
+				bookHint: "unknown",
+				requiresFinanceIntel: false,
+				confidence: 1,
+				evidence: null,
 			},
 			people: {
 				personal: false,
@@ -518,6 +535,16 @@ export async function insertMessageLabelRow(
 			},
 			explanation: "ok",
 		} satisfies Record<string, unknown>);
+	const derivedPrimaryBucket =
+		input.primaryBucket ??
+		(typeof label.routing === "object" &&
+		label.routing !== null &&
+		"primaryBucket" in label.routing
+			? String(
+					(label.routing as { primaryBucket?: string }).primaryBucket ??
+						"other",
+				)
+			: "other");
 
 	await db
 		.insertInto("classification_results")
@@ -527,9 +554,14 @@ export async function insertMessageLabelRow(
 			message_id: input.messageId,
 			schema_version:
 				(input.label?.schemaVersion as string | undefined) ??
-				"message-label.v2",
+				"message-label.v3",
 			model: input.source === "manual" ? "manual" : "gpt-5.4-mini",
-			prompt_version: "classify-email-v2",
+			prompt_version: input.promptVersion ?? CLASSIFY_PROMPT_VERSION,
+			prompt_sha256:
+				input.promptSha256 ??
+				(input.source === "manual"
+					? null
+					: promptSha256ForName("classify-email-v3.md")),
 			source: input.source ?? "model",
 			result_json: JSON.stringify(label),
 			raw_response_json: "{}",
@@ -547,14 +579,63 @@ export async function insertMessageLabelRow(
 			classification_result_id: `classification-${input.messageId}`,
 			schema_version:
 				(input.label?.schemaVersion as string | undefined) ??
-				"message-label.v2",
+				"message-label.v3",
 			source: input.source ?? "model",
 			label_json: JSON.stringify(label),
-			primary_bucket: input.primaryBucket ?? "other",
+			primary_bucket: derivedPrimaryBucket,
 			low_confidence: input.lowConfidence ?? 0,
 			nsfw: input.nsfw ?? 0,
 			content_sha256: input.contentSha256 ?? null,
 			updated_at: nowIso(),
+		})
+		.execute();
+}
+
+export async function insertModerationResultRow(
+	db: TestDb,
+	input: {
+		messageId: string;
+		jobId?: string | null;
+		model?: string;
+		nsfw?: boolean;
+	},
+) {
+	const [{ nowIso, MODERATION_PROMPT_VERSION }, { jsonText }] =
+		await Promise.all([import("#/lib/config"), import("#/lib/db")]);
+	const moderation = {
+		nsfw: input.nsfw ?? false,
+		categories: {
+			explicitSexual: false,
+			suggestiveSexual: false,
+			nudity: false,
+			sexualMinors: false,
+			adultCommercial: false,
+		},
+		scores: {
+			explicitSexual: 0.01,
+			suggestiveSexual: 0.02,
+			nudity: 0.01,
+			sexualMinors: 0,
+			adultCommercial: 0.03,
+			overall: 0.03,
+		},
+		explanation: "safe",
+	};
+	await db
+		.insertInto("moderation_results")
+		.values({
+			id: `moderation-${input.messageId}`,
+			job_id: input.jobId ?? null,
+			message_id: input.messageId,
+			model: input.model ?? "gpt-5.4-mini",
+			categories_json: jsonText(moderation.categories),
+			category_scores_json: jsonText(moderation.scores),
+			raw_response_json: jsonText({
+				promptVersion: MODERATION_PROMPT_VERSION,
+				backend: "test",
+			}),
+			nsfw_flag: moderation.nsfw ? 1 : 0,
+			created_at: nowIso(),
 		})
 		.execute();
 }
@@ -568,9 +649,13 @@ export async function insertSecondaryResultRow(
 		contentSha256?: string | null;
 		registrySha256?: string | null;
 		result?: Record<string, unknown>;
+		promptVersion?: string;
+		promptSha256?: string | null;
 	},
 ) {
 	const { nowIso } = await import("#/lib/config");
+	const { FINANCE_INTEL_PROMPT_VERSION } = await import("#/lib/config");
+	const { promptSha256ForName } = await import("#/lib/prompt-identity");
 	const resultId = `secondary-${input.messageId}`;
 	await db
 		.insertInto("message_secondary_results")
@@ -580,16 +665,29 @@ export async function insertSecondaryResultRow(
 			classifier_key: input.classifierKey ?? "finance_intel",
 			schema_version:
 				(input.result?.schemaVersion as string | undefined) ??
-				"finance-intel.v2",
+				"finance-intel.v3",
 			job_id: null,
 			model: "gpt-5.4-mini",
-			prompt_version: "finance-intel-v2",
+			prompt_version: input.promptVersion ?? FINANCE_INTEL_PROMPT_VERSION,
+			prompt_sha256:
+				input.promptSha256 ?? promptSha256ForName("finance-intel-v3.md"),
 			source: "model",
 			result_json: JSON.stringify(
 				input.result ?? {
-					schemaVersion: "finance-intel.v2",
+					schemaVersion: "finance-intel.v3",
 					messageKind: "receipt",
 					actionability: "create_transaction_candidate",
+					book: {
+						scope: "unknown",
+						businessUsePercent: null,
+						taxTreatmentHint: null,
+						evidence: null,
+					},
+					ledgerReadiness: {
+						status: "review",
+						reasons: ["no fixture transaction"],
+						requiredFixes: ["transaction"],
+					},
 					transactionCandidates: [],
 					documentCandidates: [],
 					matchedRegistryRefs: {
@@ -601,6 +699,21 @@ export async function insertSecondaryResultRow(
 						identityHints: [],
 						institutionHints: [],
 						financialAccountHints: [],
+					},
+					dedupe: {
+						messageEvidenceKey: null,
+						sourceDocumentRefs: [],
+						externalTransactionIds: [],
+						normalizedComposites: [],
+					},
+					fieldConfidence: {
+						amount: null,
+						date: null,
+						counterparty: null,
+						accountMapping: null,
+						book: null,
+						category: null,
+						dedupe: null,
 					},
 					confidence: {
 						overall: 1,
@@ -750,8 +863,7 @@ export async function insertMessageSourceRow(
 			remote_message_id: input.remoteMessageId,
 			remote_thread_id: input.remoteThreadId,
 			mailbox: input.mailbox ?? "[Gmail]/All Mail",
-			imap_uid:
-				input && "imapUid" in input ? (input.imapUid ?? null) : null,
+			imap_uid: input && "imapUid" in input ? (input.imapUid ?? null) : null,
 			uidvalidity:
 				input && "uidvalidity" in input ? (input.uidvalidity ?? null) : null,
 			raw_rfc822_path:

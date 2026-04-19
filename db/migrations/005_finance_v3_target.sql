@@ -1,0 +1,4 @@
+-- 005: Stable history stamp for finance v3 target columns and indexes.
+--
+-- The finance v3 target schema is now part of the canonical 001 baseline.
+-- Existing databases are repaired through adopt-history guarded DDL.

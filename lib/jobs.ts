@@ -3,6 +3,11 @@ import { randomUUID } from "node:crypto";
 import { APP_CONFIG, nowIso } from "#/lib/config";
 import { getDb, getSqlite, jsonText, safeJsonParse } from "#/lib/db";
 import { startTrace } from "#/lib/log";
+import {
+	publishActionEvent,
+	trackRuntimeEventTask,
+} from "#/lib/runtime-events";
+import { recordJobClaim } from "#/lib/observability";
 
 export type JobKind =
 	| "rebuild_overseer"
@@ -11,6 +16,7 @@ export type JobKind =
 	| "import_operator_registry"
 	| "reconcile_registry_suggestions"
 	| "import_finance_artifact"
+	| "export_finance_beancount"
 	| "sync_account_full"
 	| "sync_account_delta"
 	| "sync_account_backfill"
@@ -38,6 +44,66 @@ export interface JobRecord {
 	started_at: string | null;
 	finished_at: string | null;
 	meta_json: string;
+}
+
+function jobTopics(job: {
+	kind: string;
+	scope_type: string;
+	scope_id: string;
+}) {
+	const topics = new Set<string>(["jobs"]);
+	if (job.scope_type === "account") {
+		topics.add(`account:${job.scope_id}`);
+		topics.add("accounts");
+	}
+	if (
+		job.scope_id === "finance" ||
+		job.kind.includes("finance") ||
+		job.kind.includes("registry")
+	) {
+		topics.add("finance");
+	}
+	return [...topics];
+}
+
+function publishJobEvent(
+	job: {
+		id: string;
+		kind: string;
+		scope_type: string;
+		scope_id: string;
+		status: string;
+		request_count: number;
+		success_count: number;
+		error_count: number;
+		last_error: string | null;
+		meta_json: string;
+	},
+	eventType: string,
+) {
+	const payload = {
+		jobId: job.id,
+		kind: job.kind,
+		scopeType: job.scope_type,
+		scopeId: job.scope_id,
+		status: job.status,
+		requestCount: job.request_count,
+		successCount: job.success_count,
+		errorCount: job.error_count,
+		lastError: job.last_error,
+		meta: safeJsonParse(job.meta_json, {}),
+	};
+	for (const topic of jobTopics(job)) {
+		void trackRuntimeEventTask(
+			publishActionEvent({
+				topic,
+				eventType,
+				entityKind: "job",
+				entityId: job.id,
+				payload,
+			}),
+		);
+	}
 }
 
 export function parseJobMeta<T extends object>(
@@ -117,6 +183,21 @@ export async function queueJob(input: {
 			meta_json: jsonText(input.meta ?? {}),
 		})
 		.execute();
+	publishJobEvent(
+		{
+			id,
+			kind: input.kind,
+			scope_type: input.scopeType,
+			scope_id: input.scopeId,
+			status: "queued",
+			request_count: 0,
+			success_count: 0,
+			error_count: 0,
+			last_error: null,
+			meta_json: jsonText(input.meta ?? {}),
+		},
+		"job.queued",
+	);
 	trace.complete("job.queued", {
 		job_id: id,
 		model: input.model ?? undefined,
@@ -237,6 +318,8 @@ export function claimNextJob() {
 
 	const claimed = transaction() ?? null;
 	if (claimed) {
+		recordJobClaim(claimed);
+		publishJobEvent(claimed, "job.claimed");
 		startTrace({
 			kind: "job",
 			operation: "claim_job",
@@ -317,6 +400,23 @@ export async function updateJob(input: {
 		})
 		.where("id", "=", input.id)
 		.execute();
+	const updated = await db
+		.selectFrom("jobs")
+		.select([
+			"id",
+			"kind",
+			"scope_type",
+			"scope_id",
+			"status",
+			"request_count",
+			"success_count",
+			"error_count",
+			"last_error",
+			"meta_json",
+		])
+		.where("id", "=", input.id)
+		.executeTakeFirstOrThrow();
+	publishJobEvent(updated, "job.updated");
 }
 
 export async function completeJob(input: {

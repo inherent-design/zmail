@@ -86,6 +86,7 @@ export async function persistSecondaryResult<TResult>(input: {
 	model: string;
 	backend: string;
 	promptVersion: string;
+	promptSha256?: string | null;
 	source: string;
 	rawResponse: unknown;
 	usage: unknown;
@@ -125,6 +126,7 @@ export async function persistSecondaryResult<TResult>(input: {
 			job_id: input.jobId,
 			model: input.model,
 			prompt_version: input.promptVersion,
+			prompt_sha256: input.promptSha256 ?? null,
 			source: input.source,
 			result_json: jsonText(input.result),
 			raw_response_json: jsonText({
@@ -161,12 +163,16 @@ export function isSecondaryHeadCurrent(
 				status: string;
 				content_sha256: string | null;
 				registry_sha256: string | null;
+				prompt_version?: string | null;
+				prompt_sha256?: string | null;
 		  }
 		| null
 		| undefined,
 	input: {
 		contentSha256: string | null;
 		registrySha256: string | null;
+		promptVersion?: string | null;
+		promptSha256?: string | null;
 	},
 ) {
 	if (!head) {
@@ -175,6 +181,18 @@ export function isSecondaryHeadCurrent(
 	if (
 		head.content_sha256 !== input.contentSha256 ||
 		head.registry_sha256 !== input.registrySha256
+	) {
+		return false;
+	}
+	if (
+		input.promptVersion !== undefined &&
+		head.prompt_version !== input.promptVersion
+	) {
+		return false;
+	}
+	if (
+		input.promptSha256 !== undefined &&
+		head.prompt_sha256 !== input.promptSha256
 	) {
 		return false;
 	}

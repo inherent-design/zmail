@@ -10,12 +10,12 @@ import { getDb, jsonText, safeJsonParse } from "#/lib/db";
 import {
 	type ClassificationRule,
 	classificationRulesFileSchema,
-	type FinanceIntelV2,
+	type FinanceIntelV3,
 	type FinanceTaxonomyFile,
 	financeTaxonomyFileSchema,
-	type MessageLabelV2,
-	normalizeFinanceIntel,
-	normalizeMessageLabel,
+	type MessageLabelV3,
+	parseCurrentFinanceIntel,
+	parseCurrentMessageLabel,
 	type RootTaxonomyFile,
 	type RuleProjectionSource,
 	rootTaxonomyFileSchema,
@@ -167,7 +167,7 @@ function writeYamlIfMissing(path: string, value: unknown) {
 	if (existsSync(path)) {
 		return;
 	}
-	writeFileSync(path, `${stringify(value)}`.trimEnd() + "\n", "utf8");
+	writeFileSync(path, `${stringify(value).trimEnd()}\n`, "utf8");
 }
 
 export function ensureClassificationConfigFiles(
@@ -396,8 +396,8 @@ function matchesRule(input: {
 		subject: string | null;
 		attachments: Array<{ filename: string | null; mime_type: string | null }>;
 	};
-	rootLabel: MessageLabelV2;
-	financeIntel: FinanceIntelV2 | null;
+	rootLabel: MessageLabelV3;
+	financeIntel: FinanceIntelV3 | null;
 }) {
 	const { match } = input.rule;
 	if (match.senderDomain) {
@@ -523,7 +523,7 @@ export async function projectMessageCategoryAssignment(messageId: string) {
 		throw error;
 	}
 
-	const rootLabel = normalizeMessageLabel(
+	const rootLabel = parseCurrentMessageLabel(
 		safeJsonParse(message.label_json ?? null, null),
 	);
 	if (!rootLabel) {
@@ -535,7 +535,7 @@ export async function projectMessageCategoryAssignment(messageId: string) {
 		.select(["filename", "mime_type"])
 		.where("message_id", "=", messageId)
 		.execute();
-	const financeIntel = normalizeFinanceIntel(
+	const financeIntel = parseCurrentFinanceIntel(
 		safeJsonParse(message.finance_result_json ?? null, null),
 	);
 
@@ -704,7 +704,11 @@ export async function listPendingMessageCategoryAssignmentIds(input?: {
 						"!=",
 						config.sha256,
 					),
-					eb(sql<string>`coalesce(message_category_assignment_heads.finance_result_id, '')`, "!=", sql<string>`coalesce(finance_heads.secondary_result_id, '')`),
+					eb(
+						sql<string>`coalesce(message_category_assignment_heads.finance_result_id, '')`,
+						"!=",
+						sql<string>`coalesce(finance_heads.secondary_result_id, '')`,
+					),
 				]),
 			);
 		}

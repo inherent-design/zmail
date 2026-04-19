@@ -1,4 +1,7 @@
-import { buildFinanceIntelV2, buildMessageLabelV2 } from "#/test/helpers/labels";
+import {
+	buildFinanceIntelV3,
+	buildMessageLabelV3,
+} from "#/test/helpers/labels";
 
 export interface BrowserAccountScenario {
 	id: string;
@@ -168,13 +171,15 @@ export const PLAYWRIGHT_ACCOUNT_IDS = Object.values(PLAYWRIGHT_SCENARIOS).map(
 );
 
 export function buildSeededReviewLabel() {
-	return buildMessageLabelV2({
+	return buildMessageLabelV3({
 		finance: {
 			relevant: true,
-			direction: "expense",
-			owner: "unknown",
-			accountHint: null,
-			purpose: null,
+			signal: "receipt",
+			operational: true,
+			bookHint: "unknown",
+			requiresFinanceIntel: true,
+			confidence: 0.61,
+			evidence: "Ambiguous dinner receipt.",
 		},
 		people: {
 			personal: false,
@@ -204,7 +209,7 @@ export function buildSeededReviewLabel() {
 }
 
 export function buildFinanceScenarioIntel() {
-	return buildFinanceIntelV2({
+	return buildFinanceIntelV3({
 		messageKind: "receipt",
 		transactionCandidates: [
 			{
@@ -222,6 +227,34 @@ export function buildFinanceScenarioIntel() {
 				statementRefHint: null,
 				taxRelevanceHint: "business expense",
 				evidence: "Acme Cloud SaaS renewal.",
+				externalTransactionId: "acme-receipt-42",
+				postedAt: "2026-03-15",
+				clearedAt: null,
+				book: "business",
+				businessUsePercent: null,
+				fieldConfidence: {
+					amount: 0.98,
+					date: 0.98,
+					counterparty: 0.98,
+					accountMapping: 0.95,
+					book: 0.95,
+					category: 0.95,
+					dedupe: 0.95,
+				},
+				dedupe: {
+					externalTransactionId: "acme-receipt-42",
+					statementRowId: null,
+					normalizedComposite: null,
+					emailEvidenceKey: "pw-message-finance-email:acme:42",
+				},
+				beancount: {
+					debitAccount: "Expenses:Business:Software",
+					creditAccount: "Assets:Business:Bank:Checking",
+					currency: "USD",
+					mappingKey: "acct:finance",
+					confidence: 0.95,
+					metadata: {},
+				},
 			},
 		],
 		documentCandidates: [
@@ -237,6 +270,21 @@ export function buildFinanceScenarioIntel() {
 				institutionRefHint: "inst:finance-bank",
 				attachmentRefs: [],
 				evidence: "Email receipt for Acme Cloud.",
+				sourceDocumentRefs: ["acme-receipt-42"],
+				statementOpeningBalance: null,
+				statementClosingBalance: null,
+				statementTransactionCount: null,
+				statementCurrency: "USD",
+				book: "business",
+				fieldConfidence: {
+					amount: null,
+					date: 0.9,
+					counterparty: 0.95,
+					accountMapping: 0.95,
+					book: 0.95,
+					category: 0.9,
+					dedupe: 0.95,
+				},
 			},
 		],
 	});

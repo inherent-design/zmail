@@ -8,6 +8,7 @@ import {
 	insertMessageRow,
 } from "#/test/helpers/db";
 import { fixturePath } from "#/test/helpers/fs";
+import { buildMessageLabelV3 } from "#/test/helpers/labels";
 import { createTestRuntime } from "#/test/helpers/runtime";
 
 function mockPiModule() {
@@ -17,36 +18,29 @@ function mockPiModule() {
 			return {
 				backend: "openai-subscription",
 				modelId: "gpt-5.4-mini",
-				parsed: {
+				parsed: buildMessageLabelV3({
 					finance: {
 						relevant: true,
-						direction: "expense",
-						owner: "business",
-						accountHint: "amex",
-						purpose: "client lunch",
+						signal: "receipt",
+						operational: true,
+						bookHint: "business",
+						requiresFinanceIntel: true,
+						confidence: 0.9,
+						evidence: "Client lunch receipt.",
 					},
-					social: {
-						personal: false,
-						private: false,
-						social: false,
-						business: true,
-					},
-					risk: {
-						businessSensitive: false,
-						leakRisk: false,
-					},
+					people: { business: true },
+					commerce: { transactional: true },
 					routing: {
 						primaryBucket: "finance",
+						secondaryBuckets: ["receipt"],
 						tags: ["receipt"],
 					},
 					confidence: {
 						overall: lowConfidence ? 0.5 : 0.95,
 						finance: 0.9,
-						social: 0.9,
-						risk: 0.9,
 					},
 					explanation: "Model classification.",
-				},
+				}),
 				rawText: "{}",
 				usage: { totalTokens: 10 },
 			};
@@ -150,6 +144,7 @@ describe("runtime integration", () => {
 		expect(moderationResult.nsfwFlag).toBe(true);
 
 		const classified = await classify.classifyMessageNow({
+			accountId: "acct-1",
 			messageId: lowConfidenceMessageId,
 			accountLabel: "Primary Gmail",
 			sender: "billing@example.com",
@@ -166,6 +161,7 @@ describe("runtime integration", () => {
 		expect(classified.label.nsfw).toBe(true);
 
 		await classify.classifyMessageNow({
+			accountId: "acct-1",
 			messageId: lowConfidenceMessageId,
 			accountLabel: "Primary Gmail",
 			sender: "billing@example.com",
@@ -190,6 +186,7 @@ describe("runtime integration", () => {
 		});
 
 		await classify.classifyMessageNow({
+			accountId: "acct-1",
 			messageId: lowConfidenceMessageId,
 			accountLabel: "Primary Gmail",
 			sender: "billing@example.com",
@@ -216,16 +213,14 @@ describe("runtime integration", () => {
 			.where("id", "=", reviews[0].id)
 			.executeTakeFirstOrThrow();
 		expect(resolvedReview.status).toBe("resolved");
-		expect(resolvedReview.override_label_json).toContain("message-label.v2");
+		expect(resolvedReview.override_label_json).toContain("message-label.v3");
 	});
 
 	it("refreshes stale moderation rows during worker drain when prompt version changed", async () => {
 		const runtime = await createTestRuntime();
 		const { db } = await bootDb({ seedDefaultAccount: true });
 		const { MODERATION_PROMPT_VERSION, nowIso } =
-			await runtime.importFresh<typeof import("#/lib/config")>(
-				"#/lib/config",
-			);
+			await runtime.importFresh<typeof import("#/lib/config")>("#/lib/config");
 		const messageId = await insertMessageRow(db, {
 			id: "msg-stale-moderation-runtime",
 			subject: "mainstream casting reminder",
@@ -371,57 +366,23 @@ describe("runtime integration", () => {
 			messageId,
 			model: "gpt-5.4-mini",
 			backend: "openai-subscription",
-			promptVersion: "classify-email-v2",
+			promptVersion: "classify-email-v3",
 			source: "model",
 			rawResponse: {},
 			usage: null,
-			label: {
-				schemaVersion: "message-label.v2",
-				nsfw: false,
+			label: buildMessageLabelV3({
 				finance: {
 					relevant: true,
-					direction: "expense",
-					owner: "business",
-					accountHint: "amex",
-					purpose: "client lunch",
+					signal: "receipt",
+					operational: true,
+					bookHint: "business",
+					requiresFinanceIntel: true,
+					confidence: 0.9,
+					evidence: "Client lunch receipt.",
 				},
-				people: {
-					personal: false,
-					private: false,
-					business: true,
-					networking: false,
-					community: false,
-					recruiting: false,
-				},
-				commerce: {
-					transactional: true,
-					shopping: false,
-					subscription: false,
-					travel: false,
-					legal: false,
-				},
-				knowledge: {
-					course: false,
-					resource: false,
-					documentation: false,
-					newsletter: false,
-					research: false,
-				},
-				assets: {
-					license: false,
-					credential: false,
-					account: false,
-					document: false,
-				},
-				entertainment: {
-					gaming: false,
-					media: false,
-					fandom: false,
-				},
-				risk: {
-					businessSensitive: true,
-					leakRisk: false,
-				},
+				people: { business: true },
+				commerce: { transactional: true },
+				risk: { businessSensitive: true },
 				routing: {
 					primaryBucket: "finance",
 					secondaryBuckets: ["receipt"],
@@ -438,7 +399,7 @@ describe("runtime integration", () => {
 					risk: 0.9,
 				},
 				explanation: "Seed label.",
-			},
+			}),
 		});
 
 		const overseer =

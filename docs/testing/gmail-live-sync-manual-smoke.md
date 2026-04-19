@@ -1,158 +1,149 @@
-# Manual Gmail Live Sync Smoke
+# Gmail Live Sync Manual Smoke
 
-Use this checklist for real Google OAuth and IMAP validation. The automated Playwright suite does not perform a real Google login.
+This smoke plan targets the vNext runtime defined in `docs/specs/`.
+
+Use it once the Hono + Hono JSX + WorkOS rewrite slice is available. It is not
+a claim that the current source tree already implements every step below.
+
+## Canonical References
+
+- [system overview](../specs/system-overview.md)
+- [auth and organizations](../specs/platform/auth-and-organizations.md)
+- [runtime storage and tenancy](../specs/platform/runtime-storage-and-tenancy.md)
+- [Gmail sync and ingestion](../specs/domain/gmail-sync-and-ingestion.md)
+- [finance imports](../specs/domain/finance-imports.md)
+- [testing and proof](../specs/operations/testing-and-proof.md)
 
 ## Prerequisites
 
-- `mise`
-- access to the org age key used for repo-managed SOPS secrets
-- one live inference backend:
-  - `pnpm pi:connect`
-  - or `OPENAI_API_KEY`
+- `mise run dev` loads `secrets.enc.yaml` natively for the server task
+- local default origin is `http://127.0.0.1:56711`
+- if you prefer `localhost`, set `ZMAIL_PUBLIC_ORIGIN=http://localhost:56711`
+- WorkOS browser auth is configured for local development
+- WorkOS allows:
+  - `http://127.0.0.1:56711/auth/callback`
+  - `http://localhost:56711/auth/callback` when using the localhost override
+- Google OAuth bootstrap credentials are configured
+- one inference backend is available
+- local machine has permission to create or select a WorkOS org
+- optional: WorkOS M2M credentials for finance import automation
 
-Google OAuth bootstrap credentials are already stored in repo-managed encrypted
-secrets. Start credentialed local runs through `mise` so they load
-automatically.
+## Smoke 1: WorkOS Login and Org Selection
 
-## Clean Start
+1. start the app locally
+2. open the app in a browser
+3. verify unauthenticated access redirects to `/auth/login`
+4. complete WorkOS login
+5. verify org selection or org creation occurs when needed
+6. verify the app shell shows the active organization
 
-```bash
-pnpm install
-mise trust mise.toml
-mise run db:reset
-mise run db:migrate
-pnpm pi:connect
-mise run dev
-```
+Expected result:
 
-## Preflight Proof
+- protected pages require WorkOS auth
+- active org context exists before any operator page loads
 
-Before real Gmail verification, confirm the local proof surface is green:
+## Smoke 2: Legacy Runtime Claim
 
-```bash
-mise run check:full
-```
+Run this only when legacy single-tenant data exists.
 
-## Connect Gmail
+1. log in as an `org_admin`
+2. select an org with no runtime root yet
+3. verify `/org/claim-legacy` is shown
+4. claim the legacy runtime
+5. verify the org runtime root is created under `data/orgs/<orgId>/...`
 
-1. Open `http://localhost:3000/accounts/new`
-2. Enter an account label
-3. Click `Connect Gmail`
-4. Complete Google consent
-5. Confirm the callback lands on `/accounts/$accountId`
+Expected result:
 
-Expected runtime logs in the dev terminal:
+- DB, account storage, and operator config move into the org root
+- no duplicate org roots are created
 
-- `server.action.start` and `server.action.complete` with `operation: "beginGoogleConnectCommand"`
-- `server.action.start` and `server.action.complete` with `operation: "completeGoogleConnectCommand"`
-- `job.queued` for the initial `sync_account_full`
+## Smoke 3: Gmail Connect
 
-## Reconnect Gmail
+1. open `/accounts/new`
+2. start Google OAuth connect
+3. complete the Google flow
+4. return through `/oauth/google/callback`
+5. verify an account row appears in the selected org
+6. verify the initial sync job is queued
 
-1. Open `/accounts/$accountId/reconnect`
-2. Confirm the label is editable and the expected Gmail email is read-only
-3. Click `Reconnect Gmail`
-4. Complete Google consent with the same Gmail identity
-5. Confirm the callback returns to the same `/accounts/$accountId`
+Expected result:
 
-## First Sync Checks
+- token file exists only in the org runtime root
+- bootstrap sync begins for the selected org only
 
-On `/accounts/$accountId` confirm:
+## Smoke 4: Sync Lifecycle
 
-- the account row exists with the connected Gmail address
-- the page exposes the expected sync controls
-- a `sync_account_full` job appears on `/runs`
-- after bootstrap completion, message count increases
-- watcher state becomes active or settles into a sane sync state
-- if the mailbox is larger than one sync window, a `sync_account_backfill` job appears on `/runs`
+1. wait for bootstrap sync to complete
+2. verify newest mail appears first
+3. verify historical backfill progresses
+4. trigger a delta sync
+5. trigger reconcile
 
-Expected runtime logs in the dev terminal:
+Expected result:
 
-- `worker.job_start` and `worker.job_complete` for `sync_account_full`
-- `sync.bootstrap.start` and `sync.bootstrap.complete`
-- `watcher.start` followed by `watcher.connected`
-- when historical work remains, `sync.backfill.start` and `sync.backfill.complete`
+- account status transitions make sense
+- raw RFC822 files appear under the org-local account raw directory
+- worker jobs and watcher behavior stay org-local
 
-## Message and Classification Checks
+## Smoke 5: Disconnect, Reconnect, Delete
 
-1. Open `/messages`
-2. Confirm synced messages appear
-3. Open one message detail page
-4. Click `Classify now`
-5. Confirm `Current label` and `Moderation` are populated
+1. disconnect Gmail from the account detail page
+2. verify local corpus remains
+3. reconnect the same Gmail identity
+4. verify reconnect fails closed if the wrong Gmail identity is chosen
+5. open the delete page
+6. verify typed email confirmation is required
+7. delete the account
 
-## Backlog and Overseer Checks
+Expected result:
 
-1. Open `/accounts/$accountId`
-2. Click `Classify backlog`
-3. Confirm a `classify_account_backlog` job appears on `/runs`
-4. Click `Open overseer`
-5. Click `Queue overseer rebuild`
-6. Confirm a `rebuild_overseer` job appears on `/runs`
+- disconnect preserves corpus and removes provider token
+- reconnect updates the same account row
+- delete removes account-scoped runtime state and requeues finance materialized
+  rebuilds
 
-Manual queueing is still the normal smoke assertion. The worker may also
-auto-queue `rebuild_overseer` after backlog classification when the labeled
-message delta since the latest profile reaches `OVERSEER_REBUILD_EVERY`.
-Treat that as additional background behavior, not a required smoke step.
+## Smoke 6: Browser Authorization Matrix
 
-Expected runtime logs in the dev terminal:
+1. test with `org_admin`
+2. test with `org_operator`
+3. test with `org_viewer`
 
-- `worker.job_start` and `worker.job_complete` for `classify_account_backlog`
-- `worker.classify_backlog.start`, throttled `worker.classify_backlog.progress`, and `worker.classify_backlog.complete`
-- `server.action.complete` with `operation: "enqueueOverseerCommand"`
-- `job.queued` and `worker.job_start` for `rebuild_overseer`
+Verify:
 
-## Reconnect Check
+- viewer cannot mutate operator state for accounts they do not own
+- viewer who owns an account can reconnect, disconnect, and delete that account
+- operator can run normal sync/classification/import actions
+- admin can perform destructive or migration actions such as legacy claim or
+  account deletion for any account
 
-1. From `/accounts/$accountId`, click `Disconnect Gmail`
-2. Confirm the account detail page shows the disconnected state while local counts remain intact
-3. Visit `/accounts/$accountId/reconnect`
-4. Reconnect the same Gmail account
-5. Confirm the existing account row is reused rather than duplicated
+## Smoke 7: Finance Import via Machine Token
 
-## Delete Local Account
+1. acquire an org-scoped WorkOS M2M token
+2. submit an artifact to `POST /api/finance/imports`
+3. submit the exact same artifact again
+4. submit the same source file with a different artifact hash
 
-1. Open `/accounts/$accountId/delete`
-2. Confirm the page lists what will and will not be deleted
-3. Type the exact Gmail email address
-4. Click `Delete local account`
-5. Confirm the UI returns to `/accounts` and the deleted row is gone
+Expected result:
 
-## Finance Filter Smoke
+- first import returns `202 queued`
+- exact duplicate returns `200 already_imported`
+- new artifact hash for the same source file is accepted
+- rollups count each unique artifact once
 
-1. Open `/finance`
-2. Confirm the year selector and the account / institution / identity / source
-   filters are visible
-3. If seeded or real finance data exists, click each of:
-   - one account filter
-   - one institution filter
-   - one identity filter
-   - one source filter
-4. Confirm summary cards, rollups, ledger preview, and imported documents all
-   change consistently for the selected filter
-5. Use `Clear filters` and confirm the unfiltered year view returns
+## Smoke 8: Org Isolation
 
-## Reconcile Check
+1. create or use two organizations
+2. connect Gmail in one org only
+3. verify the second org sees no accounts or messages from the first
+4. verify finance imports into one org do not appear in the other
 
-1. Trigger `Reconcile` from `/accounts/$accountId`
-2. Confirm a `sync_account_reconcile` job appears on `/runs`
-3. Confirm tombstone counts remain coherent if remote removals are detected
+Expected result:
 
-Expected runtime logs in the dev terminal:
+- runtime data is isolated by org root
+- no cross-org DB or file leakage occurs
 
-- `watcher.exists_enqueued`, `watcher.poll_enqueued`, or `watcher.reconcile_enqueued` as work is scheduled
-- `sync.reconcile.start` and `sync.reconcile.complete`
+## Notes
 
-## Restart Mid-Backfill Check
-
-Use this when the mailbox is large enough to leave `backfill next uid` populated.
-
-1. Wait for `/accounts/$accountId` to show a non-null `backfill next uid`
-2. Stop the dev server while `sync_account_backfill` work is still ongoing or expected
-3. Start the app again with `mise run dev`
-4. Refresh `/accounts/$accountId`
-5. Confirm:
-   - the watcher reconnects
-   - `backfill next uid` remains below the previous bootstrap window
-   - `sync_account_backfill` resumes without duplicating rows in the corpus
-   - new mail can still arrive through delta sync while historical backfill continues
+- if the smoke uncovers a source/spec mismatch, update the owning vNext spec
+  first or in the same change
+- do not patch the manual smoke doc to match accidental implementation drift

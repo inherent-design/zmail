@@ -11,6 +11,7 @@ import {
 	seedTestAccount,
 } from "#/test/helpers/db";
 import { setEnv } from "#/test/helpers/env";
+import { buildMessageLabelV3 } from "#/test/helpers/labels";
 import { createMockLogModule } from "#/test/helpers/log";
 import { createTestRuntime } from "#/test/helpers/runtime";
 
@@ -23,9 +24,10 @@ describe("new server actions", () => {
 			ensureWorkerStarted: vi.fn(),
 		}));
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		const result = await actions.loadAccountsData();
 
 		expect(result.accounts).toEqual([]);
@@ -39,9 +41,10 @@ describe("new server actions", () => {
 			ensureWorkerStarted: vi.fn(),
 		}));
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 
 		await expect(actions.loadAccountsData()).rejects.toMatchObject({
 			name: "SchemaResetRequiredError",
@@ -83,9 +86,10 @@ describe("new server actions", () => {
 			ensureWorkerStarted: vi.fn(),
 		}));
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		const result = await actions.loadAccountsData();
 		const account = result.accounts.find((a) => a.id === "acct-1");
 
@@ -97,6 +101,118 @@ describe("new server actions", () => {
 		expect(account?.tombstone_count).toBe(1);
 	});
 
+	it("loadMessagesData paginates message rows", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		for (let index = 0; index < 55; index += 1) {
+			const id = `msg-page-${String(index).padStart(2, "0")}`;
+			await insertMessageRow(db, {
+				id,
+				accountId: "acct-1",
+				subject: `Page message ${index}`,
+				receivedAt: `2026-01-01T00:${String(index).padStart(2, "0")}:00.000Z`,
+				contentSha256: `sha-${id}`,
+			});
+		}
+
+		vi.doMock("#/lib/worker", () => ({
+			ensureWorkerStarted: vi.fn(),
+		}));
+
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
+		const result = await actions.loadMessagesData({
+			page: "2",
+			pageSize: "50",
+		});
+
+		expect(result.pagination).toMatchObject({
+			page: 2,
+			pageSize: 50,
+			total: 55,
+			totalPages: 2,
+			hasPreviousPage: true,
+			hasNextPage: false,
+		});
+		expect(result.rows).toHaveLength(5);
+		expect(result.rows[0]?.id).toBe("msg-page-04");
+	});
+
+	it("loadMessagesData filters by search, account, bucket, and parse status", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		await seedTestAccount(db, {
+			id: "acct-2",
+			label: "Filtered Account",
+			emailAddress: "filtered@example.com",
+		});
+		const matchingId = await insertMessageRow(db, {
+			id: "msg-matching-filter",
+			accountId: "acct-2",
+			senderAddress: "billing@example.com",
+			subject: "Needle receipt",
+			bodyTextNormalized: "needle body",
+			contentSha256: "sha-matching-filter",
+		});
+		await insertMessageLabelRow(db, {
+			messageId: matchingId,
+			primaryBucket: "finance",
+			contentSha256: "sha-matching-filter",
+		});
+		const wrongBucketId = await insertMessageRow(db, {
+			id: "msg-wrong-bucket",
+			accountId: "acct-2",
+			subject: "Needle personal",
+			bodyTextNormalized: "needle body",
+			contentSha256: "sha-wrong-bucket",
+		});
+		await insertMessageLabelRow(db, {
+			messageId: wrongBucketId,
+			primaryBucket: "personal",
+			contentSha256: "sha-wrong-bucket",
+		});
+		await insertMessageRow(db, {
+			id: "msg-wrong-account",
+			accountId: "acct-1",
+			subject: "Needle other account",
+			bodyTextNormalized: "needle body",
+			contentSha256: "sha-wrong-account",
+		});
+
+		vi.doMock("#/lib/worker", () => ({
+			ensureWorkerStarted: vi.fn(),
+		}));
+
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
+		const result = await actions.loadMessagesData({
+			q: "needle",
+			accountId: "acct-2",
+			bucket: "finance",
+			parseStatus: "parsed",
+			pageSize: "50",
+		});
+
+		expect(result.rows.map((row) => row.id)).toEqual(["msg-matching-filter"]);
+		expect(result.filters).toMatchObject({
+			q: "needle",
+			accountId: "acct-2",
+			bucket: "finance",
+			parseStatus: "parsed",
+			pageSize: 50,
+		});
+		expect(result.options.accounts.map((account) => account.id)).toContain(
+			"acct-2",
+		);
+		expect(result.options.buckets).toEqual(
+			expect.arrayContaining(["finance", "personal"]),
+		);
+	});
+
 	it("queues finance registry and knowledge jobs through server commands", async () => {
 		const runtime = await createTestRuntime();
 		await bootDb({ seedDefaultAccount: true });
@@ -105,9 +221,10 @@ describe("new server actions", () => {
 			ensureWorkerStarted: vi.fn(),
 		}));
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		const dbModule =
 			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
 
@@ -188,9 +305,10 @@ describe("new server actions", () => {
 			ensureWorkerStarted: vi.fn(),
 		}));
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		const result = await actions.loadAccountsData();
 
 		expect(result.accounts).toEqual([
@@ -231,38 +349,23 @@ describe("new server actions", () => {
 			messageId: financeMessageId,
 			primaryBucket: "finance",
 			contentSha256: "content-review-finance",
-			label: {
-				schemaVersion: "message-label.v1",
-				nsfw: false,
+			label: buildMessageLabelV3({
 				finance: {
 					relevant: true,
-					direction: "expense",
-					owner: "business",
-					accountHint: "amex",
-					purpose: "software",
-				},
-				social: {
-					personal: false,
-					private: false,
-					social: false,
-					business: true,
-				},
-				risk: {
-					businessSensitive: false,
-					leakRisk: false,
+					signal: "receipt",
+					operational: true,
+					bookHint: "business",
+					requiresFinanceIntel: true,
+					confidence: 0.95,
+					evidence: "Software receipt.",
 				},
 				routing: {
 					primaryBucket: "finance",
+					secondaryBuckets: ["receipt"],
 					tags: ["receipt"],
 				},
-				confidence: {
-					overall: 0.95,
-					finance: 0.95,
-					social: 0.95,
-					risk: 0.95,
-				},
 				explanation: "finance",
-			},
+			}),
 		});
 		await insertMessageLabelRow(db, {
 			messageId: nonFinanceMessageId,
@@ -272,38 +375,23 @@ describe("new server actions", () => {
 			messageId: overrideFinanceMessageId,
 			primaryBucket: "finance",
 			contentSha256: "content-review-override-finance",
-			label: {
-				schemaVersion: "message-label.v1",
-				nsfw: false,
+			label: buildMessageLabelV3({
 				finance: {
 					relevant: true,
-					direction: "expense",
-					owner: "business",
-					accountHint: "amex",
-					purpose: "software",
-				},
-				social: {
-					personal: false,
-					private: false,
-					social: false,
-					business: true,
-				},
-				risk: {
-					businessSensitive: false,
-					leakRisk: false,
+					signal: "receipt",
+					operational: true,
+					bookHint: "business",
+					requiresFinanceIntel: true,
+					confidence: 0.95,
+					evidence: "Software receipt.",
 				},
 				routing: {
 					primaryBucket: "finance",
+					secondaryBuckets: ["receipt"],
 					tags: ["receipt"],
 				},
-				confidence: {
-					overall: 0.95,
-					finance: 0.95,
-					social: 0.95,
-					risk: 0.95,
-				},
 				explanation: "finance",
-			},
+			}),
 		});
 		await db
 			.insertInto("reviews")
@@ -358,9 +446,10 @@ describe("new server actions", () => {
 			};
 		});
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		const accepted = await actions.resolveReviewCommand({
 			reviewId: "review-finance",
 			action: "accept",
@@ -368,74 +457,44 @@ describe("new server actions", () => {
 		const overridden = await actions.resolveReviewCommand({
 			reviewId: "review-nonfinance",
 			action: "override",
-			override: {
-				schemaVersion: "message-label.v1",
-				nsfw: false,
+			override: buildMessageLabelV3({
 				finance: {
 					relevant: false,
-					direction: "unknown",
-					owner: "unknown",
-					accountHint: null,
-					purpose: null,
-				},
-				social: {
-					personal: true,
-					private: true,
-					social: true,
-					business: false,
-				},
-				risk: {
-					businessSensitive: false,
-					leakRisk: false,
+					signal: "none",
+					operational: false,
+					bookHint: "unknown",
+					requiresFinanceIntel: false,
+					confidence: 1,
+					evidence: null,
 				},
 				routing: {
-					primaryBucket: "personal",
+					primaryBucket: "relationships",
+					secondaryBuckets: [],
 					tags: ["social"],
 				},
-				confidence: {
-					overall: 1,
-					finance: 1,
-					social: 1,
-					risk: 1,
-				},
 				explanation: "manual override",
-			},
+			}),
 		});
 		const overriddenFinance = await actions.resolveReviewCommand({
 			reviewId: "review-override-finance",
 			action: "override",
-			override: {
-				schemaVersion: "message-label.v1",
-				nsfw: false,
+			override: buildMessageLabelV3({
 				finance: {
 					relevant: true,
-					direction: "expense",
-					owner: "business",
-					accountHint: "amex",
-					purpose: "software",
-				},
-				social: {
-					personal: false,
-					private: false,
-					social: false,
-					business: true,
-				},
-				risk: {
-					businessSensitive: false,
-					leakRisk: false,
+					signal: "receipt",
+					operational: true,
+					bookHint: "business",
+					requiresFinanceIntel: true,
+					confidence: 0.95,
+					evidence: "Software receipt.",
 				},
 				routing: {
 					primaryBucket: "finance",
+					secondaryBuckets: ["receipt"],
 					tags: ["receipt"],
 				},
-				confidence: {
-					overall: 0.95,
-					finance: 0.95,
-					social: 0.95,
-					risk: 0.95,
-				},
 				explanation: "manual override finance",
-			},
+			}),
 		});
 
 		const jobs = await db
@@ -459,10 +518,15 @@ describe("new server actions", () => {
 				scope_type: "system",
 				scope_id: "finance",
 			},
+			{
+				kind: "rebuild_overseer",
+				scope_type: "account",
+				scope_id: "acct-1",
+			},
 		]);
 	});
 
-	it("loadMessagesData returns an empty array on a fresh database", async () => {
+	it("loadMessagesData returns empty rows on a fresh database", async () => {
 		const runtime = await createTestRuntime();
 		await bootDb();
 
@@ -470,11 +534,19 @@ describe("new server actions", () => {
 			ensureWorkerStarted: vi.fn(),
 		}));
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 
-		expect(await actions.loadMessagesData()).toEqual([]);
+		const result = await actions.loadMessagesData();
+		expect(result.rows).toEqual([]);
+		expect(result.pagination).toMatchObject({
+			page: 1,
+			total: 0,
+			totalPages: 1,
+			hasNextPage: false,
+		});
 	});
 
 	it("loadMessageDetailData prefers the newest source row when states tie", async () => {
@@ -539,9 +611,10 @@ describe("new server actions", () => {
 			ensureWorkerStarted: vi.fn(),
 		}));
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		const detail = await actions.loadMessageDetailData({ messageId });
 
 		expect(detail.message.remote_thread_id).toBe("thr-detail-new");
@@ -674,9 +747,10 @@ describe("new server actions", () => {
 			ensureWorkerStarted: vi.fn(),
 		}));
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		const detail = await actions.loadMessageDetailData({ messageId });
 
 		expect(detail.financeIntel).toEqual({
@@ -785,9 +859,10 @@ describe("new server actions", () => {
 			ensureWorkerStarted: vi.fn(),
 		}));
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		const detail = await actions.loadMessageDetailData({ messageId });
 
 		expect(detail.financeIntel).toEqual({
@@ -862,9 +937,10 @@ describe("new server actions", () => {
 			ensureWorkerStarted: vi.fn(),
 		}));
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		const detail = await actions.loadMessageDetailData({ messageId });
 
 		expect(detail.financeIntel?.current).toEqual({
@@ -888,16 +964,17 @@ describe("new server actions", () => {
 			ensureWorkerStarted: vi.fn(),
 		}));
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		const result = await actions.loadAccountNewData();
 
 		expect(result.oauthReady).toBe(false);
 		expect(result.missingVars).toBeInstanceOf(Array);
 		expect(result.missingVars.length).toBeGreaterThan(0);
 		expect(result.redirectUrl).toBe(
-			"http://127.0.0.1:3000/oauth/google/callback",
+			"http://127.0.0.1:56711/oauth/google/callback",
 		);
 	});
 
@@ -906,7 +983,7 @@ describe("new server actions", () => {
 		process.env.GOOGLE_OAUTH_CLIENT_ID = "client-id";
 		process.env.GOOGLE_OAUTH_CLIENT_SECRET = "client-secret";
 		process.env.GOOGLE_OAUTH_REDIRECT_URL =
-			"http://localhost:3000/oauth/google/callback";
+			"http://localhost:56711/oauth/google/callback";
 		vi.resetModules();
 		await bootDb();
 
@@ -914,15 +991,16 @@ describe("new server actions", () => {
 			ensureWorkerStarted: vi.fn(),
 		}));
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		const result = await actions.loadAccountNewData();
 
 		expect(result.oauthReady).toBe(true);
 		expect(result.missingVars).toEqual([]);
 		expect(result.redirectUrl).toBe(
-			"http://localhost:3000/oauth/google/callback",
+			"http://localhost:56711/oauth/google/callback",
 		);
 	});
 
@@ -935,9 +1013,10 @@ describe("new server actions", () => {
 			ensureWorkerStarted: vi.fn(),
 		}));
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		const result = await actions.loadAccountDetailData({
 			accountId: "acct-1",
 		});
@@ -955,7 +1034,7 @@ describe("new server actions", () => {
 		expect(result.tombstoneCount).toBe(0);
 	});
 
-	it("loadFinanceData returns registry state and materialized candidate evidence", async () => {
+	it("loadFinanceData returns registry state and staged ledger evidence", async () => {
 		const runtime = await createTestRuntime();
 		const { db } = await bootDb();
 		await seedTestAccount(db);
@@ -1015,75 +1094,45 @@ describe("new server actions", () => {
 			messageId,
 			primaryBucket: "finance",
 			contentSha256: "content-finance-data",
-			label: {
-				schemaVersion: "message-label.v1",
-				nsfw: false,
+			label: buildMessageLabelV3({
 				finance: {
 					relevant: true,
-					direction: "expense",
-					owner: "business",
-					accountHint: "amex",
-					purpose: "software",
-				},
-				social: {
-					personal: false,
-					private: false,
-					social: false,
-					business: true,
-				},
-				risk: {
-					businessSensitive: false,
-					leakRisk: false,
+					signal: "receipt",
+					operational: true,
+					bookHint: "business",
+					requiresFinanceIntel: true,
+					confidence: 0.95,
+					evidence: "Software receipt.",
 				},
 				routing: {
 					primaryBucket: "finance",
+					secondaryBuckets: ["receipt"],
 					tags: ["receipt"],
 				},
-				confidence: {
-					overall: 0.95,
-					finance: 0.95,
-					social: 0.95,
-					risk: 0.95,
-				},
 				explanation: "finance",
-			},
+			}),
 		});
 		await insertMessageLabelRow(db, {
 			messageId: mysteryMessageId,
 			primaryBucket: "finance",
 			contentSha256: "content-finance-data-mystery",
-			label: {
-				schemaVersion: "message-label.v1",
-				nsfw: false,
+			label: buildMessageLabelV3({
 				finance: {
 					relevant: true,
-					direction: "expense",
-					owner: "business",
-					accountHint: "amex",
-					purpose: "software",
-				},
-				social: {
-					personal: false,
-					private: false,
-					social: false,
-					business: true,
-				},
-				risk: {
-					businessSensitive: false,
-					leakRisk: false,
+					signal: "receipt",
+					operational: true,
+					bookHint: "business",
+					requiresFinanceIntel: true,
+					confidence: 0.95,
+					evidence: "Software receipt.",
 				},
 				routing: {
 					primaryBucket: "finance",
+					secondaryBuckets: ["receipt"],
 					tags: ["receipt"],
 				},
-				confidence: {
-					overall: 0.95,
-					finance: 0.95,
-					social: 0.95,
-					risk: 0.95,
-				},
 				explanation: "finance",
-			},
+			}),
 		});
 		await db
 			.insertInto("message_secondary_heads")
@@ -1229,6 +1278,85 @@ describe("new server actions", () => {
 			])
 			.execute();
 		await db
+			.insertInto("finance_ledger_entries")
+			.values([
+				{
+					id: "ledger-finance-data-ready",
+					canonical_key: "email:msg-finance-data:42.00:2026-01-10",
+					status: "ready",
+					source_authority: "email",
+					occurred_at: "2026-01-10",
+					posted_at: null,
+					cleared_at: null,
+					description: "Acme",
+					counterparty: "Acme",
+					direction: "expense",
+					amount_value: "42.00",
+					amount_minor: 4200,
+					currency: "USD",
+					book: "business",
+					business_use_percent: null,
+					debit_account: "Expenses:Business:Software",
+					credit_account: "Assets:Business:Bank:Checking",
+					account_mapping_key: "amex",
+					field_confidence_json: JSON.stringify({ overall: 0.95 }),
+					ledger_metadata_json: JSON.stringify({
+						categoryPrimary: "software_services",
+						categorySecondary: "saas",
+						ownerIdentityId: null,
+						institutionId: "inst:finance-data",
+						financialAccountId: "acct:finance-data",
+					}),
+					raw_payload_json: JSON.stringify({ seeded: true }),
+					created_at: "2026-01-10T00:00:00.000Z",
+					updated_at: "2026-01-10T00:00:00.000Z",
+				},
+				{
+					id: "ledger-finance-data-review",
+					canonical_key: "email:msg-finance-data-mystery",
+					status: "review",
+					source_authority: "email",
+					occurred_at: "2026-01-09",
+					posted_at: null,
+					cleared_at: null,
+					description: "Unknown",
+					counterparty: null,
+					direction: "expense",
+					amount_value: null,
+					amount_minor: null,
+					currency: "USD",
+					book: "business",
+					business_use_percent: null,
+					debit_account: null,
+					credit_account: null,
+					account_mapping_key: null,
+					field_confidence_json: JSON.stringify({ overall: 0.4 }),
+					ledger_metadata_json: JSON.stringify({
+						categoryPrimary: "uncategorized",
+						categorySecondary: null,
+					}),
+					raw_payload_json: JSON.stringify({ seeded: true }),
+					created_at: "2026-01-10T00:00:00.000Z",
+					updated_at: "2026-01-10T00:00:00.000Z",
+				},
+			])
+			.execute();
+		await db
+			.insertInto("finance_ledger_entry_sources")
+			.values({
+				id: "ledger-source-finance-data-ready",
+				ledger_entry_id: "ledger-finance-data-ready",
+				source_kind: "email",
+				message_id: messageId,
+				secondary_result_id: "secondary-finance-data",
+				import_run_id: null,
+				import_transaction_id: null,
+				import_document_id: null,
+				evidence_json: JSON.stringify({ kind: "event" }),
+				created_at: "2026-01-10T00:00:00.000Z",
+			})
+			.execute();
+		await db
 			.insertInto("registry_import_state")
 			.values({
 				key: "operator_registry",
@@ -1248,39 +1376,28 @@ describe("new server actions", () => {
 			ensureWorkerStarted: vi.fn(),
 		}));
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		const result = await actions.loadFinanceData();
 
 		expect(result.registry.sha256).toBe("registry-finance-data");
 		expect(result.coverage.rootFinanceRelevantCount).toBe(2);
-		expect(result.eventCandidates[0]).toMatchObject({
-			id: "finance-event-1",
-			evidence: [
-				expect.objectContaining({
-					messageId,
-					accountLabel: "Test Account",
-				}),
-			],
+		expect(result.ledgerPreview[0]).toMatchObject({
+			canonicalKey: "email:msg-finance-data:42.00:2026-01-10",
+			status: "ready",
+			sourceKind: "email",
+			accountId: "acct-1",
+			primaryCategory: "software_services",
 		});
-		expect(result.documentCandidates[0]).toMatchObject({
-			id: "finance-document-1",
-			evidence: [
-				expect.objectContaining({
-					messageId,
-					accountLabel: "Test Account",
-				}),
-			],
+		expect(result.reviewRows[0]).toMatchObject({
+			canonicalKey: "email:msg-finance-data-mystery",
+			status: "review",
+			primaryCategory: "uncategorized",
 		});
-		expect(result.eventCandidates[1]).toMatchObject({
-			id: "finance-event-2",
-			evidence: [],
-		});
-		expect(result.documentCandidates[1]).toMatchObject({
-			id: "finance-document-2",
-			evidence: [],
-		});
+		expect(result.eventCandidates).toEqual([]);
+		expect(result.documentCandidates).toEqual([]);
 	});
 
 	it("loadFinanceData counts finance head statuses across all finance-intel states", async () => {
@@ -1303,38 +1420,23 @@ describe("new server actions", () => {
 				messageId,
 				primaryBucket: "finance",
 				contentSha256: `content-finance-status-${suffix}`,
-				label: {
-					schemaVersion: "message-label.v1",
-					nsfw: false,
+				label: buildMessageLabelV3({
 					finance: {
 						relevant: true,
-						direction: "expense",
-						owner: "business",
-						accountHint: "amex",
-						purpose: "software",
-					},
-					social: {
-						personal: false,
-						private: false,
-						social: false,
-						business: true,
-					},
-					risk: {
-						businessSensitive: false,
-						leakRisk: false,
+						signal: "receipt",
+						operational: true,
+						bookHint: "business",
+						requiresFinanceIntel: true,
+						confidence: 0.95,
+						evidence: "Software receipt.",
 					},
 					routing: {
 						primaryBucket: "finance",
+						secondaryBuckets: ["receipt"],
 						tags: ["receipt"],
 					},
-					confidence: {
-						overall: 0.95,
-						finance: 0.95,
-						social: 0.95,
-						risk: 0.95,
-					},
 					explanation: "finance",
-				},
+				}),
 			});
 			await db
 				.insertInto("message_secondary_heads")
@@ -1359,47 +1461,33 @@ describe("new server actions", () => {
 			messageId: nonFinanceMessageId,
 			primaryBucket: "other",
 			contentSha256: "content-finance-status-non-finance",
-			label: {
-				schemaVersion: "message-label.v1",
-				nsfw: false,
+			label: buildMessageLabelV3({
 				finance: {
 					relevant: false,
-					direction: null,
-					owner: null,
-					accountHint: null,
-					purpose: null,
-				},
-				social: {
-					personal: false,
-					private: false,
-					social: false,
-					business: true,
-				},
-				risk: {
-					businessSensitive: false,
-					leakRisk: false,
+					signal: "none",
+					operational: false,
+					bookHint: "unknown",
+					requiresFinanceIntel: false,
+					confidence: 0.95,
+					evidence: null,
 				},
 				routing: {
 					primaryBucket: "other",
+					secondaryBuckets: [],
 					tags: [],
 				},
-				confidence: {
-					overall: 0.95,
-					finance: 0.95,
-					social: 0.95,
-					risk: 0.95,
-				},
 				explanation: "not finance",
-			},
+			}),
 		});
 
 		vi.doMock("#/lib/worker", () => ({
 			ensureWorkerStarted: vi.fn(),
 		}));
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		const result = await actions.loadFinanceData();
 
 		expect(result.coverage).toMatchObject({
@@ -1454,38 +1542,23 @@ describe("new server actions", () => {
 				messageId,
 				primaryBucket: "finance",
 				contentSha256,
-				label: {
-					schemaVersion: "message-label.v1",
-					nsfw: false,
+				label: buildMessageLabelV3({
 					finance: {
 						relevant: true,
-						direction: "expense",
-						owner: "business",
-						accountHint: accountId,
-						purpose: "software",
-					},
-					social: {
-						personal: false,
-						private: false,
-						social: false,
-						business: true,
-					},
-					risk: {
-						businessSensitive: false,
-						leakRisk: false,
+						signal: "receipt",
+						operational: true,
+						bookHint: "business",
+						requiresFinanceIntel: true,
+						confidence: 0.95,
+						evidence: `Software receipt for ${accountId}.`,
 					},
 					routing: {
 						primaryBucket: "finance",
+						secondaryBuckets: ["receipt"],
 						tags: ["receipt"],
 					},
-					confidence: {
-						overall: 0.95,
-						finance: 0.95,
-						social: 0.95,
-						risk: 0.95,
-					},
 					explanation: "finance",
-				},
+				}),
 			});
 			await db
 				.insertInto("message_secondary_heads")
@@ -1621,17 +1694,18 @@ describe("new server actions", () => {
 			ensureWorkerStarted: vi.fn(),
 		}));
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		const result = await actions.loadAccountDetailData({ accountId: "acct-1" });
 
 		expect(result.financeCoverage).toMatchObject({
 			rootFinanceRelevantCount: 1,
 			totalHeads: 1,
 			readyCount: 1,
-			eventCandidateCount: 1,
-			documentCandidateCount: 1,
+			eventCandidateCount: 0,
+			documentCandidateCount: 0,
 		});
 	});
 
@@ -1643,9 +1717,10 @@ describe("new server actions", () => {
 			ensureWorkerStarted: vi.fn(),
 		}));
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		await expect(
 			actions.loadAccountDetailData({ accountId: "nonexistent" }),
 		).rejects.toThrow();
@@ -1669,9 +1744,10 @@ describe("new server actions", () => {
 			ensureWorkerStarted: vi.fn(),
 		}));
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		const result = await actions.loadAccountReconnectData({
 			accountId: "acct-reconnect",
 		});
@@ -1686,6 +1762,26 @@ describe("new server actions", () => {
 		expect(result.oauthReady).toBe(true);
 		expect(result.connection_state).toBe("needs_reconnect");
 		expect(result.has_oauth_token).toBe(false);
+	});
+
+	it("deriveAccountConnectionState returns config_error for Google bootstrap failures", async () => {
+		const runtime = await createTestRuntime();
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
+
+		expect(
+			actions.deriveAccountConnectionState(
+				{
+					last_error:
+						"Google OAuth client credentials were rejected by Google. Verify GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET for redirect URL http://127.0.0.1:56711/oauth/google/callback. Start local server with mise run dev.",
+					sync_enabled: 1,
+					sync_status: "needs_reconnect",
+				},
+				false,
+			),
+		).toBe("config_error");
 	});
 
 	it("loadAccountDeleteData returns counts and running account-scoped jobs", async () => {
@@ -1748,9 +1844,10 @@ describe("new server actions", () => {
 			ensureWorkerStarted: vi.fn(),
 		}));
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		const result = await actions.loadAccountDeleteData({
 			accountId: "acct-delete-loader",
 		});
@@ -1788,6 +1885,7 @@ describe("new server actions", () => {
 					state: "oauth-state",
 					codeVerifier: "code-verifier",
 					label: "Personal Gmail",
+					ownerPrincipalEmail: "mannie@inherent.design",
 				})),
 				exchangeCode: vi.fn(async () => ({
 					access_token: "access-token",
@@ -1800,9 +1898,10 @@ describe("new server actions", () => {
 			};
 		});
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		const config =
 			await runtime.importFresh<typeof import("#/lib/config")>("#/lib/config");
 		const dbModule =
@@ -1832,6 +1931,7 @@ describe("new server actions", () => {
 
 		expect(account.email_address).toBe("user@example.com");
 		expect(account.label).toBe("Personal Gmail");
+		expect(account.owner_principal_email).toBe("mannie@inherent.design");
 		expect(account.sync_enabled).toBe(1);
 		expect(syncState.account_id).toBe(result.accountId);
 		expect(job.scope_id).toBe(result.accountId);
@@ -1869,6 +1969,7 @@ describe("new server actions", () => {
 					state: "oauth-state",
 					codeVerifier: "code-verifier",
 					label: "Renamed Gmail",
+					ownerPrincipalEmail: "mannie@inherent.design",
 				})),
 				exchangeCode: vi.fn(async () => ({
 					access_token: "access-token",
@@ -1881,9 +1982,10 @@ describe("new server actions", () => {
 			};
 		});
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		const result = await actions.completeGoogleConnectCommand({
 			code: "auth-code",
 			state: "oauth-state",
@@ -1897,12 +1999,78 @@ describe("new server actions", () => {
 		expect(account).toMatchObject({
 			label: "Renamed Gmail",
 			email_address: "user@example.com",
+			owner_principal_email: "mannie@inherent.design",
 			sync_enabled: 1,
+		});
+	});
+
+	it("completeGoogleConnectCommand rejects connect when the Gmail account is already owned by someone else", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-existing-owner",
+			label: "Existing Owner",
+			emailAddress: "user@example.com",
+			ownerPrincipalEmail: "other@inherent.design",
+			syncEnabled: 0,
+		});
+
+		vi.doMock("#/lib/worker", () => ({
+			ensureWorkerStarted: vi.fn(),
+		}));
+		vi.doMock("#/lib/google-oauth", async () => {
+			const actual =
+				await vi.importActual<typeof import("#/lib/google-oauth")>(
+					"#/lib/google-oauth",
+				);
+			return {
+				...actual,
+				loadOAuthState: vi.fn(() => ({
+					state: "oauth-state",
+					codeVerifier: "code-verifier",
+					label: "Renamed Gmail",
+					ownerPrincipalEmail: "mannie@inherent.design",
+				})),
+				exchangeCode: vi.fn(async () => ({
+					access_token: "access-token",
+					refresh_token: "refresh-token",
+					expires_in: 3600,
+					token_type: "Bearer",
+					scope: "openid email https://mail.google.com/",
+				})),
+				fetchEmailIdentity: vi.fn(async () => "USER@example.com"),
+			};
+		});
+
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
+
+		await expect(
+			actions.completeGoogleConnectCommand({
+				code: "auth-code",
+				state: "oauth-state",
+			}),
+		).rejects.toThrow(/already linked to another zmail owner/i);
+
+		const account = await db
+			.selectFrom("accounts")
+			.select(["label", "owner_principal_email", "sync_enabled"])
+			.where("id", "=", "acct-existing-owner")
+			.executeTakeFirstOrThrow();
+		expect(account).toEqual({
+			label: "Existing Owner",
+			owner_principal_email: "other@inherent.design",
+			sync_enabled: 0,
 		});
 	});
 
 	it("completeGoogleConnectCommand coalesces concurrent connects for the same email", async () => {
 		const runtime = await createTestRuntime();
+		process.env.GOOGLE_OAUTH_CLIENT_ID = "client-id";
+		process.env.GOOGLE_OAUTH_CLIENT_SECRET = "client-secret";
+		vi.resetModules();
 		const { db } = await bootDb();
 
 		vi.doMock("#/lib/worker", () => ({
@@ -1935,12 +2103,19 @@ describe("new server actions", () => {
 		});
 		vi.spyOn(oauth, "fetchEmailIdentity").mockResolvedValue("USER@example.com");
 
-		const firstAuth = oauth.buildAuthUrl("Connect A");
-		const secondAuth = oauth.buildAuthUrl("Connect B");
+		const firstAuth = oauth.buildAuthUrl({
+			label: "Connect A",
+			ownerPrincipalEmail: "mannie@inherent.design",
+		});
+		const secondAuth = oauth.buildAuthUrl({
+			label: "Connect B",
+			ownerPrincipalEmail: "mannie@inherent.design",
+		});
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		const [first, second] = await Promise.all([
 			actions.completeGoogleConnectCommand({
 				code: "auth-code-a",
@@ -1992,9 +2167,10 @@ describe("new server actions", () => {
 			};
 		});
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 
 		await expect(
 			actions.completeGoogleConnectCommand({
@@ -2022,23 +2198,29 @@ describe("new server actions", () => {
 					state: "oauth-state",
 					codeVerifier: "code-verifier",
 					label: "Broken Gmail",
+					ownerPrincipalEmail: "mannie@inherent.design",
 				})),
 				exchangeCode: vi.fn(async () => {
-					throw new Error("Token exchange failed: 400 bad request");
+					throw new Error(
+						"Google OAuth client credentials were rejected by Google. Verify GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET for redirect URL http://127.0.0.1:56711/oauth/google/callback. Start local server with mise run dev.",
+					);
 				}),
 			};
 		});
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 
 		await expect(
 			actions.completeGoogleConnectCommand({
 				code: "auth-code",
 				state: "oauth-state",
 			}),
-		).rejects.toThrow("Token exchange failed: 400 bad request");
+		).rejects.toThrow(
+			"Google OAuth client credentials were rejected by Google.",
+		);
 	});
 
 	it("completeGoogleConnectCommand tolerates duplicate active full-sync jobs", async () => {
@@ -2059,6 +2241,7 @@ describe("new server actions", () => {
 					state: "oauth-state",
 					codeVerifier: "code-verifier",
 					label: "Personal Gmail",
+					ownerPrincipalEmail: "mannie@inherent.design",
 				})),
 				exchangeCode: vi.fn(async () => ({
 					access_token: "access-token",
@@ -2081,9 +2264,10 @@ describe("new server actions", () => {
 			};
 		});
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		const result = await actions.completeGoogleConnectCommand({
 			code: "auth-code",
 			state: "oauth-state",
@@ -2106,20 +2290,26 @@ describe("new server actions", () => {
 				);
 			return {
 				...actual,
-				buildAuthUrl: vi.fn((input: string | { label: string }) => ({
-					url: `https://accounts.google.com/?label=${encodeURIComponent(
-						typeof input === "string" ? input : input.label,
-					)}`,
-					state: "oauth-state",
-				})),
+				buildAuthUrl: vi.fn(
+					(
+						input: string | { label: string; ownerPrincipalEmail?: string },
+					) => ({
+						url: `https://accounts.google.com/?label=${encodeURIComponent(
+							typeof input === "string" ? input : input.label,
+						)}`,
+						state: "oauth-state",
+					}),
+				),
 			};
 		});
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		const result = await actions.beginGoogleConnectCommand({
 			label: "Personal Gmail",
+			ownerPrincipalEmail: "mannie@inherent.design",
 		});
 
 		expect(result).toEqual({
@@ -2132,12 +2322,14 @@ describe("new server actions", () => {
 		const runtime = await createTestRuntime();
 		const runMigrations = vi.fn();
 		const ensureWorkerStarted = vi.fn();
-		const buildAuthUrl = vi.fn((input: string | { label: string }) => ({
-			url: `https://accounts.google.com/?label=${encodeURIComponent(
-				typeof input === "string" ? input : input.label,
-			)}`,
-			state: `state-${typeof input === "string" ? input : input.label}`,
-		}));
+		const buildAuthUrl = vi.fn(
+			(input: string | { label: string; ownerPrincipalEmail?: string }) => ({
+				url: `https://accounts.google.com/?label=${encodeURIComponent(
+					typeof input === "string" ? input : input.label,
+				)}`,
+				state: `state-${typeof input === "string" ? input : input.label}`,
+			}),
+		);
 
 		vi.doMock("#/lib/db", async () => {
 			const actual =
@@ -2162,22 +2354,31 @@ describe("new server actions", () => {
 		});
 
 		try {
-			const actions = await runtime.importFresh<
-				typeof import("#/app/server/actions.server")
-			>("#/app/server/actions.server");
+			const actions =
+				await runtime.importFresh<typeof import("#/server/actions")>(
+					"#/server/actions",
+				);
 
-			await actions.beginGoogleConnectCommand({ label: "One" });
-			await actions.beginGoogleConnectCommand({ label: "Two" });
+			await actions.beginGoogleConnectCommand({
+				label: "One",
+				ownerPrincipalEmail: "mannie@inherent.design",
+			});
+			await actions.beginGoogleConnectCommand({
+				label: "Two",
+				ownerPrincipalEmail: "mannie@inherent.design",
+			});
 
 			expect(runMigrations).toHaveBeenCalledTimes(1);
 			expect(ensureWorkerStarted).toHaveBeenCalledTimes(1);
 			expect(buildAuthUrl).toHaveBeenNthCalledWith(1, {
 				label: "One",
 				flow: "connect",
+				ownerPrincipalEmail: "mannie@inherent.design",
 			});
 			expect(buildAuthUrl).toHaveBeenNthCalledWith(2, {
 				label: "Two",
 				flow: "connect",
+				ownerPrincipalEmail: "mannie@inherent.design",
 			});
 		} finally {
 			vi.doUnmock("#/lib/db");
@@ -2195,12 +2396,14 @@ describe("new server actions", () => {
 			})
 			.mockImplementation(() => undefined);
 		const ensureWorkerStarted = vi.fn();
-		const buildAuthUrl = vi.fn((input: string | { label: string }) => ({
-			url: `https://accounts.google.com/?label=${encodeURIComponent(
-				typeof input === "string" ? input : input.label,
-			)}`,
-			state: "oauth-state",
-		}));
+		const buildAuthUrl = vi.fn(
+			(input: string | { label: string; ownerPrincipalEmail?: string }) => ({
+				url: `https://accounts.google.com/?label=${encodeURIComponent(
+					typeof input === "string" ? input : input.label,
+				)}`,
+				state: "oauth-state",
+			}),
+		);
 
 		vi.doMock("#/lib/db", async () => {
 			const actual =
@@ -2225,16 +2428,23 @@ describe("new server actions", () => {
 		});
 
 		try {
-			const actions = await runtime.importFresh<
-				typeof import("#/app/server/actions.server")
-			>("#/app/server/actions.server");
+			const actions =
+				await runtime.importFresh<typeof import("#/server/actions")>(
+					"#/server/actions",
+				);
 
 			await expect(
-				actions.beginGoogleConnectCommand({ label: "Retry" }),
+				actions.beginGoogleConnectCommand({
+					label: "Retry",
+					ownerPrincipalEmail: "mannie@inherent.design",
+				}),
 			).rejects.toThrow("migration failed");
 
 			await expect(
-				actions.beginGoogleConnectCommand({ label: "Retry" }),
+				actions.beginGoogleConnectCommand({
+					label: "Retry",
+					ownerPrincipalEmail: "mannie@inherent.design",
+				}),
 			).resolves.toEqual({
 				url: "https://accounts.google.com/?label=Retry",
 				state: "oauth-state",
@@ -2269,20 +2479,23 @@ describe("new server actions", () => {
 				);
 			return {
 				...actual,
-				buildAuthUrl: vi.fn((input: {
-					label: string;
-					flow?: "connect" | "reconnect";
-					accountId?: string;
-				}) => ({
-					url: `https://accounts.google.com/?label=${encodeURIComponent(input.label)}`,
-					state: "oauth-state",
-				})),
+				buildAuthUrl: vi.fn(
+					(input: {
+						label: string;
+						flow?: "connect" | "reconnect";
+						accountId?: string;
+					}) => ({
+						url: `https://accounts.google.com/?label=${encodeURIComponent(input.label)}`,
+						state: "oauth-state",
+					}),
+				),
 			};
 		});
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		const result = await actions.beginGoogleReconnectCommand({
 			accountId: "acct-reconnect",
 			label: "Renamed Gmail",
@@ -2292,6 +2505,49 @@ describe("new server actions", () => {
 			url: "https://accounts.google.com/?label=Renamed%20Gmail",
 			state: "oauth-state",
 		});
+	});
+
+	it("beginGoogleConnectCommand backfills ownerless accounts to the bootstrap admin", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-ownerless",
+			emailAddress: "ownerless@example.com",
+			ownerPrincipalEmail: null,
+		});
+
+		vi.doMock("#/lib/worker", () => ({
+			ensureWorkerStarted: vi.fn(),
+		}));
+		vi.doMock("#/lib/google-oauth", async () => {
+			const actual =
+				await vi.importActual<typeof import("#/lib/google-oauth")>(
+					"#/lib/google-oauth",
+				);
+			return {
+				...actual,
+				buildAuthUrl: vi.fn(() => ({
+					url: "https://accounts.google.com/?label=Personal%20Gmail",
+					state: "oauth-state",
+				})),
+			};
+		});
+
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
+		await actions.beginGoogleConnectCommand({
+			label: "Personal Gmail",
+			ownerPrincipalEmail: "mannie@inherent.design",
+		});
+
+		const account = await db
+			.selectFrom("accounts")
+			.select(["owner_principal_email"])
+			.where("id", "=", "acct-ownerless")
+			.executeTakeFirstOrThrow();
+		expect(account.owner_principal_email).toBe("mannie@inherent.design");
 	});
 
 	it("completeGoogleConnectCommand reconnect flow updates the requested account in place", async () => {
@@ -2333,9 +2589,10 @@ describe("new server actions", () => {
 			};
 		});
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		const result = await actions.completeGoogleConnectCommand({
 			code: "auth-code",
 			state: "oauth-state",
@@ -2392,9 +2649,10 @@ describe("new server actions", () => {
 			};
 		});
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 
 		await expect(
 			actions.completeGoogleConnectCommand({
@@ -2437,9 +2695,10 @@ describe("new server actions", () => {
 			};
 		});
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		await actions.queueAccountFullSyncCommand({ accountId: "acct-1" });
 		await actions.queueAccountDeltaSyncCommand({ accountId: "acct-1" });
 		await actions.queueAccountReconcileCommand({ accountId: "acct-1" });
@@ -2465,7 +2724,7 @@ describe("new server actions", () => {
 			scopeType: "account",
 			scopeId: "acct-1",
 			model: "gpt-5.4-mini",
-			promptVersion: "classify-email-v2",
+			promptVersion: "classify-email-v3",
 		});
 	});
 
@@ -2491,9 +2750,10 @@ describe("new server actions", () => {
 			};
 		});
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 
 		await expect(
 			actions.queueAccountFullSyncCommand({ accountId: "acct-paused" }),
@@ -2520,7 +2780,7 @@ describe("new server actions", () => {
 			scopeType: "account",
 			scopeId: "acct-paused",
 			model: "gpt-5.4-mini",
-			promptVersion: "classify-email-v2",
+			promptVersion: "classify-email-v3",
 		});
 	});
 
@@ -2545,9 +2805,10 @@ describe("new server actions", () => {
 			};
 		});
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		const config =
 			await runtime.importFresh<typeof import("#/lib/config")>("#/lib/config");
 		await actions.enqueueOverseerCommand({ accountId: "acct-1" });
@@ -2615,9 +2876,10 @@ describe("new server actions", () => {
 			};
 		});
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 
 		await expect(
 			actions.pauseAccountSyncCommand({ accountId: "acct-1" }),
@@ -2699,9 +2961,10 @@ describe("new server actions", () => {
 			ensureWorkerStarted: vi.fn(),
 		}));
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 
 		await expect(
 			actions.purgeAccountCommand({
@@ -2844,9 +3107,10 @@ describe("new server actions", () => {
 			startWatcher: vi.fn(),
 		}));
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 
 		await expect(
 			actions.purgeAccountCommand({
@@ -2963,9 +3227,10 @@ describe("new server actions", () => {
 			};
 		});
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 
 		await expect(
 			actions.resumeAccountSyncCommand({ accountId: "acct-backfill" }),
@@ -2999,9 +3264,10 @@ describe("new server actions", () => {
 			ensureWorkerStarted: vi.fn(),
 		}));
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		await actions.loadAccountsData();
 		await actions.loadAccountNewData();
 		await actions.loadAccountDetailData({ accountId: "acct-1" });
@@ -3079,9 +3345,10 @@ describe("new server actions", () => {
 			})),
 		}));
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		await actions.loadRunsData();
 
 		expect(log.records).toEqual(
@@ -3120,16 +3387,21 @@ describe("new server actions", () => {
 				);
 			return {
 				...actual,
-				buildAuthUrl: vi.fn((input: string | { label: string }) => ({
-					url: `https://accounts.google.com/?label=${encodeURIComponent(
-						typeof input === "string" ? input : input.label,
-					)}`,
-					state: "oauth-state",
-				})),
+				buildAuthUrl: vi.fn(
+					(
+						input: string | { label: string; ownerPrincipalEmail?: string },
+					) => ({
+						url: `https://accounts.google.com/?label=${encodeURIComponent(
+							typeof input === "string" ? input : input.label,
+						)}`,
+						state: "oauth-state",
+					}),
+				),
 				loadOAuthState: vi.fn(() => ({
 					state: "oauth-state",
 					codeVerifier: "code-verifier",
 					label: "Personal Gmail",
+					ownerPrincipalEmail: "mannie@inherent.design",
 				})),
 				exchangeCode: vi.fn(async () => ({
 					access_token: "access-token",
@@ -3151,11 +3423,13 @@ describe("new server actions", () => {
 			};
 		});
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		await actions.beginGoogleConnectCommand({
 			label: "Personal Gmail",
+			ownerPrincipalEmail: "mannie@inherent.design",
 		});
 		const { accountId } = await actions.completeGoogleConnectCommand({
 			code: "auth-code",
@@ -3301,38 +3575,23 @@ describe("new server actions", () => {
 			},
 		}));
 		const classifyMessageNow = vi.fn(async () => ({
-			label: {
-				schemaVersion: "message-label.v1",
-				nsfw: false,
+			label: buildMessageLabelV3({
 				finance: {
 					relevant: false,
-					direction: "unknown",
-					owner: "unknown",
-					accountHint: null,
-					purpose: null,
-				},
-				social: {
-					personal: false,
-					private: false,
-					social: false,
-					business: false,
-				},
-				risk: {
-					businessSensitive: false,
-					leakRisk: false,
+					signal: "none",
+					operational: false,
+					bookHint: "unknown",
+					requiresFinanceIntel: false,
+					confidence: 1,
+					evidence: null,
 				},
 				routing: {
 					primaryBucket: "other",
+					secondaryBuckets: [],
 					tags: [],
 				},
-				confidence: {
-					overall: 1,
-					finance: 1,
-					social: 1,
-					risk: 1,
-				},
 				explanation: "ok",
-			},
+			}),
 		}));
 
 		vi.doMock("#/lib/log", () => log.module);
@@ -3370,9 +3629,10 @@ describe("new server actions", () => {
 			})),
 		}));
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		await actions.resolveReviewCommand({
 			reviewId: "review-1",
 			action: "accept",
@@ -3466,9 +3726,10 @@ describe("new server actions", () => {
 			};
 		});
 
-		const actions = await runtime.importFresh<
-			typeof import("#/app/server/actions.server")
-		>("#/app/server/actions.server");
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
 		await expect(
 			actions.completeGoogleConnectCommand({
 				code: "auth-code",
