@@ -11,13 +11,7 @@
 
 body {
 	margin: 0;
-	background:
-		radial-gradient(
-			circle at top left,
-			rgba(95, 133, 112, 0.16),
-			transparent 28%
-		),
-		linear-gradient(180deg, #f3efe7 0%, #ebe4d8 100%);
+	background: #ece7de;
 }
 
 a {
