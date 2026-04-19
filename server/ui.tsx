@@ -84,6 +84,7 @@ export function DocumentShell(input: {
 	title: string;
 	page: string;
 	eventCursor: number;
+	stateScope: string;
 	children: unknown;
 }) {
 	return (
@@ -92,7 +93,7 @@ export function DocumentShell(input: {
 			data-page={input.page}
 			data-zmail-base-path={CLIENT_CONFIG.server.basePath}
 			data-zmail-event-cursor={String(input.eventCursor)}
-			data-zmail-state-scope="local"
+			data-zmail-state-scope={input.stateScope}
 		>
 			<head>
 				<meta charSet="utf-8" />

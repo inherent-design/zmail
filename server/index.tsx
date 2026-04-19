@@ -132,7 +132,9 @@ function renderPage(
 		islands?: IslandRenderMap;
 	},
 ) {
-	const eventCursor = latestRuntimeEventId(c.get("orgId"));
+	const orgId = c.get("orgId");
+	const eventCursor = latestRuntimeEventId(orgId);
+	const stateScope = `org:${orgId}`;
 	const url = new URL(c.req.url);
 	if (c.req.header("X-Zmail-Partial") === "islands") {
 		const requested = (c.req.header("X-Zmail-Islands") ?? "")
@@ -178,6 +180,7 @@ function renderPage(
 			title={input.title}
 			page={input.page}
 			eventCursor={eventCursor}
+			stateScope={stateScope}
 		>
 			{input.children}
 		</DocumentShell>,
