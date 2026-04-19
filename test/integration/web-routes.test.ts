@@ -322,6 +322,21 @@ describe("Hono web routes", () => {
 		expect(detailHtml).toContain("Retry after config fix");
 	});
 
+	it("sanitizes claim legacy cancel targets", async () => {
+		const { app } = await loadServerApp();
+		await bootDb();
+
+		const response = await app.request(
+			"http://localhost/org/claim-legacy?returnTo=javascript%3Aalert(document.cookie)",
+		);
+
+		expect(response.status).toBe(200);
+		const html = await response.text();
+		expect(html).toContain("Claim legacy runtime");
+		expect(html).not.toContain("javascript:");
+		expect(html).toContain('href="/">Cancel</a>');
+	});
+
 	it("renders a safe Google OAuth callback error message", async () => {
 		vi.doMock("#/server/actions", async () => {
 			const actual =

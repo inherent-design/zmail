@@ -6,6 +6,8 @@ import { getDb, getSqlite } from "#/lib/db";
 import { dataRootDir, orgRootDir, runtimePaths } from "#/lib/runtime";
 import { getActiveWatcherCount } from "#/lib/watchers";
 
+const FAILED_RECENT_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 export async function loadOpsHealth(input: {
 	orgId: string;
 	details?: boolean;
@@ -77,7 +79,7 @@ export async function loadOpsHealth(input: {
 	const [jobRows, accountRows] = await Promise.all([
 		db
 			.selectFrom("jobs")
-			.select(["status", "created_at"])
+			.select(["status", "created_at", "finished_at"])
 			.where("status", "in", ["queued", "running", "failed"])
 			.execute(),
 		db.selectFrom("accounts").select(["id", "sync_status"]).execute(),
@@ -99,7 +101,13 @@ export async function loadOpsHealth(input: {
 			runningJobs += 1;
 		}
 		if (job.status === "failed") {
-			failedRecentJobs += 1;
+			const failedAt = new Date(job.finished_at ?? job.created_at).getTime();
+			if (
+				Number.isFinite(failedAt) &&
+				now - failedAt <= FAILED_RECENT_WINDOW_MS
+			) {
+				failedRecentJobs += 1;
+			}
 		}
 	}
 	for (const account of accountRows) {

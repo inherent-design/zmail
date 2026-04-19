@@ -134,4 +134,45 @@ describe("health and metrics routes", () => {
 			},
 		});
 	});
+
+	it("counts only recent failed jobs in org health", async () => {
+		const { app, runtime } = await loadServerApp({ role: "org_operator" });
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		const jobs =
+			await runtime.importFresh<typeof import("#/lib/jobs")>("#/lib/jobs");
+		const recentFailedId = await jobs.queueJob({
+			kind: "sync_account_delta",
+			scopeType: "account",
+			scopeId: "acct-recent-failed",
+		});
+		jobs.claimNextJob();
+		await jobs.failJob(recentFailedId, new Error("recent boom"));
+		const staleFailedId = await jobs.queueJob({
+			kind: "sync_account_delta",
+			scopeType: "account",
+			scopeId: "acct-stale-failed",
+		});
+		jobs.claimNextJob();
+		await jobs.failJob(staleFailedId, new Error("stale boom"));
+		const staleTimestamp = new Date(
+			Date.now() - 48 * 60 * 60 * 1000,
+		).toISOString();
+		await db
+			.updateTable("jobs")
+			.set({
+				created_at: staleTimestamp,
+				finished_at: staleTimestamp,
+			})
+			.where("id", "=", staleFailedId)
+			.execute();
+
+		const response = await app.request("http://localhost/ops/health");
+
+		expect(response.status).toBe(200);
+		await expect(response.json()).resolves.toMatchObject({
+			worker: {
+				failedRecentJobs: 1,
+			},
+		});
+	});
 });

@@ -72,6 +72,7 @@ import {
 	loadOrgSelectionData,
 	requireOrgRole,
 	type SessionPrincipal,
+	safeReturnTo,
 	selectOrganizationForBrowserSession,
 	WorkOsRoleConfigurationError,
 } from "#/server/auth";
@@ -477,7 +478,7 @@ webApp.get(
 			page: "org-claim-legacy",
 			children: renderOrgClaimLegacyPage({
 				orgId: c.get("orgId"),
-				returnTo: c.req.query("returnTo") ?? appPath("/"),
+				returnTo: safeReturnTo(c.req.query("returnTo")),
 			}),
 		});
 	},

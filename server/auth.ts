@@ -261,7 +261,7 @@ function orgRoutePath(pathname: string, c: Context) {
 	);
 }
 
-function safeReturnTo(input: string | null | undefined) {
+export function safeReturnTo(input: string | null | undefined) {
 	const fallback = appPath("/");
 	const raw = input?.trim();
 	if (
