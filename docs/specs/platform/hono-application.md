@@ -109,6 +109,15 @@ requires an active org and `org_operator` or higher.
 - `GET /profiles/:accountId`
 - `GET /events`
 
+### Browser vendor asset routes
+
+- `GET /vendor/echarts/*`
+- `GET /vendor/zrender/*`
+
+These routes serve browser ESM dependencies referenced by the import map. They
+are internal browser assets, not application APIs. They must not serve secrets,
+org data, runtime DB files, or operator artifacts.
+
 ### Browser form and action routes
 
 - `POST /rpc/accounts/connect/google`

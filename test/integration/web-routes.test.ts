@@ -317,6 +317,28 @@ describe("Hono web routes", () => {
 		expect(html).toContain('href="/zmail/accounts/new"');
 	});
 
+	it("serves browser vendor assets without app shell fallback", async () => {
+		const { app } = await loadServerApp();
+		await bootDb();
+
+		for (const path of [
+			"/vendor/echarts/core.js",
+			"/vendor/zrender/lib/zrender.js",
+		]) {
+			const response = await app.request(`http://localhost${path}`);
+			expect(response.status).toBe(200);
+			const body = await response.text();
+			expect(body).not.toContain("<html");
+			expect(body).not.toContain('id="app-main"');
+		}
+
+		const missing = await app.request(
+			"http://localhost/vendor/echarts/not-found.js",
+		);
+		expect(missing.status).toBe(404);
+		await expect(missing.text()).resolves.not.toContain('id="app-main"');
+	});
+
 	it("renders a friendly WorkOS role-configuration shell error", async () => {
 		vi.doMock("#/server/auth", async () => {
 			const actual =
