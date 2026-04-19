@@ -216,8 +216,8 @@ The minimal browser runtime is split into these modules:
 No monolithic UI runtime should accumulate unrelated concerns.
 
 Finance chart modules may import ECharts through the document import map. The
-active implementation maps `echarts/` and `zrender/` to Hono-served vendor
-asset routes.
+active implementation maps `echarts/`, `tslib`, and `zrender/` to Hono-served
+vendor asset routes.
 
 ## Data and State Model
 

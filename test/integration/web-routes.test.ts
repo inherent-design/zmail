@@ -102,6 +102,7 @@ describe("Hono web routes", () => {
 		const homeHtml = await home.text();
 		expect(homeHtml).toContain("Gmail live-sync analysis workspace.");
 		expect(homeHtml).toContain('"echarts/":"/vendor/echarts/"');
+		expect(homeHtml).toContain('"tslib":"/vendor/tslib/tslib.es6.js"');
 		expect(homeHtml).not.toContain("&quot;echarts/&quot;");
 		expect(homeHtml).toContain(
 			`data-zmail-event-cursor="${String(latestEvent.id)}"`,
@@ -323,6 +324,7 @@ describe("Hono web routes", () => {
 
 		for (const path of [
 			"/vendor/echarts/core.js",
+			"/vendor/tslib/tslib.es6.js",
 			"/vendor/zrender/lib/zrender.js",
 		]) {
 			const response = await app.request(`http://localhost${path}`);
@@ -337,6 +339,12 @@ describe("Hono web routes", () => {
 		);
 		expect(missing.status).toBe(404);
 		await expect(missing.text()).resolves.not.toContain('id="app-main"');
+
+		const missingTslib = await app.request(
+			"http://localhost/vendor/tslib/not-found.js",
+		);
+		expect(missingTslib.status).toBe(404);
+		await expect(missingTslib.text()).resolves.not.toContain('id="app-main"');
 	});
 
 	it("renders a friendly WorkOS role-configuration shell error", async () => {

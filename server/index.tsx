@@ -432,6 +432,13 @@ webApp.use(
 	}),
 );
 webApp.use(
+	"/vendor/tslib/*",
+	serveStatic({
+		root: "./node_modules/tslib",
+		rewriteRequestPath: (path) => path.replace(/^\/vendor\/tslib/, ""),
+	}),
+);
+webApp.use(
 	"/vendor/zrender/*",
 	serveStatic({
 		root: "./node_modules/zrender",
@@ -439,6 +446,7 @@ webApp.use(
 	}),
 );
 webApp.all("/vendor/echarts/*", (c) => c.text("Not found", 404));
+webApp.all("/vendor/tslib/*", (c) => c.text("Not found", 404));
 webApp.all("/vendor/zrender/*", (c) => c.text("Not found", 404));
 
 webApp.get("/auth/login", handleLogin);
