@@ -45,6 +45,7 @@ Active job kinds:
 - `sync_account_reconcile`
 - `classify_account_backlog`
 - `classify_finance_backlog`
+- `classify_finance_messages`
 - `rebuild_category_assignments`
 - `rebuild_finance_knowledge`
 - `rebuild_finance_rollups`
@@ -69,6 +70,9 @@ Examples:
 
 - root backlog: `(kind, scope_type=account, scope_id=accountId)`
 - finance backlog: `(kind, scope_type=account, scope_id=accountId)`
+- targeted finance repair extraction:
+  `(kind=classify_finance_messages, scope_type=account, scope_id=accountId)`
+  with `meta.targetMessageIds`
 - finance rollup rebuild: `(kind, scope_type=system, scope_id=finance_rollups)`
 - finance import: `(kind, scope_type=system, scope_id=artifactSha256)`
 

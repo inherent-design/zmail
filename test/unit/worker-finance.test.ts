@@ -693,4 +693,178 @@ describe("worker finance jobs", () => {
 			registrySha256: "registry-sha",
 		});
 	});
+
+	it("classifies only targeted finance messages", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		const targetMessageId = await insertMessageRow(db, {
+			id: "msg-target-apple-receipt",
+			accountId: "acct-1",
+			contentSha256: "content-target",
+		});
+		const unrelatedEligibleMessageId = await insertMessageRow(db, {
+			id: "msg-unrelated-eligible",
+			accountId: "acct-1",
+			contentSha256: "content-unrelated-eligible",
+		});
+		const unrelatedStaleMessageId = await insertMessageRow(db, {
+			id: "msg-unrelated-stale",
+			accountId: "acct-1",
+			contentSha256: "content-unrelated-stale",
+		});
+		for (const [messageId, contentSha256] of [
+			[targetMessageId, "content-target"],
+			[unrelatedEligibleMessageId, "content-unrelated-eligible"],
+			[unrelatedStaleMessageId, "content-unrelated-stale"],
+		] as const) {
+			await insertMessageLabelRow(db, {
+				messageId,
+				primaryBucket: "finance",
+				contentSha256,
+				label: financeLabel(),
+			});
+		}
+		await insertSecondaryResultRow(db, {
+			messageId: unrelatedStaleMessageId,
+			status: "stale",
+			contentSha256: "old-content",
+			registrySha256: "old-registry",
+			result: buildFinanceIntelV3(),
+		});
+
+		const classifyFinanceMessageNow = vi.fn(
+			async (input: {
+				jobId?: string | null;
+				messageId: string;
+				contentSha256: string | null;
+			}) => {
+				const { persistSecondaryResult } = await import("#/lib/secondary");
+				await persistSecondaryResult({
+					jobId: input.jobId ?? null,
+					messageId: input.messageId,
+					classifierKey: "finance_intel",
+					schemaVersion: "finance-intel.v3",
+					model: "gpt-5.4-mini",
+					backend: "openai-subscription",
+					promptVersion: "finance-intel-v3",
+					source: "model",
+					rawResponse: {},
+					usage: null,
+					result: buildFinanceIntelV3(),
+					contentSha256: input.contentSha256,
+					registrySha256: "registry-sha",
+					status: "ready",
+					overallConfidence: 1,
+				});
+				return {
+					headStatus: "ready" as const,
+					lowConfidence: false,
+					financeIntel: buildFinanceIntelV3(),
+					model: "gpt-5.4-mini",
+					backend: "openai-subscription",
+					usage: null,
+				};
+			},
+		);
+
+		vi.doMock("#/lib/registry", () => ({
+			loadOperatorRegistry: vi.fn(async () => ({
+				sha256: "registry-sha",
+				importedAt: "2026-01-10T00:00:00.000Z",
+				sourceDir: "/tmp/registry",
+				identities: [],
+				institutions: [],
+				financialAccounts: [],
+				senderRules: [],
+			})),
+			matchRegistryForMessage: vi.fn(async () => ({
+				sha256: "registry-sha",
+				identities: [],
+				institutions: [],
+				financialAccounts: [],
+				senderRules: [],
+			})),
+		}));
+		vi.doMock("#/lib/finance-intel", () => ({
+			classifyFinanceMessageNow,
+		}));
+
+		const jobs =
+			await runtime.importFresh<typeof import("#/lib/jobs")>("#/lib/jobs");
+		const worker =
+			await runtime.importFresh<typeof import("#/lib/worker")>("#/lib/worker");
+		const jobId = await jobs.queueJobIdempotent({
+			kind: "classify_finance_messages",
+			scopeType: "account",
+			scopeId: "acct-1",
+			meta: { targetMessageIds: [targetMessageId] },
+		});
+
+		expect(await worker.runWorkerIteration({ waitOnIdle: false })).toBe(true);
+
+		const targetHead = await db
+			.selectFrom("message_secondary_heads")
+			.select(["status", "content_sha256", "registry_sha256"])
+			.where("message_id", "=", targetMessageId)
+			.executeTakeFirstOrThrow();
+		const unrelatedEligibleHead = await db
+			.selectFrom("message_secondary_heads")
+			.select(["status"])
+			.where("message_id", "=", unrelatedEligibleMessageId)
+			.executeTakeFirst();
+		const unrelatedStaleHead = await db
+			.selectFrom("message_secondary_heads")
+			.select(["status", "content_sha256", "registry_sha256"])
+			.where("message_id", "=", unrelatedStaleMessageId)
+			.executeTakeFirstOrThrow();
+		const completedJob = await db
+			.selectFrom("jobs")
+			.select(["status", "success_count", "error_count", "meta_json"])
+			.where("id", "=", jobId)
+			.executeTakeFirstOrThrow();
+		const queuedJobs = await db
+			.selectFrom("jobs")
+			.select(["kind", "scope_id", "status"])
+			.where("id", "!=", jobId ?? "")
+			.orderBy("kind")
+			.execute();
+
+		expect(classifyFinanceMessageNow).toHaveBeenCalledOnce();
+		expect(classifyFinanceMessageNow).toHaveBeenCalledWith(
+			expect.objectContaining({ messageId: targetMessageId }),
+		);
+		expect(targetHead).toEqual({
+			status: "ready",
+			content_sha256: "content-target",
+			registry_sha256: "registry-sha",
+		});
+		expect(unrelatedEligibleHead).toBeUndefined();
+		expect(unrelatedStaleHead).toEqual({
+			status: "stale",
+			content_sha256: "old-content",
+			registry_sha256: "old-registry",
+		});
+		expect(completedJob.status).toBe("complete");
+		expect(completedJob.success_count).toBe(1);
+		expect(completedJob.error_count).toBe(0);
+		expect(JSON.parse(completedJob.meta_json ?? "{}")).toMatchObject({
+			mode: "live",
+			processed: 1,
+			total: 1,
+			targetMessageIds: [targetMessageId],
+			skipped: [],
+		});
+		expect(queuedJobs).toEqual([
+			{
+				kind: "rebuild_finance_knowledge",
+				scope_id: "finance",
+				status: "queued",
+			},
+			{
+				kind: "rebuild_finance_rollups",
+				scope_id: "finance_rollups",
+				status: "queued",
+			},
+		]);
+	});
 });

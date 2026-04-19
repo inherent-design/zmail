@@ -23,6 +23,7 @@ export type JobKind =
 	| "sync_account_reconcile"
 	| "classify_account_backlog"
 	| "classify_finance_backlog"
+	| "classify_finance_messages"
 	| "rebuild_category_assignments";
 
 export interface JobRecord {
