@@ -176,7 +176,7 @@ function categoriesOption(props) {
 	};
 }
 
-function createChartIsland(optionBuilder) {
+function chartIsland(id, optionBuilder) {
 	let cleanup = null;
 	return {
 		init(ctx) {
@@ -194,19 +194,6 @@ function createChartIsland(optionBuilder) {
 				cleanup = null;
 			};
 		},
-		beforeSwap() {
-			const root = document.querySelector(
-				`[data-zmail-island="${this.id ?? ""}"]`,
-			);
-			return root ? captureChartState(root) : null;
-		},
-	};
-}
-
-function chartIsland(id, optionBuilder) {
-	const mod = createChartIsland(optionBuilder);
-	return {
-		init: mod.init,
 		beforeSwap() {
 			const root = document.querySelector(`[data-zmail-island="${id}"]`);
 			return root ? captureChartState(root) : null;
