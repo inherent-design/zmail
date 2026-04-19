@@ -239,6 +239,68 @@ describe("loadFinanceData filter contract", () => {
 					created_at: "2026-03-31T00:00:00.000Z",
 					updated_at: "2026-03-31T00:00:00.000Z",
 				},
+				{
+					id: "ledger-income-1",
+					canonical_key: "email:payroll:100.00:2026-03-10",
+					status: "ready",
+					source_authority: "email",
+					occurred_at: "2026-03-10",
+					posted_at: null,
+					cleared_at: null,
+					description: "Payroll",
+					counterparty: "Payroll Inc",
+					direction: "income",
+					amount_value: "100.00",
+					amount_minor: 10000,
+					currency: "USD",
+					book: "business",
+					business_use_percent: null,
+					debit_account: "Assets:Business:Bank:Checking",
+					credit_account: "Income:Business:Payroll",
+					account_mapping_key: "acct:finance",
+					field_confidence_json: JSON.stringify({ overall: 0.95 }),
+					ledger_metadata_json: JSON.stringify({
+						categoryPrimary: "payroll",
+						categorySecondary: "salary",
+						ownerIdentityId: "owner:email",
+						institutionId: "inst:email-bank",
+						financialAccountId: "acct:finance",
+					}),
+					raw_payload_json: JSON.stringify({ seeded: true }),
+					created_at: "2026-03-31T00:00:00.000Z",
+					updated_at: "2026-03-31T00:00:00.000Z",
+				},
+				{
+					id: "ledger-duplicate-1",
+					canonical_key: "duplicate:77.00:2026-03-12",
+					status: "duplicate",
+					source_authority: "email",
+					occurred_at: "2026-03-12",
+					posted_at: null,
+					cleared_at: null,
+					description: "Duplicate charge",
+					counterparty: "Duplicate Merchant",
+					direction: "expense",
+					amount_value: "77.00",
+					amount_minor: 7700,
+					currency: "USD",
+					book: "business",
+					business_use_percent: null,
+					debit_account: "Expenses:Business:Software",
+					credit_account: "Assets:Business:Bank:Checking",
+					account_mapping_key: "acct:finance",
+					field_confidence_json: JSON.stringify({ overall: 0.95 }),
+					ledger_metadata_json: JSON.stringify({
+						categoryPrimary: "software_services",
+						categorySecondary: "saas",
+						ownerIdentityId: "owner:email",
+						institutionId: "inst:email-bank",
+						financialAccountId: "acct:finance",
+					}),
+					raw_payload_json: JSON.stringify({ seeded: true }),
+					created_at: "2026-03-31T00:00:00.000Z",
+					updated_at: "2026-03-31T00:00:00.000Z",
+				},
 			])
 			.execute();
 		await db
@@ -265,6 +327,18 @@ describe("loadFinanceData filter contract", () => {
 					import_run_id: "import-run-1",
 					import_transaction_id: "import-tx-1",
 					import_document_id: "import-doc-1",
+					evidence_json: JSON.stringify({ seeded: true }),
+					created_at: "2026-03-31T00:00:00.000Z",
+				},
+				{
+					id: "ledger-source-income-1",
+					ledger_entry_id: "ledger-income-1",
+					source_kind: "email",
+					message_id: emailMessageId,
+					secondary_result_id: null,
+					import_run_id: null,
+					import_transaction_id: null,
+					import_document_id: null,
 					evidence_json: JSON.stringify({ seeded: true }),
 					created_at: "2026-03-31T00:00:00.000Z",
 				},
@@ -304,6 +378,30 @@ describe("loadFinanceData filter contract", () => {
 				updated_at: "2026-03-31T00:00:00.000Z",
 			})
 			.execute();
+		await db
+			.insertInto("finance_patterns")
+			.values({
+				id: "pattern-recurring-1",
+				pattern_kind: "recurring_merchant",
+				pattern_key: "business:acme-cloud",
+				status: "active",
+				confidence: 0.91,
+				summary_json: JSON.stringify({
+					counterparty: "Acme Cloud",
+					book: "business",
+					transactionCount: 3,
+					canonicalKeys: ["a", "b", "c"],
+					cadence: "monthly",
+					amountBand: "$40 to $45",
+					nextExpectedAt: "2026-04-15",
+					lastAmountMinor: 4200,
+				}),
+				first_seen_at: "2026-01-15",
+				last_seen_at: "2026-03-15",
+				created_at: "2026-03-31T00:00:00.000Z",
+				updated_at: "2026-03-31T00:00:00.000Z",
+			})
+			.execute();
 
 		vi.doMock("#/lib/worker", () => ({
 			ensureWorkerStarted: vi.fn(),
@@ -335,6 +433,55 @@ describe("loadFinanceData filter contract", () => {
 				expect.objectContaining({ primaryCategory: "materialized_only" }),
 			]),
 		);
+		expect(unfiltered.cashflowSeries).toHaveLength(12);
+		expect(unfiltered.cashflowSeries[2]).toEqual(
+			expect.objectContaining({
+				month: "2026-03",
+				inflowMinor: 10000,
+				outflowMinor: 9300,
+				netMinor: 700,
+				transactionCount: 3,
+			}),
+		);
+		expect(unfiltered.categoryBreakdown).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					primaryCategory: "software_services",
+					secondaryCategory: "statement_import",
+					outflowMinor: 5100,
+					inflowMinor: 0,
+					netMinor: -5100,
+					transactionCount: 1,
+				}),
+				expect.objectContaining({
+					primaryCategory: "software_services",
+					secondaryCategory: "saas",
+					outflowMinor: 4200,
+					inflowMinor: 0,
+					netMinor: -4200,
+					transactionCount: 1,
+				}),
+				expect.objectContaining({
+					primaryCategory: "payroll",
+					secondaryCategory: "salary",
+					inflowMinor: 10000,
+					outflowMinor: 0,
+					netMinor: 10000,
+					transactionCount: 1,
+				}),
+			]),
+		);
+		expect(unfiltered.subscriptionPatterns).toEqual([
+			expect.objectContaining({
+				patternKey: "business:acme-cloud",
+				counterparty: "Acme Cloud",
+				book: "business",
+				transactionCount: 3,
+				canonicalKeyCount: 3,
+				cadence: "monthly",
+				lastAmountMinor: 4200,
+			}),
+		]);
 
 		const pdfFiltered = await actions.loadFinanceData({
 			year: 2026,
@@ -376,18 +523,26 @@ describe("loadFinanceData filter contract", () => {
 			year: 2026,
 			accountId: "acct-1",
 		});
-		expect(accountFiltered.rollups).toEqual([
-			expect.objectContaining({
-				sourceKind: "email",
-				primaryCategory: "software_services",
-			}),
-		]);
+		expect(accountFiltered.rollups).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					sourceKind: "email",
+					primaryCategory: "software_services",
+				}),
+				expect.objectContaining({
+					sourceKind: "email",
+					primaryCategory: "payroll",
+				}),
+			]),
+		);
 		expect(accountFiltered.importedDocuments).toEqual([]);
-		expect(accountFiltered.ledgerPreview).toEqual([
-			expect.objectContaining({
-				accountId: "acct-1",
-				sourceKind: "email",
-			}),
-		]);
+		expect(accountFiltered.ledgerPreview).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					accountId: "acct-1",
+					sourceKind: "email",
+				}),
+			]),
+		);
 	});
 });
