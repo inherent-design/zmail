@@ -1,3 +1,61 @@
+type RuntimeEvent = {
+	topic: string;
+	entityKind?: string | null;
+	entityId?: string | null;
+	eventType?: string;
+	createdAt?: string;
+	payload?: Record<string, unknown>;
+};
+
+type IslandApp = {
+	basePath: string;
+	appPath(path: string): string;
+	subscribe(topic: string, handler: (event: RuntimeEvent) => void): () => void;
+	postJson(path: string, payload?: unknown): Promise<unknown>;
+	refresh(options?: {
+		islands?: string | string[];
+		originPage?: string;
+		originUrl?: string;
+	}): Promise<void>;
+	refreshIsland(
+		ids: string | string[],
+		options?: {
+			originPage?: string;
+			originUrl?: string;
+		},
+	): Promise<void>;
+	scheduleRefresh(options?: {
+		immediate?: boolean;
+		debounceMs?: number;
+		maxWaitMs?: number;
+		islands?: string | string[];
+		originPage?: string;
+		originUrl?: string;
+	}): Promise<void>;
+	navigate(url: string | URL, options?: unknown): Promise<void>;
+	currentPage(): string | null;
+	currentPathname(): string;
+};
+
+type IslandContext = {
+	app: IslandApp;
+	id: string;
+	root: Element;
+	props: unknown;
+	state: unknown;
+};
+
+type IslandCleanup = () => void;
+// biome-ignore lint/suspicious/noConfusingVoidType: Island init matches browser module contract.
+type IslandInitResult = void | IslandCleanup;
+
+type IslandModule = {
+	init(ctx: IslandContext): IslandInitResult | Promise<IslandInitResult>;
+	beforeSwap?(): unknown;
+	afterSwap?(state: unknown): void | Promise<void>;
+	shouldRefresh?(event: RuntimeEvent): boolean;
+};
+
 declare module "#/public/client/core/realtime.js" {
 	export const SSE_EVENTS: string[];
 	export function normalizeTopics(topics: Iterable<unknown>): string[];
@@ -10,8 +68,27 @@ declare module "#/public/client/core/realtime.js" {
 		topic: string;
 		entityKind?: string | null;
 		entityId?: string | null;
+		eventType?: string;
 		createdAt?: string;
 		payload?: Record<string, unknown>;
+	};
+}
+
+declare module "#/public/client/core/island-registry.js" {
+	export type { IslandApp, IslandContext, IslandModule, RuntimeEvent };
+	export function createIslandRegistry(
+		loaders: Record<string, () => Promise<unknown>>,
+	): {
+		mount(page: string, app: unknown): Promise<void>;
+		beforeIslandSwap(id: string, root: Element): unknown;
+		afterIslandSwap(
+			id: string,
+			root: Element,
+			state: unknown,
+			app: unknown,
+		): Promise<void>;
+		cleanup(): void;
+		currentPage(): string | null;
 	};
 }
 
@@ -79,14 +156,7 @@ declare module "#/public/client/core/sync-provider.js" {
 	}): {
 		subscribe(
 			topic: string,
-			handler: (event: {
-				topic: string;
-				entityKind?: string | null;
-				entityId?: string | null;
-				eventType?: string;
-				createdAt?: string;
-				payload?: Record<string, unknown>;
-			}) => void,
+			handler: (event: RuntimeEvent) => void,
 		): () => void;
 		mountTopics(topics: Iterable<unknown>): () => void;
 		reconnect(): void;
