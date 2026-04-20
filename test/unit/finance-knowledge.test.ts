@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-
+import { buildFinanceRollupView } from "#/lib/finance-rollups";
 import {
 	bootDb,
 	insertMessageLabelRow,
@@ -353,5 +353,50 @@ describe("finance knowledge", () => {
 		expect(result.patterns).toBe(1);
 		expect(pattern.pattern_kind).toBe("recurring_merchant");
 		expect(pattern.pattern_key).toBe("business:example-saas");
+	});
+
+	it("excludes blocked and duplicate ledger rows from rollup totals", () => {
+		const baseEntry = {
+			sourceKind: "email",
+			year: 2026,
+			accountId: "acct-1",
+			primaryCategory: "software",
+			secondaryCategory: "saas",
+			direction: "expense",
+			amountMinor: 1000,
+			occurredAt: "2026-01-01",
+			ownerIdentityId: null,
+			institutionId: null,
+			financialAccountId: null,
+			description: "Example",
+			canonicalKey: "entry",
+			book: "business",
+		};
+
+		const view = buildFinanceRollupView({
+			ledger: [
+				{ ...baseEntry, status: "ready", canonicalKey: "ready" },
+				{ ...baseEntry, status: "review", canonicalKey: "review" },
+				{ ...baseEntry, status: "blocked", canonicalKey: "blocked" },
+				{ ...baseEntry, status: "duplicate", canonicalKey: "duplicate" },
+			],
+			importDocuments: [],
+		});
+
+		expect(view.summary.outflowMinor).toBe(2000);
+		expect(view.summary.extractedTransactionCount).toBe(2);
+		expect(view.rollups).toEqual([
+			expect.objectContaining({
+				outflowMinor: 2000,
+				transactionCount: 2,
+				extractedTransactionCount: 2,
+			}),
+		]);
+		expect(view.subcategoryRollups).toEqual([
+			expect.objectContaining({
+				outflowMinor: 2000,
+				transactionCount: 2,
+			}),
+		]);
 	});
 });

@@ -2652,6 +2652,7 @@ export async function queueFinanceExportCommand(input: {
 	year?: number | null;
 	outDir?: string | null;
 	strict?: boolean;
+	force?: boolean;
 }) {
 	return runLoggedAction({
 		operation: "queueFinanceExportCommand",
@@ -2667,6 +2668,7 @@ export async function queueFinanceExportCommand(input: {
 			const orgId = runtime.currentOrgId();
 			const exportRunId = randomUUID();
 			const strict = input.strict ?? true;
+			const force = input.force ?? false;
 			const year = input.year ?? null;
 			const outDir = input.outDir?.trim()
 				? resolve(input.outDir.trim())
@@ -2702,6 +2704,7 @@ export async function queueFinanceExportCommand(input: {
 					outDir,
 					year,
 					strict,
+					force,
 				},
 			});
 			return { jobId, exportRunId, outDir };

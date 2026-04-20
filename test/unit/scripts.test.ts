@@ -1158,12 +1158,32 @@ describe("scripts", () => {
 			"org-a",
 			artifactPath,
 		]);
+		await script.main(undefined, [
+			"node",
+			"scripts/import-finance-artifact.ts",
+			"--org",
+			"org-a",
+			artifactPath,
+		]);
 
 		const summary = JSON.parse(String(logSpy.mock.calls[0]?.[0] ?? "{}"));
+		const duplicateSummary = JSON.parse(
+			String(logSpy.mock.calls[1]?.[0] ?? "{}"),
+		);
 		expect(summary).toMatchObject({
 			ok: true,
 			orgId: "org-a",
 			imported: expect.objectContaining({
+				status: "imported",
+				artifactSha256: "artifact-sha-script",
+			}),
+		});
+		expect(duplicateSummary).toMatchObject({
+			ok: true,
+			orgId: "org-a",
+			imported: expect.objectContaining({
+				status: "already_imported",
+				importRunId: summary.imported.importRunId,
 				artifactSha256: "artifact-sha-script",
 			}),
 		});

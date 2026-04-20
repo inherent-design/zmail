@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -123,5 +123,42 @@ describe("beancount export", () => {
 			manifest.validation.beanCheck,
 		);
 		expect(manifest.items).toHaveLength(2);
+	});
+
+	it("refuses to overwrite an existing export target unless forced", async () => {
+		const runtime = await createTestRuntime();
+		await bootDb({ seedDefaultAccount: true });
+		const { exportFinanceBeancountPackage } = await runtime.importFresh<
+			typeof import("#/lib/beancount-export")
+		>("#/lib/beancount-export");
+		const { currentOrgId } =
+			await runtime.importFresh<typeof import("#/lib/runtime")>(
+				"#/lib/runtime",
+			);
+		const outDir = join(runtime.root, "export");
+		mkdirSync(outDir);
+		const sentinel = join(outDir, "main.beancount");
+		writeFileSync(sentinel, "existing", "utf8");
+
+		await expect(
+			exportFinanceBeancountPackage({
+				orgId: currentOrgId(),
+				outDir,
+				year: 2026,
+				strict: true,
+			}),
+		).rejects.toThrow("Export target already exists");
+		expect(readFileSync(sentinel, "utf8")).toBe("existing");
+
+		await expect(
+			exportFinanceBeancountPackage({
+				orgId: currentOrgId(),
+				outDir,
+				year: 2026,
+				strict: true,
+				force: true,
+			}),
+		).resolves.toMatchObject({ outDir });
+		expect(readFileSync(sentinel, "utf8")).toContain("include");
 	});
 });

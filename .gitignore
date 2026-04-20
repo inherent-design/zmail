@@ -350,6 +350,8 @@ $RECYCLE.BIN/
 # End of https://www.toptal.com/developers/gitignore/api/macos,windows,linux,emacs,vim,sublimetext,visualstudiocode,notepadpp,node
 
 # zmail-specific ignores not covered by the shared template
+.idea/
+.playwright-mcp/
 dist-ssr
 *.local
 .nitro

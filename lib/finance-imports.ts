@@ -152,6 +152,17 @@ export async function importFinanceArtifact(input: unknown) {
 	const importRunId = randomUUID();
 	const importedAt = nowIso();
 	const artifactSha256 = computeArtifactSha256(artifact);
+	let result:
+		| {
+				status: "imported" | "already_imported";
+				importRunId: string;
+				importedAt: string;
+				artifactSha256: string;
+				documents: number;
+				transactions: number;
+				registrySuggestions: number;
+		  }
+		| undefined;
 
 	await db.transaction().execute(async (trx) => {
 		await trx
@@ -171,7 +182,31 @@ export async function importFinanceArtifact(input: unknown) {
 				raw_artifact_json: jsonText(artifact),
 				imported_at: importedAt,
 			})
+			.onConflict((oc) => oc.column("artifact_sha256").doNothing())
 			.execute();
+
+		const importRun = await trx
+			.selectFrom("finance_import_runs")
+			.select(["id", "imported_at"])
+			.where("artifact_sha256", "=", artifactSha256)
+			.orderBy("imported_at", "desc")
+			.executeTakeFirstOrThrow();
+		if (importRun.id !== importRunId) {
+			result = {
+				status: "already_imported",
+				importRunId: importRun.id,
+				importedAt: importRun.imported_at,
+				artifactSha256,
+				documents: artifact.documents.length,
+				transactions: artifact.transactions.length,
+				registrySuggestions:
+					artifact.registrySuggestions.identities.length +
+					artifact.registrySuggestions.institutions.length +
+					artifact.registrySuggestions.financialAccounts.length +
+					artifact.registrySuggestions.senderRules.length,
+			};
+			return;
+		}
 
 		if (artifact.documents.length > 0) {
 			await trx
@@ -279,16 +314,19 @@ export async function importFinanceArtifact(input: unknown) {
 		}
 	});
 
-	return {
-		importRunId,
-		importedAt,
-		artifactSha256,
-		documents: artifact.documents.length,
-		transactions: artifact.transactions.length,
-		registrySuggestions:
-			artifact.registrySuggestions.identities.length +
-			artifact.registrySuggestions.institutions.length +
-			artifact.registrySuggestions.financialAccounts.length +
-			artifact.registrySuggestions.senderRules.length,
-	};
+	return (
+		result ?? {
+			status: "imported",
+			importRunId,
+			importedAt,
+			artifactSha256,
+			documents: artifact.documents.length,
+			transactions: artifact.transactions.length,
+			registrySuggestions:
+				artifact.registrySuggestions.identities.length +
+				artifact.registrySuggestions.institutions.length +
+				artifact.registrySuggestions.financialAccounts.length +
+				artifact.registrySuggestions.senderRules.length,
+		}
+	);
 }

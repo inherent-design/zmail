@@ -139,6 +139,7 @@ org data, runtime DB files, or operator artifacts.
 - `POST /rpc/finance/suggestions/reconcile`
 - `POST /rpc/finance/knowledge/rebuild`
 - `POST /rpc/finance/rollups/rebuild`
+- `POST /rpc/finance/export`
 
 These mutation routes may be implemented through internal `commands`, but the
 external transport contract stays standard Hono HTTP routes.
@@ -292,6 +293,11 @@ Hono owns error mapping:
 
 Browser pages must render operator-safe error pages. JSON APIs must never return
 HTML error bodies.
+
+Current development posture: JSON `500` responses may include `Error.message`
+while the product is still in local/in-house operation. Before service release,
+replace this with a generic client message plus an operator-visible incident or
+trace id so debugability remains without returning raw exception text.
 
 SSE handlers must never emit stack traces or HTML fragments.
 

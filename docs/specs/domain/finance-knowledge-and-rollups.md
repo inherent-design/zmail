@@ -5,6 +5,28 @@
 This document defines finance knowledge materialization and yearly rollups for
 zmail vNext.
 
+## Operational Vocabulary
+
+- bookkeeping: the operational habit of recording money movement in a
+  structured way so income, expenses, assets, liabilities, and taxes can be
+  reviewed later
+- ledger: the structured list of candidate money movements zmail believes may
+  matter; here it lives in `finance_ledger_entries`
+- ledger entry: one candidate transaction or document-derived row with amount,
+  date, direction, book, account mapping, counterparty, and provenance
+- book: the accounting scope for a row, currently `personal`, `business`,
+  `mixed`, or `unknown`
+- account mapping: the bridge from zmail evidence to Beancount account names
+  such as `Expenses:Business:Software`
+- rollup: an aggregate summary such as yearly inflow/outflow/net totals by
+  category; rollups are operational dashboards, not the raw ledger
+- blocked: useful evidence exists, but zmail should not count/export the row
+  until an operator fixes missing or contradictory information
+
+Operational rule of thumb: `ready` rows can be counted and exported, `review`
+rows can be counted for planning dashboards but need operator attention before
+strict export, and `blocked` / `duplicate` rows should stay out of rollup totals.
+
 ## Inputs
 
 Finance knowledge is built from:
