@@ -58,7 +58,7 @@ function parseFormPayload(form) {
 			payload[key] = null;
 		} else if (key === "year") {
 			payload[key] = Number(value);
-		} else if (key === "strict") {
+		} else if (key === "strict" || key === "force") {
 			payload[key] = value === "on" || value === "true";
 		} else {
 			payload[key] = value;
@@ -66,6 +66,9 @@ function parseFormPayload(form) {
 	}
 	if (!formData.has("strict")) {
 		payload.strict = false;
+	}
+	if (!formData.has("force")) {
+		payload.force = false;
 	}
 	return payload;
 }

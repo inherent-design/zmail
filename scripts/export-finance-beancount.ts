@@ -10,6 +10,7 @@ interface ParsedArgs {
 	outDir: string;
 	year?: number;
 	strict: boolean;
+	force: boolean;
 }
 
 export function parseFinanceExportArgs(argv = process.argv): ParsedArgs {
@@ -18,6 +19,7 @@ export function parseFinanceExportArgs(argv = process.argv): ParsedArgs {
 	let outDir: string | undefined;
 	let year: number | undefined;
 	let strict = true;
+	let force = false;
 
 	for (let index = 0; index < args.length; index += 1) {
 		const arg = args[index];
@@ -59,6 +61,10 @@ export function parseFinanceExportArgs(argv = process.argv): ParsedArgs {
 			case "--strict":
 				strict = true;
 				break;
+			case "-f":
+			case "--force":
+				force = true;
+				break;
 			default:
 				throw new Error(`Unsupported finance:export arg: ${arg}`);
 		}
@@ -75,6 +81,7 @@ export function parseFinanceExportArgs(argv = process.argv): ParsedArgs {
 		outDir,
 		year,
 		strict,
+		force,
 	};
 }
 
@@ -91,6 +98,7 @@ export async function main(_trace?: LogTrace, argv = process.argv) {
 			outDir: args.outDir,
 			year: args.year,
 			strict: args.strict,
+			force: args.force,
 		});
 
 		process.stdout.write(

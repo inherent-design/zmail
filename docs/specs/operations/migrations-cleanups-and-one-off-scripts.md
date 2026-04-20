@@ -186,32 +186,52 @@ Definition:
 | Script | vNext classification | Policy |
 | --- | --- | --- |
 | `scripts/import-finance-artifact.ts` | operator-safe | keep, but require `--org <orgId>` and route through the shared import service |
-| `scripts/submit_finance_artifact.py` | operator-safe | keep, but require WorkOS machine-token auth for HTTP import |
+| `scripts/submit_finance_artifact.py` | local/dev helper | keep as a thin local submitter; WorkOS machine-token and base-path handling are still required before this is a production external extractor client |
 | `scripts/extract_financial_pdf.py` | operator-safe | keep as external extractor companion; artifact schema stays canonical |
-| `scripts/db-reset.ts` | admin/repair | re-specify for org-scoped `all`, `messages`, and `jobs` reset modes |
-| `scripts/reextract-bad-bodies.ts` | admin/repair | keep as org-scoped repair tool |
-| `scripts/reextract-parse-errors.ts` | admin/repair | keep as org-scoped repair tool |
-| `scripts/worker-drain.ts` | admin/repair | keep as org-scoped or all-org drain/debug tool |
+| `scripts/db-reset.ts` | admin/repair | in current single-org development it may default to the configured default org; service-readiness requires explicit org selection for `all`, `messages`, and `jobs` reset modes |
+| `scripts/reextract-bad-bodies.ts` | admin/repair | current single-org repair tool; service-readiness requires `--org <orgId>` |
+| `scripts/reextract-parse-errors.ts` | admin/repair | current single-org repair tool; service-readiness requires `--org <orgId>` |
+| `scripts/worker-drain.ts` | admin/repair | current drain/debug helper; service-readiness requires explicit org or all-org mode |
 | `scripts/audit-corpus.ts` | operator-safe | keep, but require explicit org context and include dedup/auth/runtime diagnostics |
 | `scripts/migrate.ts` | operator-safe | migrate all discovered org DBs by default; support `--org <orgId>` and one-time `--adopt-history` for stale migration history |
 | `scripts/pi-connect-subscription.ts` | machine-global helper | remains machine-global because inference credentials are not org-scoped |
 
-## vNext CLI Direction
+## Current CLI Surface
 
-The target command surface is:
+The currently public/implemented command surface is:
 
 - `pnpm db:migrate`
 - `pnpm db:migrate -- --org <orgId>`
 - `pnpm db:migrate -- --all-orgs`
 - `pnpm db:migrate -- --all-orgs --adopt-history`
-- `pnpm db:reset --org <orgId> all`
-- `pnpm db:reset --org <orgId> messages`
-- `pnpm db:reset --org <orgId> jobs`
+- `pnpm db:reset [--org <orgId>] all`
+- `pnpm db:reset [--org <orgId>] messages`
+- `pnpm db:reset [--org <orgId>] jobs`
 - `pnpm audit:corpus --org <orgId>`
+- `pnpm reextract:bad-bodies`
+- `pnpm reextract:parse-errors`
+- `pnpm finance:import --org <orgId> <artifact.json>`
+
+## Candidate CLI Surface
+
+These commands are not public until their implementation and operator contract
+are agreed:
+
+- `pnpm finance:dedupe-imports --org <orgId>`
+
+## Service-Readiness CLI Direction
+
+Before zmail operates beyond the current single-org in-house setup, repair
+commands that can read or mutate tenant data must require one of:
+
+- explicit `--org <orgId>`
+- explicit `--all-orgs`
+
+Target service-ready examples:
+
+- `pnpm db:reset --org <orgId> all`
 - `pnpm reextract:bad-bodies --org <orgId>`
 - `pnpm reextract:parse-errors --org <orgId>`
-- `pnpm finance:import --org <orgId> <artifact.json>`
-- `pnpm finance:dedupe-imports --org <orgId>`
 
 ## Cleanup Guarantees
 

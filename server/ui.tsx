@@ -1884,6 +1884,10 @@ export function renderFinanceIslandMap(
 								Strict
 								<input name="strict" type="checkbox" checked />
 							</label>
+							<label>
+								Overwrite
+								<input name="force" type="checkbox" />
+							</label>
 							<div class="actions">
 								<button class="button" type="submit">
 									Queue export

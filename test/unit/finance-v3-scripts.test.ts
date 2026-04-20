@@ -16,12 +16,14 @@ describe("finance v3 scripts", () => {
 				"--year",
 				"2026",
 				"--strict",
+				"--force",
 			]),
 		).toEqual({
 			orgId: "org_1",
 			outDir: "/tmp/export",
 			year: 2026,
 			strict: true,
+			force: true,
 		});
 
 		expect(() =>

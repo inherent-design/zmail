@@ -342,6 +342,7 @@ async function exportFinanceBeancountJob(job: JobRecord, trace: LogTrace) {
 		exportRunId?: string;
 		year?: number | null;
 		strict?: boolean;
+		force?: boolean;
 	}>(job, {});
 	if (!meta.outDir) {
 		throw new Error("export_finance_beancount job missing outDir");
@@ -363,6 +364,7 @@ async function exportFinanceBeancountJob(job: JobRecord, trace: LogTrace) {
 			exportRunId: meta.exportRunId,
 			year: meta.year ?? undefined,
 			strict: meta.strict ?? true,
+			force: meta.force ?? false,
 		});
 		await completeJob({
 			id: job.id,

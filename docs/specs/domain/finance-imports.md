@@ -106,6 +106,10 @@ Canonical admin/operator CLI:
 The CLI must resolve the org runtime root before import and call the same shared
 import service used by HTTP.
 
+The shared import service owns artifact idempotency for CLI, HTTP worker jobs,
+and direct repair calls. Re-importing the same artifact returns
+`status: "already_imported"` with the existing import run id.
+
 ### HTTP
 
 Canonical app-relative API:
@@ -246,6 +250,11 @@ Supported flow:
      a WorkOS machine token
    - or writes JSON for `pnpm finance:import --org <orgId>`
 4. zmail imports or dedups the artifact
+
+Current helper status: `scripts/submit_finance_artifact.py` is a local/dev thin
+submitter. It accepts a URL and posts JSON, but does not yet acquire WorkOS
+machine tokens or derive `base_path`. Treat it as a convenience wrapper, not the
+production external extractor client.
 
 ## Failure Modes
 

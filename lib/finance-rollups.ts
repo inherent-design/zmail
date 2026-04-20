@@ -67,6 +67,10 @@ export interface FinanceSubcategoryRollup {
 	transactionCount: number;
 }
 
+function isRollupEligible(entry: FinanceLedgerEntry) {
+	return entry.status === "ready" || entry.status === "review";
+}
+
 export async function loadCombinedFinanceLedger() {
 	const db = getDb();
 	const rows = await db
@@ -148,7 +152,7 @@ export function buildFinanceRollupView(input: {
 	const subcategory = new Map<string, FinanceSubcategoryRollup>();
 
 	for (const entry of input.ledger) {
-		if (entry.status === "duplicate") {
+		if (!isRollupEligible(entry)) {
 			continue;
 		}
 		const yearlyKey = `${entry.year}:${entry.sourceKind}:${entry.primaryCategory}`;
@@ -228,7 +232,7 @@ export function buildFinanceRollupView(input: {
 
 	const summary = input.ledger.reduce<FinanceSummary>(
 		(acc, entry) => {
-			if (entry.status === "duplicate") {
+			if (!isRollupEligible(entry)) {
 				return acc;
 			}
 			const amount = Math.abs(entry.amountMinor ?? 0);

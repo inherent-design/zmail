@@ -21,7 +21,7 @@ Covered here:
 Canonical CLI:
 
 ```bash
-pnpm finance:export --org <orgId> --out <dir> [--year YYYY] [--strict]
+pnpm finance:export --org <orgId> --out <dir> [--year YYYY] [--strict] [-f|--force]
 ```
 
 Rules:
@@ -30,6 +30,8 @@ Rules:
 - `--out <dir>` is required
 - `--year YYYY` limits generated entries to one calendar year
 - `--strict` is the default behavior and may be explicit
+- existing `--out` directories fail closed by default
+- `-f` / `--force` explicitly allows overwriting an existing export target
 - the command resolves the org runtime before reading any finance rows
 
 ## Output Package
@@ -165,6 +167,8 @@ and record the external validation as skipped.
 - duplicate canonical keys: import-backed row wins; email-only row becomes
   evidence or unresolved duplicate
 - write failure: fail closed without mutating existing export package in place
+- overwrite protection: an existing output directory is treated as a write
+  hazard unless `--force` is explicit
 
 ## Out Of Scope
 

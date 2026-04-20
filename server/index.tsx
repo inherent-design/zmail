@@ -121,6 +121,7 @@ const financeExportRequestSchema = z.object({
 	year: z.number().int().min(1900).max(2500).nullable().optional(),
 	outDir: z.string().min(1).nullable().optional(),
 	strict: z.boolean().optional(),
+	force: z.boolean().optional(),
 });
 
 function renderPage(
@@ -1217,6 +1218,7 @@ webApp.post(
 			year: body.year ?? null,
 			outDir: body.outDir ?? null,
 			strict: body.strict ?? true,
+			force: body.force ?? false,
 		});
 		return c.json(okJson("queued", result));
 	},

@@ -13,6 +13,7 @@ interface ExportInput {
 	exportRunId?: string;
 	year?: number;
 	strict: boolean;
+	force?: boolean;
 }
 
 interface LedgerRow {
@@ -266,6 +267,11 @@ export async function exportFinanceBeancountPackage(input: ExportInput) {
 	const year = input.year ?? new Date(generatedAt).getUTCFullYear();
 	const outDir = resolve(input.outDir);
 	const generatedName = `generated/${year}.beancount`;
+	if (existsSync(outDir) && !input.force) {
+		throw new Error(
+			`Export target already exists: ${outDir}. Pass --force to overwrite it.`,
+		);
+	}
 
 	const rows = (
 		await db
