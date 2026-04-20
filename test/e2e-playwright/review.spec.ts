@@ -13,20 +13,15 @@ const manualOverride = readFileSync(
 
 test("review override resolves the seeded open review", async ({ page }) => {
 	await gotoAndHydrate(page, "/review");
-	await expect(
-		page.getByText(PLAYWRIGHT_SCENARIOS.review.message.subject),
-	).toBeVisible();
-
-	const reviewCard = page.locator("section.card").filter({
-		hasText: PLAYWRIGHT_SCENARIOS.review.message.subject,
-	});
+	const reviewCard = page.locator(
+		`section[data-review-id="${PLAYWRIGHT_SCENARIOS.review.reviewId}"]`,
+	);
+	await expect(reviewCard).toBeVisible();
 	await reviewCard.getByLabel("Override JSON").fill(manualOverride);
 	await clickAndWaitForServerAction(page, () =>
 		reviewCard.getByRole("button", { name: "Override" }).click(),
 	);
-	await expect(
-		page.getByText(PLAYWRIGHT_SCENARIOS.review.message.subject),
-	).toHaveCount(0);
+	await expect(reviewCard).toHaveCount(0);
 
 	await gotoAndHydrate(
 		page,

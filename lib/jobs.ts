@@ -17,14 +17,27 @@ export type JobKind =
 	| "reconcile_registry_suggestions"
 	| "import_finance_artifact"
 	| "export_finance_beancount"
+	| "generate_tax_personal_package"
+	| "generate_tax_business_quarter_package"
 	| "sync_account_full"
 	| "sync_account_delta"
 	| "sync_account_backfill"
 	| "sync_account_reconcile"
 	| "classify_account_backlog"
+	| "classify_root_messages"
 	| "classify_finance_backlog"
 	| "classify_finance_messages"
+	| "classify_review_backlog"
 	| "rebuild_category_assignments";
+
+export type JobLane =
+	| "sync"
+	| "root_llm"
+	| "finance_llm"
+	| "review_llm"
+	| "materialize"
+	| "export_report"
+	| "overseer";
 
 export interface JobRecord {
 	id: string;
@@ -39,12 +52,87 @@ export interface JobRecord {
 	error_count: number;
 	claimed_at: string | null;
 	lease_expires_at: string | null;
+	lane: JobLane;
+	priority: number;
+	run_after_at: string | null;
+	claim_owner: string | null;
 	attempts: number;
 	last_error: string | null;
 	created_at: string;
 	started_at: string | null;
 	finished_at: string | null;
 	meta_json: string;
+}
+
+export function laneForJobKind(kind: JobKind): JobLane {
+	switch (kind) {
+		case "sync_account_full":
+		case "sync_account_delta":
+		case "sync_account_backfill":
+		case "sync_account_reconcile":
+			return "sync";
+		case "classify_account_backlog":
+		case "classify_root_messages":
+			return "root_llm";
+		case "classify_finance_backlog":
+		case "classify_finance_messages":
+			return "finance_llm";
+		case "classify_review_backlog":
+			return "review_llm";
+		case "export_finance_beancount":
+		case "generate_tax_personal_package":
+		case "generate_tax_business_quarter_package":
+			return "export_report";
+		case "rebuild_overseer":
+			return "overseer";
+		case "rebuild_finance_knowledge":
+		case "rebuild_finance_rollups":
+		case "import_operator_registry":
+		case "reconcile_registry_suggestions":
+		case "import_finance_artifact":
+		case "rebuild_category_assignments":
+			return "materialize";
+		default:
+			throw new Error(`Unsupported job kind: ${kind satisfies never}`);
+	}
+}
+
+function resourceLocksForJob(job: {
+	kind: JobKind;
+	scope_id: string;
+	meta_json: string;
+}) {
+	switch (job.kind) {
+		case "sync_account_full":
+		case "sync_account_delta":
+		case "sync_account_backfill":
+		case "sync_account_reconcile":
+			return [`sync:${job.scope_id}`];
+		case "classify_account_backlog":
+		case "classify_root_messages":
+			return [`root:${job.scope_id}`];
+		case "classify_finance_backlog":
+		case "classify_finance_messages":
+			return [`finance:${job.scope_id}`];
+		case "classify_review_backlog":
+			return [`review:${job.scope_id}`];
+		case "rebuild_finance_knowledge":
+		case "rebuild_finance_rollups":
+		case "import_operator_registry":
+		case "reconcile_registry_suggestions":
+		case "import_finance_artifact":
+			return ["finance:materialize"];
+		case "export_finance_beancount":
+		case "generate_tax_personal_package":
+		case "generate_tax_business_quarter_package":
+			return ["finance:export-report"];
+		case "rebuild_overseer":
+			return [`overseer:${job.scope_id}`];
+		case "rebuild_category_assignments":
+			return ["categories:materialize"];
+		default:
+			throw new Error(`Unsupported job kind: ${job.kind satisfies never}`);
+	}
 }
 
 function jobTopics(job: {
@@ -67,6 +155,36 @@ function jobTopics(job: {
 	return [...topics];
 }
 
+function changeHintsForJob(job: {
+	kind: string;
+	scope_type: string;
+	scope_id: string;
+	lane?: string | null;
+}) {
+	const islands: string[] = [];
+	if (job.scope_type === "account") {
+		islands.push("account.lanes", "account.recent-jobs");
+		if (job.lane === "sync") {
+			islands.push("account.mailbox-sync");
+		}
+	}
+	if (
+		job.lane === "finance_llm" ||
+		job.lane === "review_llm" ||
+		job.lane === "materialize" ||
+		job.lane === "export_report" ||
+		job.scope_id === "finance" ||
+		job.kind.includes("finance") ||
+		job.kind.includes("registry")
+	) {
+		islands.push("finance.lanes", "finance.command-bar");
+		if (job.lane === "export_report") {
+			islands.push("finance.export-health");
+		}
+	}
+	return islands.length > 0 ? { islands: Array.from(new Set(islands)) } : null;
+}
+
 function publishJobEvent(
 	job: {
 		id: string;
@@ -74,6 +192,8 @@ function publishJobEvent(
 		scope_type: string;
 		scope_id: string;
 		status: string;
+		lane?: string | null;
+		priority?: number | null;
 		request_count: number;
 		success_count: number;
 		error_count: number;
@@ -82,17 +202,21 @@ function publishJobEvent(
 	},
 	eventType: string,
 ) {
+	const changeHints = changeHintsForJob(job);
 	const payload = {
 		jobId: job.id,
 		kind: job.kind,
 		scopeType: job.scope_type,
 		scopeId: job.scope_id,
 		status: job.status,
+		lane: job.lane ?? null,
+		priority: job.priority ?? null,
 		requestCount: job.request_count,
 		successCount: job.success_count,
 		errorCount: job.error_count,
 		lastError: job.last_error,
 		meta: safeJsonParse(job.meta_json, {}),
+		...(changeHints ? { changeHints } : {}),
 	};
 	for (const topic of jobTopics(job)) {
 		void trackRuntimeEventTask(
@@ -150,6 +274,9 @@ export async function queueJob(input: {
 	scopeId: string;
 	model?: string | null;
 	promptVersion?: string | null;
+	lane?: JobLane;
+	priority?: number;
+	runAfterAt?: string | null;
 	meta?: Record<string, unknown>;
 }) {
 	const db = getDb();
@@ -171,6 +298,10 @@ export async function queueJob(input: {
 			status: "queued",
 			model: input.model ?? null,
 			prompt_version: input.promptVersion ?? null,
+			lane: input.lane ?? laneForJobKind(input.kind),
+			priority: input.priority ?? 100,
+			run_after_at: input.runAfterAt ?? null,
+			claim_owner: null,
 			request_count: 0,
 			success_count: 0,
 			error_count: 0,
@@ -191,6 +322,8 @@ export async function queueJob(input: {
 			scope_type: input.scopeType,
 			scope_id: input.scopeId,
 			status: "queued",
+			lane: input.lane ?? laneForJobKind(input.kind),
+			priority: input.priority ?? 100,
 			request_count: 0,
 			success_count: 0,
 			error_count: 0,
@@ -203,6 +336,7 @@ export async function queueJob(input: {
 		job_id: id,
 		model: input.model ?? undefined,
 		prompt_version: input.promptVersion ?? undefined,
+		lane: input.lane ?? laneForJobKind(input.kind),
 	});
 	return id;
 }
@@ -213,6 +347,9 @@ export async function queueJobIdempotent(input: {
 	scopeId: string;
 	model?: string | null;
 	promptVersion?: string | null;
+	lane?: JobLane;
+	priority?: number;
+	runAfterAt?: string | null;
 	meta?: Record<string, unknown>;
 }) {
 	const trace = startTrace({
@@ -254,6 +391,7 @@ export function requeueExpiredJobs() {
       UPDATE jobs
       SET status = 'queued',
           claimed_at = NULL,
+          claim_owner = NULL,
           lease_expires_at = NULL,
           last_error = COALESCE(last_error, 'lease expired')
       WHERE status = 'running'
@@ -273,7 +411,27 @@ export function requeueExpiredJobs() {
 	}
 }
 
-export function claimNextJob() {
+function laneCap(lane: string) {
+	return Math.max(1, APP_CONFIG.workerLaneCaps[lane] ?? 1);
+}
+
+function isJobCompatibleWithRunning(
+	candidate: JobRecord,
+	running: JobRecord[],
+) {
+	const lane = candidate.lane || laneForJobKind(candidate.kind);
+	const runningInLane = running.filter(
+		(job) => (job.lane || laneForJobKind(job.kind)) === lane,
+	).length;
+	if (runningInLane >= laneCap(lane)) {
+		return false;
+	}
+
+	const heldLocks = new Set(running.flatMap((job) => resourceLocksForJob(job)));
+	return resourceLocksForJob(candidate).every((lock) => !heldLocks.has(lock));
+}
+
+export function claimNextJob(input?: { claimOwner?: string }) {
 	const sqlite = getSqlite();
 	const now = new Date();
 	const leaseExpiresAt = new Date(
@@ -281,18 +439,36 @@ export function claimNextJob() {
 	).toISOString();
 
 	const transaction = sqlite.transaction(() => {
-		const row = sqlite
+		const running = sqlite
+			.prepare(
+				`
+        SELECT *
+        FROM jobs
+        WHERE status = 'running'
+        `,
+			)
+			.all() as JobRecord[];
+
+		if (running.length >= APP_CONFIG.workerMaxJobConcurrency) {
+			return null;
+		}
+
+		const queued = sqlite
 			.prepare(
 				`
         SELECT *
         FROM jobs
         WHERE status = 'queued'
-        ORDER BY created_at ASC
-        LIMIT 1
+          AND (run_after_at IS NULL OR run_after_at <= ?)
+        ORDER BY priority ASC, created_at ASC
+        LIMIT 100
         `,
 			)
-			.get() as JobRecord | undefined;
+			.all(now.toISOString()) as JobRecord[];
 
+		const row = queued.find((candidate) =>
+			isJobCompatibleWithRunning(candidate, running),
+		);
 		if (!row) {
 			return null;
 		}
@@ -303,14 +479,22 @@ export function claimNextJob() {
         UPDATE jobs
         SET status = 'running',
             claimed_at = ?,
+            claim_owner = ?,
             lease_expires_at = ?,
             attempts = attempts + 1,
             started_at = COALESCE(started_at, ?),
             last_error = NULL
         WHERE id = ?
+          AND status = 'queued'
         `,
 			)
-			.run(now.toISOString(), leaseExpiresAt, now.toISOString(), row.id);
+			.run(
+				now.toISOString(),
+				input?.claimOwner ?? null,
+				leaseExpiresAt,
+				now.toISOString(),
+				row.id,
+			);
 
 		return sqlite.prepare("SELECT * FROM jobs WHERE id = ?").get(row.id) as
 			| JobRecord
@@ -394,6 +578,7 @@ export async function updateJob(input: {
 				? {
 						finished_at: nowIso(),
 						claimed_at: null,
+						claim_owner: null,
 						lease_expires_at: null,
 					}
 				: {}),
@@ -409,6 +594,8 @@ export async function updateJob(input: {
 			"scope_type",
 			"scope_id",
 			"status",
+			"lane",
+			"priority",
 			"request_count",
 			"success_count",
 			"error_count",

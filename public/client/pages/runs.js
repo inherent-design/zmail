@@ -1,10 +1,26 @@
+function isTerminalJob(event) {
+	return (
+		event.eventType === "job.updated" &&
+		(event.payload?.status === "complete" || event.payload?.status === "failed")
+	);
+}
+
 export function init(app) {
 	const refresh = (event) => {
-		const terminal =
-			event.eventType === "job.updated" &&
-			(event.payload?.status === "complete" ||
-				event.payload?.status === "failed");
-		void app.scheduleRefresh({ immediate: terminal });
+		if (
+			!["job.queued", "job.claimed", "job.updated"].includes(event.eventType)
+		) {
+			return;
+		}
+		const islands = ["runs.lanes"];
+		if (isTerminalJob(event)) {
+			islands.push("runs.jobs");
+		}
+		void app.scheduleRefresh({
+			islands,
+			immediate: isTerminalJob(event),
+			fallback: "none",
+		});
 	};
 	const unsubscribers = [app.subscribe("jobs", refresh)];
 	return () => {

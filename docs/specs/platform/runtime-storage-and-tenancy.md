@@ -123,11 +123,15 @@ Claim flow:
 
 The following must be ignored:
 
+- `data/*` by default, with only empty scaffolding placeholders explicitly
+  unignored
 - `data/orgs/**`
 - org-local SQLite files
 - org-local OAuth token files
 - org-local raw `.eml`
 - org-local operator YAML unless explicitly exported for sharing
+- org-local browser-triggered finance export packages under
+  `operator/exports/finance/`
 
 Repo-tracked placeholders may exist only as empty `.gitkeep` or equivalent
 scaffolding, never as real org data.

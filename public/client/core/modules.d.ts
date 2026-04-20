@@ -16,12 +16,14 @@ type IslandApp = {
 		islands?: string | string[];
 		originPage?: string;
 		originUrl?: string;
+		fallback?: "none" | "main";
 	}): Promise<void>;
 	refreshIsland(
 		ids: string | string[],
 		options?: {
 			originPage?: string;
 			originUrl?: string;
+			fallback?: "none" | "main";
 		},
 	): Promise<void>;
 	scheduleRefresh(options?: {
@@ -31,6 +33,7 @@ type IslandApp = {
 		islands?: string | string[];
 		originPage?: string;
 		originUrl?: string;
+		fallback?: "none" | "main";
 	}): Promise<void>;
 	navigate(url: string | URL, options?: unknown): Promise<void>;
 	currentPage(): string | null;
@@ -119,12 +122,14 @@ declare module "#/public/client/core/shell-nav.js" {
 			islands?: string | string[];
 			originPage?: string;
 			originUrl?: string;
+			fallback?: "none" | "main";
 		}): Promise<void>;
 		refreshIsland(
 			ids: string | string[],
 			options?: {
 				originPage?: string;
 				originUrl?: string;
+				fallback?: "none" | "main";
 			},
 		): Promise<void>;
 		scheduleRefresh(options?: {
@@ -134,6 +139,7 @@ declare module "#/public/client/core/shell-nav.js" {
 			islands?: string | string[];
 			originPage?: string;
 			originUrl?: string;
+			fallback?: "none" | "main";
 		}): Promise<void>;
 		bindLinkClicks(): () => void;
 		bindPopState(): () => void;
@@ -165,4 +171,26 @@ declare module "#/public/client/core/sync-provider.js" {
 		close(): void;
 		setCursor(cursor: number | string | null | undefined): void;
 	};
+}
+
+declare module "#/public/client/pages/account-detail.js" {
+	import type { RuntimeEvent } from "#/public/client/core/island-registry.js";
+
+	export function accountDetailIslandHints(
+		event: RuntimeEvent,
+		accountId: string,
+	): string[];
+	export function init(app: unknown): null | (() => void);
+}
+
+declare module "#/public/client/pages/finance.js" {
+	import type { RuntimeEvent } from "#/public/client/core/island-registry.js";
+
+	export function activeFinanceTabIsland(tab?: string): string;
+	export function financeIslandHints(
+		event: RuntimeEvent,
+		tab?: string,
+	): string[];
+	export function actionRefreshIslands(target: Element, tab?: string): string[];
+	export function init(app: unknown): null | (() => void);
 }

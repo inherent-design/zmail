@@ -216,8 +216,15 @@ Rules:
   labels by default; existing profiles rebuild after 1000 additional labels by
   default
 
-The review queue is rooted in the root classifier, not in secondary finance
-candidate adjudication.
+The root review queue remains rooted in the root classifier. A separate review
+classifier audits open and recently resolved root reviews, persists findings,
+and may queue `classify_root_messages` for explicit message ids when the audit
+predicts root drift or a bad manual/model outcome.
+
+Review-classifier output never silently overwrites `message_labels` or manual
+review decisions. It creates append-only review findings and job requests only.
+Accepted findings may also trigger `rebuild_overseer` so profile context can
+learn from the audited outcome.
 
 ## Compatibility
 

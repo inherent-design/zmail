@@ -24,9 +24,11 @@ export interface FinanceLedgerEntry {
 	institutionId: string | null;
 	financialAccountId: string | null;
 	description: string | null;
+	counterparty: string | null;
 	status: string;
 	canonicalKey: string;
 	book: string;
+	accountMappingKey: string | null;
 }
 
 export interface FinanceImportDocumentEntry {
@@ -97,6 +99,7 @@ export async function loadCombinedFinanceLedger() {
 			"finance_ledger_entries.counterparty",
 			"finance_ledger_entries.description",
 			"finance_ledger_entries.book",
+			"finance_ledger_entries.account_mapping_key",
 			"finance_ledger_entries.ledger_metadata_json",
 			"messages.account_id",
 		])
@@ -136,9 +139,11 @@ export async function loadCombinedFinanceLedger() {
 			institutionId: metadata.institutionId ?? null,
 			financialAccountId: metadata.financialAccountId ?? null,
 			description: row.counterparty ?? row.description,
+			counterparty: row.counterparty,
 			status: row.status,
 			canonicalKey: row.canonical_key,
 			book: row.book,
+			accountMappingKey: row.account_mapping_key,
 		});
 	}
 	return entries;

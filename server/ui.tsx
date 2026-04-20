@@ -35,6 +35,7 @@ type ReviewPageData = Awaited<ReturnType<typeof loadReviewData>>;
 type FinancePageData = Awaited<ReturnType<typeof loadFinanceData>>;
 type ProfilePageData = Awaited<ReturnType<typeof loadProfileData>>;
 type RunsPageData = Awaited<ReturnType<typeof loadRunsData>>;
+type LaneProgressSnapshot = HomePageData["laneProgress"][number];
 type RunMeta = {
 	processed?: number;
 	total?: number;
@@ -251,14 +252,49 @@ function Button(input: {
 	);
 }
 
-export function renderHomePage(data: HomePageData) {
+function mailboxStateLabel(
+	syncStatus: string,
+	syncState?: { backfill_next_uid?: number | null } | null,
+) {
+	if (syncStatus === "backfilling" || syncState?.backfill_next_uid != null) {
+		return "backfill pending";
+	}
+	return syncStatus;
+}
+
+function renderLaneProgressCards(lanes: LaneProgressSnapshot[]) {
 	return (
-		<>
-			<section class="card stack">
+		<div class="stats compact lane-grid">
+			{lanes.map((lane) => (
+				<div key={lane.lane} class={`stat lane-card lane-${lane.state}`}>
+					<span class="muted">{lane.label}</span>
+					<strong>{lane.state}</strong>
+					<div class="stack">
+						<span>
+							queued/running: {String(lane.queuedCount)}/
+							{String(lane.runningCount)}
+						</span>
+						<span>kind: {lane.runningKind ?? "n/a"}</span>
+						<span>progress: {formatProgress(lane.processed, lane.total)}</span>
+						<span>ETA: {formatEta(lane.etaSeconds)}</span>
+						{lane.lastError ? <span>error: {lane.lastError}</span> : null}
+					</div>
+				</div>
+			))}
+		</div>
+	);
+}
+
+export function renderHomeIslandMap(data: HomePageData) {
+	return {
+		"home.hero": (
+			<IslandFrame id="home.hero" class="card stack">
 				<h1>zmail</h1>
 				<p class="muted">Gmail live-sync analysis workspace.</p>
-			</section>
-			<section class="stats">
+			</IslandFrame>
+		),
+		"home.stats": (
+			<IslandFrame id="home.stats" class="stats">
 				<div class="stat">
 					<span class="muted">Accounts</span>
 					<strong>{String(data.accounts ?? 0)}</strong>
@@ -275,8 +311,16 @@ export function renderHomePage(data: HomePageData) {
 					<span class="muted">Jobs</span>
 					<strong>{String(data.jobs ?? 0)}</strong>
 				</div>
-			</section>
-			<section class="card stack">
+			</IslandFrame>
+		),
+		"home.lanes": (
+			<IslandFrame id="home.lanes" class="card stack">
+				<h2>Lane state</h2>
+				{renderLaneProgressCards(data.laneProgress)}
+			</IslandFrame>
+		),
+		"home.actions": (
+			<IslandFrame id="home.actions" class="card stack">
 				<div class="actions">
 					<a class="button" href={href("/accounts/new")}>
 						Connect Gmail
@@ -291,9 +335,21 @@ export function renderHomePage(data: HomePageData) {
 						Review low confidence
 					</a>
 				</div>
-			</section>
-		</>
-	);
+			</IslandFrame>
+		),
+	} satisfies IslandRenderMap;
+}
+
+export const HOME_ISLAND_IDS = [
+	"home.hero",
+	"home.stats",
+	"home.lanes",
+	"home.actions",
+] as const;
+
+export function renderHomePage(data: HomePageData) {
+	const islands = renderHomeIslandMap(data);
+	return <>{HOME_ISLAND_IDS.map((id) => islands[id])}</>;
 }
 
 export function renderOrgSelectPage(data: OrgSelectionPageData) {
@@ -517,7 +573,7 @@ export function renderAccountsPage(
 	);
 }
 
-export function renderAccountDetailPage(
+export function renderAccountDetailIslandMap(
 	data: AccountDetailPageData,
 	options: {
 		canManageLifecycle: boolean;
@@ -526,9 +582,9 @@ export function renderAccountDetailPage(
 ) {
 	const account = data.account;
 	const accountId = account.id;
-	return (
-		<>
-			<section class="card stack">
+	return {
+		"account.header": (
+			<IslandFrame id="account.header" class="card stack">
 				<h1>{account.label}</h1>
 				<p class="muted">{account.email_address}</p>
 				<div class="row">
@@ -537,15 +593,19 @@ export function renderAccountDetailPage(
 						connection: {prettyConnectionState(data.connection_state)}
 					</Pill>
 					<Pill>sync: {account.sync_enabled ? "enabled" : "disabled"}</Pill>
-					<Pill>status: {account.sync_status}</Pill>
+					<Pill>
+						mailbox: {mailboxStateLabel(account.sync_status, data.syncState)}
+					</Pill>
 					<Pill>token: {data.has_oauth_token ? "present" : "missing"}</Pill>
 				</div>
 				{account.last_error ? (
 					<p class="muted">Last error: {account.last_error}</p>
 				) : null}
-			</section>
-			<section class="card stack">
-				<h2>Connection status</h2>
+			</IslandFrame>
+		),
+		"account.actions": (
+			<IslandFrame id="account.actions" class="card stack">
+				<h2>Account actions</h2>
 				<p>{prettyConnectionState(data.connection_state)}</p>
 				<div class="row">
 					<Pill>{data.connection_state}</Pill>
@@ -633,9 +693,11 @@ export function renderAccountDetailPage(
 						Open finance
 					</a>
 				</div>
-			</section>
-			<section class="card stack">
-				<h2>Sync progress</h2>
+			</IslandFrame>
+		),
+		"account.mailbox-sync": (
+			<IslandFrame id="account.mailbox-sync" class="card stack">
+				<h2>Mailbox sync</h2>
 				<div class="stats">
 					<div class="stat">
 						<span class="muted">Phase</span>
@@ -655,16 +717,27 @@ export function renderAccountDetailPage(
 						<strong>{formatEta(data.syncProgress.etaSeconds)}</strong>
 					</div>
 					<div class="stat">
-						<span class="muted">Remaining UID span</span>
+						<span class="muted">Historical UID remaining</span>
 						<strong>{String(data.syncProgress.remaining ?? "n/a")}</strong>
 					</div>
 				</div>
 				<div class="row">
-					<Pill>status: {data.syncProgress.status}</Pill>
+					<Pill>raw sync_status: {data.syncProgress.status}</Pill>
+					<Pill>
+						watcher: {data.syncState?.watcher_status ?? "not_initialized"}
+					</Pill>
 					<Pill>updated: {data.syncProgress.updatedAt ?? "n/a"}</Pill>
 				</div>
-			</section>
-			<section class="card stack">
+			</IslandFrame>
+		),
+		"account.lanes": (
+			<IslandFrame id="account.lanes" class="card stack">
+				<h2>Lane state</h2>
+				{renderLaneProgressCards(data.laneProgress)}
+			</IslandFrame>
+		),
+		"account.stats": (
+			<IslandFrame id="account.stats" class="card stack">
 				<h2>Statistics</h2>
 				<div class="stats">
 					<div class="stat">
@@ -680,8 +753,10 @@ export function renderAccountDetailPage(
 						<strong>{String(data.financeCoverage.totalHeads)}</strong>
 					</div>
 				</div>
-			</section>
-			<section class="card stack">
+			</IslandFrame>
+		),
+		"account.recent-jobs": (
+			<IslandFrame id="account.recent-jobs" class="card stack">
 				<h2>Recent jobs</h2>
 				<table>
 					<thead>
@@ -703,29 +778,65 @@ export function renderAccountDetailPage(
 						))}
 					</tbody>
 				</table>
-			</section>
-			<section class="card stack">
-				<h2>Danger zone</h2>
-				{options.canManageLifecycle ? (
-					<>
-						<p class="muted">
-							This removes the local Gmail account and mailbox-local state. It
-							does not remove other accounts, global registry data, or global
-							imported finance artifacts.
-						</p>
-						<a
-							class="button secondary"
-							href={href(`/accounts/${accountId}/delete`)}
-						>
-							Delete local account
-						</a>
-					</>
-				) : (
+			</IslandFrame>
+		),
+	} satisfies IslandRenderMap;
+}
+
+export const ACCOUNT_DETAIL_ISLAND_IDS = [
+	"account.header",
+	"account.actions",
+	"account.mailbox-sync",
+	"account.lanes",
+	"account.stats",
+	"account.recent-jobs",
+] as const;
+
+function renderAccountDangerZone(
+	data: AccountDetailPageData,
+	options: {
+		canManageLifecycle: boolean;
+	},
+) {
+	const accountId = data.account.id;
+	return (
+		<section class="card stack">
+			<h2>Danger zone</h2>
+			{options.canManageLifecycle ? (
+				<>
 					<p class="muted">
-						Account deletion is restricted to the account owner or an org admin.
+						This removes the local Gmail account and mailbox-local state. It
+						does not remove other accounts, global registry data, or global
+						imported finance artifacts.
 					</p>
-				)}
-			</section>
+					<a
+						class="button secondary"
+						href={href(`/accounts/${accountId}/delete`)}
+					>
+						Delete local account
+					</a>
+				</>
+			) : (
+				<p class="muted">
+					Account deletion is restricted to the account owner or an org admin.
+				</p>
+			)}
+		</section>
+	);
+}
+
+export function renderAccountDetailPage(
+	data: AccountDetailPageData,
+	options: {
+		canManageLifecycle: boolean;
+		canOperate: boolean;
+	},
+) {
+	const islands = renderAccountDetailIslandMap(data, options);
+	return (
+		<>
+			{ACCOUNT_DETAIL_ISLAND_IDS.map((id) => islands[id])}
+			{renderAccountDangerZone(data, options)}
 		</>
 	);
 }
@@ -1211,10 +1322,91 @@ export function renderReviewPage(rows: ReviewPageData) {
 	return (
 		<>
 			<section class="card stack">
-				<h1>Low-confidence review</h1>
-				<p class="muted">Open reviews only.</p>
+				<div class="row">
+					<div>
+						<h1>Review</h1>
+						<p class="muted">Root decisions, classifier findings, actions.</p>
+					</div>
+					<div class="actions">
+						<Button label="Classify reviews" action="/rpc/reviews/classify" />
+					</div>
+				</div>
 			</section>
-			{rows.map((row) => (
+			<section class="card stack">
+				<h2>Review classifier findings</h2>
+				<table>
+					<thead>
+						<tr>
+							<th>Target</th>
+							<th>Severity</th>
+							<th>Action</th>
+							<th>Confidence</th>
+							<th>Reason</th>
+						</tr>
+					</thead>
+					<tbody>
+						{rows.findings.map((row) => (
+							<tr key={`${row.target_kind}:${row.target_id}`}>
+								<td>
+									{row.target_kind}:{row.target_id}
+								</td>
+								<td>{row.severity}</td>
+								<td>{row.action}</td>
+								<td>{percent(row.confidence)}</td>
+								<td>{row.reason}</td>
+							</tr>
+						))}
+						{rows.findings.length === 0 ? (
+							<tr>
+								<td colspan={5}>No review classifier findings.</td>
+							</tr>
+						) : null}
+					</tbody>
+				</table>
+			</section>
+			<section class="card stack">
+				<h2>Action history</h2>
+				<table>
+					<thead>
+						<tr>
+							<th>Created</th>
+							<th>Model</th>
+							<th>Findings</th>
+							<th>Details</th>
+						</tr>
+					</thead>
+					<tbody>
+						{rows.actionHistory.map((row) => (
+							<tr key={row.id}>
+								<td>{row.createdAt}</td>
+								<td>{row.model}</td>
+								<td>
+									{typeof row.result === "object" &&
+									row.result !== null &&
+									"findings" in row.result &&
+									Array.isArray((row.result as { findings?: unknown }).findings)
+										? String(
+												(row.result as { findings: unknown[] }).findings.length,
+											)
+										: "0"}
+								</td>
+								<td>
+									<details class="drawer">
+										<summary>Open</summary>
+										<JsonBlock value={row.result} />
+									</details>
+								</td>
+							</tr>
+						))}
+						{rows.actionHistory.length === 0 ? (
+							<tr>
+								<td colspan={4}>No review classifier runs.</td>
+							</tr>
+						) : null}
+					</tbody>
+				</table>
+			</section>
+			{rows.rootReviews.map((row) => (
 				<section key={row.id} class="card stack" data-review-id={row.id}>
 					<div class="row">
 						<strong>{row.subject ?? "(no subject)"}</strong>
@@ -1278,11 +1470,18 @@ function filterHref(
 export const FINANCE_ISLAND_IDS = [
 	"finance.command-bar",
 	"finance.filters",
+	"finance.lanes",
 	"finance.summary",
 	"finance.cashflow",
 	"finance.categories",
 	"finance.subscriptions",
-	"finance.ledger-preview",
+	"finance.overview.rollups",
+	"finance.readiness",
+	"finance.ledger",
+	"finance.imports",
+	"finance.mappings",
+	"finance.review",
+	"finance.tax",
 	"finance.export-health",
 ] as const;
 
@@ -1290,7 +1489,16 @@ function financePageContext(
 	data: FinancePageData,
 	currentSearch: URLSearchParams,
 ) {
-	const tabKeys = ["overview", "ledger", "imports", "exports", "review"];
+	const tabKeys = [
+		"overview",
+		"readiness",
+		"ledger",
+		"imports",
+		"mappings",
+		"exports",
+		"tax",
+		"review",
+	];
 	const requestedTab = currentSearch.get("tab") ?? "overview";
 	const activeTab = tabKeys.includes(requestedTab) ? requestedTab : "overview";
 	const tabHref = (tab: string) => {
@@ -1329,6 +1537,27 @@ function percent(value: number) {
 	return `${Math.round(value * 100)}%`;
 }
 
+function financeActiveTabIslandId(activeTab: string) {
+	switch (activeTab) {
+		case "readiness":
+			return "finance.readiness";
+		case "ledger":
+			return "finance.ledger";
+		case "imports":
+			return "finance.imports";
+		case "mappings":
+			return "finance.mappings";
+		case "review":
+			return "finance.review";
+		case "tax":
+			return "finance.tax";
+		case "exports":
+			return "finance.export-health";
+		default:
+			return "finance.overview.rollups";
+	}
+}
+
 export function renderFinanceIslandMap(
 	data: FinancePageData,
 	currentSearch: URLSearchParams,
@@ -1364,6 +1593,11 @@ export function renderFinanceIslandMap(
 						<Button
 							label="Rebuild rollups"
 							action="/rpc/finance/rollups/rebuild"
+							variant="secondary"
+						/>
+						<Button
+							label="Classify reviews"
+							action="/rpc/reviews/classify"
 							variant="secondary"
 						/>
 					</div>
@@ -1476,6 +1710,12 @@ export function renderFinanceIslandMap(
 						</div>
 					) : null}
 				</div>
+			</IslandFrame>
+		),
+		"finance.lanes": (
+			<IslandFrame id="finance.lanes" class="card stack">
+				<h2>Lane state</h2>
+				{renderLaneProgressCards(data.laneProgress)}
 			</IslandFrame>
 		),
 		"finance.summary": (
@@ -1629,8 +1869,8 @@ export function renderFinanceIslandMap(
 				</table>
 			</IslandFrame>
 		),
-		"finance.ledger-preview": (
-			<IslandFrame id="finance.ledger-preview" class="card stack">
+		[financeActiveTabIslandId(activeTab)]: (
+			<IslandFrame id={financeActiveTabIslandId(activeTab)} class="card stack">
 				{activeTab === "overview" ? (
 					<>
 						<h2>Rollups</h2>
@@ -1659,6 +1899,73 @@ export function renderFinanceIslandMap(
 								{data.rollups.length === 0 ? (
 									<tr>
 										<td colspan={6}>No rollups for current filters.</td>
+									</tr>
+								) : null}
+							</tbody>
+						</table>
+					</>
+				) : null}
+
+				{activeTab === "readiness" ? (
+					<>
+						<h2>Readiness workbench</h2>
+						<div class="stats compact">
+							<div class="stat">
+								<span class="muted">Ready</span>
+								<strong>{String(data.readiness.statusCounts.ready)}</strong>
+							</div>
+							<div class="stat">
+								<span class="muted">Review</span>
+								<strong>{String(data.readiness.statusCounts.review)}</strong>
+							</div>
+							<div class="stat">
+								<span class="muted">Blocked</span>
+								<strong>{String(data.readiness.statusCounts.blocked)}</strong>
+							</div>
+							<div class="stat">
+								<span class="muted">Mappings</span>
+								<strong>
+									{String(data.readiness.mappingCoverage.mappedRows)}/
+									{String(data.readiness.mappingCoverage.totalRows)}
+								</strong>
+							</div>
+						</div>
+						<table>
+							<thead>
+								<tr>
+									<th>Gap</th>
+									<th>Rows</th>
+								</tr>
+							</thead>
+							<tbody>
+								{Object.entries(data.readiness.missing).map(([name, count]) => (
+									<tr key={name}>
+										<td>{name}</td>
+										<td>{String(count)}</td>
+									</tr>
+								))}
+							</tbody>
+						</table>
+						<h2>Open finance jobs</h2>
+						<table>
+							<thead>
+								<tr>
+									<th>Kind</th>
+									<th>Queued</th>
+									<th>Running</th>
+								</tr>
+							</thead>
+							<tbody>
+								{data.readiness.openJobsThatMayChangeTotals.map((row) => (
+									<tr key={row.kind}>
+										<td>{row.kind}</td>
+										<td>{String(row.queued)}</td>
+										<td>{String(row.running)}</td>
+									</tr>
+								))}
+								{data.readiness.openJobsThatMayChangeTotals.length === 0 ? (
+									<tr>
+										<td colspan={3}>No open finance jobs.</td>
 									</tr>
 								) : null}
 							</tbody>
@@ -1791,8 +2098,94 @@ export function renderFinanceIslandMap(
 					</>
 				) : null}
 
+				{activeTab === "mappings" ? (
+					<>
+						<h2>YAML-backed mapping editor</h2>
+						<form
+							class="stack"
+							data-rpc={appPath("/rpc/finance/mappings/upsert")}
+						>
+							<label>
+								Mapping JSON
+								<textarea class="input" rows={12} name="mapping">
+									{json({
+										mappingKey: "example",
+										book: "business",
+										match: { textIncludes: ["example"] },
+										debitAccount: "Expenses:Business:Uncategorized",
+										creditAccount: "Assets:Personal:Checking",
+										currency: "USD",
+										confidence: 0.85,
+										notes: "Replace example before submitting.",
+									})}
+								</textarea>
+							</label>
+							<div class="actions">
+								<button class="button" type="submit">
+									Upsert mapping
+								</button>
+							</div>
+						</form>
+						<table>
+							<thead>
+								<tr>
+									<th>Key</th>
+									<th>Book</th>
+									<th>Debit</th>
+									<th>Credit</th>
+									<th>Confidence</th>
+								</tr>
+							</thead>
+							<tbody>
+								{data.accountMappings.map((row) => (
+									<tr key={row.id}>
+										<td>{row.mappingKey}</td>
+										<td>{row.book}</td>
+										<td>{row.debitAccount ?? "n/a"}</td>
+										<td>{row.creditAccount ?? "n/a"}</td>
+										<td>{percent(row.confidence)}</td>
+									</tr>
+								))}
+								{data.accountMappings.length === 0 ? (
+									<tr>
+										<td colspan={5}>No finance account mappings.</td>
+									</tr>
+								) : null}
+							</tbody>
+						</table>
+					</>
+				) : null}
+
 				{activeTab === "review" ? (
 					<>
+						<h2>Review classifier findings</h2>
+						<table>
+							<thead>
+								<tr>
+									<th>Target</th>
+									<th>Severity</th>
+									<th>Action</th>
+									<th>Reason</th>
+								</tr>
+							</thead>
+							<tbody>
+								{data.reviewFindings.map((row) => (
+									<tr key={`${row.targetKind}:${row.targetId}`}>
+										<td>
+											{row.targetKind}:{row.targetId}
+										</td>
+										<td>{row.severity}</td>
+										<td>{row.action}</td>
+										<td>{row.reason}</td>
+									</tr>
+								))}
+								{data.reviewFindings.length === 0 ? (
+									<tr>
+										<td colspan={4}>No review classifier findings.</td>
+									</tr>
+								) : null}
+							</tbody>
+						</table>
 						<h2>Review queue</h2>
 						<table>
 							<thead>
@@ -1828,6 +2221,122 @@ export function renderFinanceIslandMap(
 								{data.reviewRows.length === 0 ? (
 									<tr>
 										<td colspan={7}>No unresolved ledger rows.</td>
+									</tr>
+								) : null}
+							</tbody>
+						</table>
+						{data.exportHealth.latestExport ? (
+							<>
+								<h2>Latest package</h2>
+								<p class="muted">
+									<code>
+										mise run finance:fava --{" "}
+										{data.exportHealth.latestExport.outDir}
+									</code>
+								</p>
+								<details class="drawer">
+									<summary>Manifest</summary>
+									<JsonBlock value={data.exportRuns[0]?.package ?? null} />
+								</details>
+							</>
+						) : null}
+					</>
+				) : null}
+
+				{activeTab === "tax" ? (
+					<>
+						<h2>Tax and business packages</h2>
+						<form
+							class="form-grid"
+							data-rpc={appPath("/rpc/finance/tax/personal")}
+						>
+							<label>
+								Personal tax year
+								<input class="input" name="year" value={String(data.year)} />
+							</label>
+							<label>
+								Output directory
+								<input
+									class="input"
+									name="outDir"
+									placeholder="personal-2025"
+								/>
+							</label>
+							<div class="actions">
+								<button class="button" type="submit">
+									Queue personal package
+								</button>
+							</div>
+						</form>
+						<form
+							class="form-grid"
+							data-rpc={appPath("/rpc/finance/tax/business/inherent-design")}
+						>
+							<label>
+								Business tax year
+								<input class="input" name="year" value={String(data.year)} />
+							</label>
+							<label>
+								Quarter
+								<input class="input" name="quarter" value="1" />
+							</label>
+							<label>
+								Output directory
+								<input
+									class="input"
+									name="outDir"
+									placeholder="inherent-design-2025-q1"
+								/>
+							</label>
+							<div class="actions">
+								<button class="button" type="submit">
+									Queue business package
+								</button>
+							</div>
+						</form>
+						<h2>Package runs</h2>
+						<table>
+							<thead>
+								<tr>
+									<th>Status</th>
+									<th>Kind</th>
+									<th>Period</th>
+									<th>Output</th>
+									<th>Validation</th>
+									<th>Details</th>
+								</tr>
+							</thead>
+							<tbody>
+								{data.taxReportRuns.map((row) => (
+									<tr key={row.id}>
+										<td>{row.status}</td>
+										<td>{row.reportKind}</td>
+										<td>
+											{String(row.year)}
+											{row.quarter ? ` Q${String(row.quarter)}` : ""}
+										</td>
+										<td>{row.outDir || "pending"}</td>
+										<td>
+											{row.validation &&
+											typeof row.validation === "object" &&
+											"acceptedTotalsUseReadyOnly" in row.validation
+												? String(
+														(row.validation as Record<string, unknown>)
+															.acceptedTotalsUseReadyOnly,
+													)
+												: "pending"}
+										</td>
+										<td>
+											<details class="drawer">
+												<summary>Open</summary>
+												<JsonBlock value={row} />
+											</details>
+										</td>
+									</tr>
+								))}
+								{data.taxReportRuns.length === 0 ? (
+									<tr>
+										<td colspan={6}>No tax package runs.</td>
 									</tr>
 								) : null}
 							</tbody>
@@ -1947,7 +2456,22 @@ export function renderFinancePage(
 	currentSearch: URLSearchParams,
 ) {
 	const islands = renderFinanceIslandMap(data, currentSearch);
-	return <>{FINANCE_ISLAND_IDS.map((id) => islands[id])}</>;
+	const { activeTab } = financePageContext(data, currentSearch);
+	const activeTabIsland = financeActiveTabIslandId(activeTab);
+	const pageIslandIds = [
+		"finance.command-bar",
+		"finance.filters",
+		"finance.lanes",
+		"finance.summary",
+		"finance.cashflow",
+		"finance.categories",
+		"finance.subscriptions",
+		activeTabIsland,
+		...(activeTab === "overview" || activeTab === "exports"
+			? ["finance.export-health"]
+			: []),
+	];
+	return <>{Array.from(new Set(pageIslandIds)).map((id) => islands[id])}</>;
 }
 
 export function renderProfilePage(data: ProfilePageData) {
@@ -2043,26 +2567,23 @@ function formatProgress(
 	return `${String(processed)}/${String(total)} (${percent.toFixed(1)}%)`;
 }
 
-export function renderRunsPage(data: RunsPageData) {
-	return (
-		<>
-			<section class="card stack">
-				<h1>Runs</h1>
-				<p class="muted">
-					Raw worker jobs for live sync, backlog classification, and overseer
-					rebuilds.
-				</p>
-				<div class="row">
-					<Pill>preferred: {data.runtime.preferredBackend}</Pill>
-					<Pill>resolved: {data.runtime.resolvedBackend ?? "unavailable"}</Pill>
-				</div>
-			</section>
-			<section class="card table-wrap">
+export function renderRunsIslandMap(data: RunsPageData) {
+	return {
+		"runs.lanes": (
+			<IslandFrame id="runs.lanes" class="card stack">
+				<h2>Lane state</h2>
+				{renderLaneProgressCards(data.laneProgress)}
+			</IslandFrame>
+		),
+		"runs.jobs": (
+			<IslandFrame id="runs.jobs" class="card table-wrap">
 				<table>
 					<thead>
 						<tr>
 							<th>Kind</th>
 							<th>Status</th>
+							<th>Lane</th>
+							<th>Priority</th>
 							<th>Scope</th>
 							<th>Model</th>
 							<th>Phase</th>
@@ -2080,6 +2601,8 @@ export function renderRunsPage(data: RunsPageData) {
 								<tr key={row.id}>
 									<td>{row.kind}</td>
 									<td>{row.status}</td>
+									<td>{row.lane ?? "n/a"}</td>
+									<td>{String(row.priority ?? "n/a")}</td>
 									<td>
 										{row.scope_type}:{row.scope_id}
 									</td>
@@ -2113,7 +2636,29 @@ export function renderRunsPage(data: RunsPageData) {
 						})}
 					</tbody>
 				</table>
+			</IslandFrame>
+		),
+	} satisfies IslandRenderMap;
+}
+
+export const RUNS_ISLAND_IDS = ["runs.lanes", "runs.jobs"] as const;
+
+export function renderRunsPage(data: RunsPageData) {
+	const islands = renderRunsIslandMap(data);
+	return (
+		<>
+			<section class="card stack">
+				<h1>Runs</h1>
+				<p class="muted">
+					Raw worker jobs for live sync, backlog classification, and overseer
+					rebuilds.
+				</p>
+				<div class="row">
+					<Pill>preferred: {data.runtime.preferredBackend}</Pill>
+					<Pill>resolved: {data.runtime.resolvedBackend ?? "unavailable"}</Pill>
+				</div>
 			</section>
+			{RUNS_ISLAND_IDS.map((id) => islands[id])}
 		</>
 	);
 }

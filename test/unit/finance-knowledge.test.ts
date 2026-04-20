@@ -369,8 +369,10 @@ describe("finance knowledge", () => {
 			institutionId: null,
 			financialAccountId: null,
 			description: "Example",
+			counterparty: "Example",
 			canonicalKey: "entry",
 			book: "business",
+			accountMappingKey: "example",
 		};
 
 		const view = buildFinanceRollupView({

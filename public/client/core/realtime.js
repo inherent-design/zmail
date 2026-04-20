@@ -11,6 +11,7 @@ export const SSE_EVENTS = [
 	"finance.export_started",
 	"finance.export_completed",
 	"finance.export_failed",
+	"finance.tax_report_completed",
 	"finance.registry_suggestions_created",
 	"finance.migration_archived",
 	"finance.reclassify_queued",

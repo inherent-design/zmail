@@ -100,6 +100,8 @@ Temporary Items
 # Logs
 logs
 .observability/logs/
+.cache/zmail/
+.migration-reports/
 *.log
 npm-debug.log*
 yarn-debug.log*
@@ -351,6 +353,7 @@ $RECYCLE.BIN/
 
 # zmail-specific ignores not covered by the shared template
 .idea/
+.cta.json
 .playwright-mcp/
 dist-ssr
 *.local

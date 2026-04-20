@@ -139,8 +139,28 @@ function cookieOptions(c: Context) {
 		httpOnly: true,
 		path: "/",
 		sameSite: "Lax" as const,
-		secure: c.req.url.startsWith("https://"),
+		secure: isSecureSessionRequest(c),
 	};
+}
+
+function isSecureSessionRequest(c: Context) {
+	if (loadResolvedConfig().server.publicOrigin.startsWith("https://")) {
+		return true;
+	}
+	if (c.req.url.startsWith("https://")) {
+		return true;
+	}
+	const forwardedProto = c.req
+		.header("x-forwarded-proto")
+		?.split(",")[0]
+		?.trim()
+		.toLowerCase();
+	if (forwardedProto === "https") {
+		return true;
+	}
+	return /(^|[;,]\s*)proto=https($|[;,])/i.test(
+		c.req.header("forwarded") ?? "",
+	);
 }
 
 function getWorkOS() {

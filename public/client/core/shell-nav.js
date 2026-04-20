@@ -91,10 +91,12 @@ export function createShellNav(input = {}) {
 	}
 
 	function buildRefreshRequest(options = {}) {
+		const islands = normalizeIslandIds(options.islands);
 		return {
-			islands: normalizeIslandIds(options.islands),
+			islands,
 			originPage: options.originPage ?? null,
 			originUrl: normalizeUrl(options.originUrl) ?? null,
+			fallback: options.fallback ?? (islands?.length ? "none" : "main"),
 		};
 	}
 
@@ -118,6 +120,10 @@ export function createShellNav(input = {}) {
 		return {
 			...next,
 			islands: Array.from(new Set([...current.islands, ...next.islands])),
+			fallback:
+				current.fallback === "main" || next.fallback === "main"
+					? "main"
+					: "none",
 		};
 	}
 
@@ -276,7 +282,9 @@ export function createShellNav(input = {}) {
 				return;
 			}
 			if (!response.ok) {
-				await fallbackMainRefresh(request);
+				if (request.fallback === "main") {
+					await fallbackMainRefresh(request);
+				}
 				return;
 			}
 			const html = await response.text();
@@ -294,20 +302,24 @@ export function createShellNav(input = {}) {
 			const missingIds = splitHeaderList(
 				response.headers.get("X-Zmail-Island-Missing"),
 			);
-			const unsupported = request.islands.some(
-				(id) => !roots.has(id) || !supportedIds.includes(id),
-			);
-			if (!envelope || missingIds.length > 0 || unsupported) {
-				await fallbackMainRefresh(request);
+			if (!envelope) {
+				if (request.fallback === "main") {
+					await fallbackMainRefresh(request);
+				}
 				return;
 			}
+			const replaceIds = request.islands.filter(
+				(id) =>
+					roots.has(id) &&
+					supportedIds.includes(id) &&
+					!missingIds.includes(id),
+			);
 			const replacements = [];
-			for (const id of request.islands) {
+			for (const id of replaceIds) {
 				const currentRoot = documentRef.querySelector(islandSelector(id));
 				const incomingRoot = roots.get(id);
 				if (!currentRoot || !incomingRoot) {
-					await fallbackMainRefresh(request);
-					return;
+					continue;
 				}
 				replacements.push({
 					id,
@@ -315,6 +327,14 @@ export function createShellNav(input = {}) {
 					incomingRoot,
 					state: onBeforeIslandSwap?.(id, currentRoot),
 				});
+			}
+			if (replacements.length === 0) {
+				if (request.fallback === "main" && replaceIds.length === 0) {
+					await fallbackMainRefresh(request);
+					return;
+				}
+				setCursorFrom(response, envelope);
+				return;
 			}
 			const swap = () => {
 				if (!isCurrentNavigation(navigation)) {
@@ -414,20 +434,64 @@ export function createShellNav(input = {}) {
 		return null;
 	}
 
+	function activeIslandId(active) {
+		return (
+			active?.closest?.("[data-zmail-island]")?.dataset.zmailIsland ?? null
+		);
+	}
+
+	function deferRefreshUntilInactive(active, request) {
+		if (deferredUntilBlur) {
+			return;
+		}
+		deferredUntilBlur = true;
+		const form = active.closest?.("form") ?? null;
+		const cleanup = () => {
+			deferredUntilBlur = false;
+			active.removeEventListener("blur", run, true);
+			form?.removeEventListener("submit", run, true);
+		};
+		const run = () => {
+			cleanup();
+			runScheduledRefresh(request);
+		};
+		active.addEventListener("blur", run, true);
+		form?.addEventListener("submit", run, true);
+	}
+
 	function runScheduledRefresh(request) {
 		if (!sameRefreshOrigin(request)) {
 			return;
 		}
 		const active = activeEditElement();
-		if (active && !deferredUntilBlur) {
-			deferredUntilBlur = true;
-			const onBlur = () => {
-				deferredUntilBlur = false;
-				active.removeEventListener("blur", onBlur, true);
-				void refresh(request);
-			};
-			active.addEventListener("blur", onBlur, true);
-			return;
+		if (active) {
+			if (!request.islands?.length) {
+				deferRefreshUntilInactive(active, request);
+				return;
+			}
+			const currentIsland = activeIslandId(active);
+			if (!currentIsland) {
+				deferRefreshUntilInactive(active, request);
+				return;
+			}
+			if (request.islands.includes(currentIsland)) {
+				const readyIslands = request.islands.filter(
+					(id) => id !== currentIsland,
+				);
+				deferRefreshUntilInactive(active, {
+					...request,
+					islands: [currentIsland],
+					fallback: "none",
+				});
+				if (readyIslands.length > 0) {
+					void refresh({
+						...request,
+						islands: readyIslands,
+						fallback: "none",
+					});
+				}
+				return;
+			}
 		}
 		deferredUntilBlur = false;
 		void refresh(request);
@@ -465,7 +529,7 @@ export function createShellNav(input = {}) {
 					clearTimeout(scheduledRefreshTimer);
 					scheduledRefreshTimer = null;
 				}
-				void refresh(scheduledRefreshRequest ?? request);
+				runScheduledRefresh(scheduledRefreshRequest ?? request);
 			}, maxWaitMs);
 		}
 		return Promise.resolve();

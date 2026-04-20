@@ -32,6 +32,8 @@ const rawConfigSchema = z
 				enabled: z.boolean().optional(),
 				poll_ms: z.number().int().positive().optional(),
 				live_heartbeat_ms: z.number().int().positive().optional(),
+				max_job_concurrency: z.number().int().positive().optional(),
+				lane_caps: z.record(z.string(), z.number().int().positive()).optional(),
 			})
 			.partial()
 			.optional(),
@@ -109,6 +111,8 @@ export interface ResolvedZmailConfig {
 		enabled: boolean;
 		pollMs: number;
 		liveHeartbeatMs: number;
+		maxJobConcurrency: number;
+		laneCaps: Record<string, number>;
 	};
 	logging: {
 		level: string;
@@ -373,6 +377,40 @@ export function loadResolvedConfig(): ResolvedZmailConfig {
 				readIntEnv("ZMAIL_LIVE_HEARTBEAT_MS") ??
 				raw.worker?.live_heartbeat_ms ??
 				30000,
+			maxJobConcurrency:
+				readIntEnv("ZMAIL_WORKER_MAX_JOB_CONCURRENCY") ??
+				raw.worker?.max_job_concurrency ??
+				4,
+			laneCaps: {
+				sync:
+					readIntEnv("ZMAIL_WORKER_LANE_CAP_SYNC") ??
+					raw.worker?.lane_caps?.sync ??
+					1,
+				root_llm:
+					readIntEnv("ZMAIL_WORKER_LANE_CAP_ROOT_LLM") ??
+					raw.worker?.lane_caps?.root_llm ??
+					1,
+				finance_llm:
+					readIntEnv("ZMAIL_WORKER_LANE_CAP_FINANCE_LLM") ??
+					raw.worker?.lane_caps?.finance_llm ??
+					1,
+				review_llm:
+					readIntEnv("ZMAIL_WORKER_LANE_CAP_REVIEW_LLM") ??
+					raw.worker?.lane_caps?.review_llm ??
+					1,
+				materialize:
+					readIntEnv("ZMAIL_WORKER_LANE_CAP_MATERIALIZE") ??
+					raw.worker?.lane_caps?.materialize ??
+					1,
+				export_report:
+					readIntEnv("ZMAIL_WORKER_LANE_CAP_EXPORT_REPORT") ??
+					raw.worker?.lane_caps?.export_report ??
+					1,
+				overseer:
+					readIntEnv("ZMAIL_WORKER_LANE_CAP_OVERSEER") ??
+					raw.worker?.lane_caps?.overseer ??
+					1,
+			},
 		},
 		logging: {
 			level: readStringEnv("ZMAIL_LOG_LEVEL") ?? raw.logging?.level ?? "info",

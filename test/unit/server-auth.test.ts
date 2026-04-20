@@ -32,6 +32,7 @@ describe("server auth bootstrap", () => {
 		delete process.env.WORKOS_REDIRECT_URI;
 		delete process.env.WORKOS_M2M_CLIENT_ID;
 		delete process.env.WORKOS_M2M_CLIENT_SECRET;
+		delete process.env.ZMAIL_PUBLIC_ORIGIN;
 		delete process.env.ZMAIL_TEST_AUTH_BYPASS;
 		process.env.NODE_ENV = "test";
 	});
@@ -211,6 +212,64 @@ describe("server auth bootstrap", () => {
 				"zmail_session=sealed-session-value",
 			);
 			expect(existsSync(statePath)).toBe(false);
+		} finally {
+			vi.doUnmock("@workos-inc/node");
+		}
+	});
+
+	it("marks session cookies secure when the configured public origin is https", async () => {
+		const runtime = await createTestRuntime();
+		process.env.ZMAIL_PUBLIC_ORIGIN = "https://zmail.inherent.design";
+		process.env.WORKOS_API_KEY = "workos_api_key";
+		process.env.WORKOS_CLIENT_ID = "workos_client_id";
+		process.env.WORKOS_COOKIE_PASSWORD =
+			"workos_cookie_password_minimum_length_value";
+		const authenticateWithCode = vi.fn(async () => ({
+			sealedSession: "sealed-session-value",
+			organizationId: "org-1",
+		}));
+
+		vi.doMock("@workos-inc/node", () => ({
+			WorkOS: vi.fn().mockImplementation(() => ({
+				userManagement: {
+					authenticateWithCode,
+				},
+			})),
+		}));
+
+		try {
+			const { Hono } = await import("hono");
+			const auth =
+				await runtime.importFresh<typeof import("#/server/auth")>(
+					"#/server/auth",
+				);
+			const statePath = resolve(
+				runtime.dataDir,
+				"tmp",
+				"oauth",
+				"workos",
+				"secure_state-123.json",
+			);
+			mkdirSync(resolve(runtime.dataDir, "tmp", "oauth", "workos"), {
+				recursive: true,
+			});
+			writeFileSync(
+				statePath,
+				JSON.stringify({
+					state: "secure_state-123",
+					codeVerifier: "code-verifier",
+					returnTo: "/",
+				}),
+				"utf8",
+			);
+			const app = new Hono();
+			app.get("/", auth.handleAuthCallback);
+
+			const response = await app.request(
+				"http://localhost/?code=code&state=secure_state-123",
+			);
+
+			expect(response.headers.get("set-cookie")).toContain("Secure");
 		} finally {
 			vi.doUnmock("@workos-inc/node");
 		}

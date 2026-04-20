@@ -69,4 +69,72 @@ describe("island registry", () => {
 			}),
 		).toEqual([]);
 	});
+
+	it("maps account job events to account detail islands", async () => {
+		const { accountDetailIslandHints } = await import(
+			"#/public/client/pages/account-detail.js"
+		);
+
+		expect(
+			accountDetailIslandHints(
+				{
+					topic: "account:acct-1",
+					eventType: "job.updated",
+					payload: {
+						scopeType: "account",
+						scopeId: "acct-1",
+						lane: "sync",
+					},
+				},
+				"acct-1",
+			),
+		).toEqual(["account.lanes", "account.recent-jobs", "account.mailbox-sync"]);
+		expect(
+			accountDetailIslandHints(
+				{
+					topic: "account:acct-2",
+					eventType: "job.updated",
+					payload: {
+						scopeType: "account",
+						scopeId: "acct-2",
+						lane: "root_llm",
+					},
+				},
+				"acct-1",
+			),
+		).toEqual([]);
+	});
+
+	it("maps finance events to the active tab island only", async () => {
+		const { financeIslandHints } = await import(
+			"#/public/client/pages/finance.js"
+		);
+
+		expect(
+			financeIslandHints(
+				{
+					topic: "finance",
+					eventType: "finance.ledger_rebuilt",
+					payload: {},
+				},
+				"mappings",
+			),
+		).toEqual([
+			"finance.summary",
+			"finance.cashflow",
+			"finance.categories",
+			"finance.mappings",
+			"finance.lanes",
+		]);
+		expect(
+			financeIslandHints(
+				{
+					topic: "finance",
+					eventType: "review_classifier.completed",
+					payload: {},
+				},
+				"mappings",
+			),
+		).toEqual(["finance.lanes"]);
+	});
 });

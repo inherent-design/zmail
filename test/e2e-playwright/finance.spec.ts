@@ -141,6 +141,81 @@ test("finance chart islands render canvases", async ({ page }) => {
 	await expectNonBlankCanvas(categoriesCanvas);
 });
 
+test("finance mapping edits survive island refresh bursts", async ({
+	page,
+}) => {
+	await gotoAndHydrate(page, "/finance?tab=mappings");
+	const main = page.locator("#app-main");
+	await main.evaluate((element) =>
+		element.setAttribute("data-test-main-stable", "yes"),
+	);
+	const textarea = page.locator(
+		'[data-zmail-island="finance.mappings"] textarea[name="mapping"]',
+	);
+	await textarea.fill('{"typed":true}');
+	await textarea.focus();
+
+	const lanesResponse = page.waitForResponse((response) => {
+		const headers = response.request().headers();
+		return (
+			headers["x-zmail-partial"] === "islands" &&
+			headers["x-zmail-islands"] === "finance.lanes"
+		);
+	});
+	await page.evaluate(() => {
+		const zmail = (
+			window as typeof window & {
+				Zmail?: {
+					scheduleRefresh?: (options: unknown) => Promise<void>;
+				};
+			}
+		).Zmail;
+		return zmail?.scheduleRefresh?.({
+			islands: ["finance.mappings", "finance.lanes"],
+			immediate: true,
+			fallback: "none",
+		});
+	});
+	await lanesResponse;
+
+	await expect(textarea).toHaveValue('{"typed":true}');
+	await expect(main).toHaveAttribute("data-test-main-stable", "yes");
+});
+
+test("home lane island refresh does not replace app main", async ({ page }) => {
+	await gotoAndHydrate(page, "/");
+	const main = page.locator("#app-main");
+	await main.evaluate((element) =>
+		element.setAttribute("data-test-main-stable", "yes"),
+	);
+
+	const lanesResponse = page.waitForResponse((response) => {
+		const headers = response.request().headers();
+		return (
+			headers["x-zmail-partial"] === "islands" &&
+			headers["x-zmail-islands"] === "home.lanes"
+		);
+	});
+	await page.evaluate(() => {
+		const zmail = (
+			window as typeof window & {
+				Zmail?: {
+					scheduleRefresh?: (options: unknown) => Promise<void>;
+				};
+			}
+		).Zmail;
+		return zmail?.scheduleRefresh?.({
+			islands: ["home.lanes"],
+			immediate: true,
+			fallback: "none",
+		});
+	});
+	await lanesResponse;
+
+	await expect(page.locator('[data-zmail-island="home.lanes"]')).toBeVisible();
+	await expect(main).toHaveAttribute("data-test-main-stable", "yes");
+});
+
 test("finance page remains useful with JavaScript disabled", async ({
 	browser,
 	baseURL,

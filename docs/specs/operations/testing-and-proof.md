@@ -57,8 +57,11 @@ Own:
 - schema normalization
 - moderation freshness helpers
 - root and finance classification helpers
+- review classifier schema, persistence, and action dispatch helpers
 - registry and projection helpers
 - import dedup helpers
+- job lane claiming, compatibility locks, lease expiry, and idempotency
+- tax package accepted-total and unsafe-evidence helpers
 - auth/org principal parsing helpers
 
 ### Integration
@@ -73,6 +76,10 @@ Own:
 - jobs and worker orchestration
 - finance import dedup and cleanup
 - finance loader math
+- review classifier worker jobs and targeted reclassification queues
+- mapping editor YAML write, registry import queue, and finance rebuild queue
+- materialization snapshot requeue when upstream heads/reviews change
+- Beancount export and tax package persistence
 - Gmail sync and cursor transitions
 
 ### Browser E2E
@@ -83,7 +90,10 @@ Own:
 - org selection
 - Gmail connect/reconnect/disconnect/delete UX
 - review resolution
+- review classifier findings and action history
 - finance page filters and warning states
+- finance readiness, mapping editor, export, and tax package flows
+- runs page concurrent lane status
 - local account deletion flows
 
 ### Manual Smoke
@@ -105,10 +115,36 @@ Own:
 | WorkOS org/role enforcement | integration + manual smoke |
 | Gmail sync lifecycle | unit + integration + manual smoke |
 | Moderation/root freshness | unit + integration |
+| Review classifier persistence/action dispatch | unit + integration + browser e2e |
 | Finance import dedup | unit + integration |
 | Finance rollups | unit + integration |
+| Worker lane scheduler | unit + integration |
+| Beancount export and tax packages | unit + integration + browser e2e |
 | Repair scripts | integration |
 | Legacy runtime claim | integration + manual smoke |
+
+## Finance Close Verification Matrix
+
+Must cover:
+
+- job claim concurrency across compatible lanes
+- same-resource exclusion for sync/root/finance/review/materialize/export locks
+- lease expiry requeues with cleared claim owner
+- duplicate idempotent queue requests return the same open job
+- root, finance, review, materialize, export, and report jobs interleave without
+  corrupting one org SQLite DB
+- review classifier JSON schema parse, result persistence, current-head upsert,
+  targeted reclassification dispatch, and no direct label/mapping mutation
+- overseer input consumes recent review classifier heads
+- mapping editor writes YAML, imports registry, marks finance heads stale, and
+  queues finance knowledge/rollup rebuilds
+- tax packages generate no-ready audit packages, count only ready rows in
+  accepted totals, and omit raw RFC822 bodies, tokens, secrets, and full account
+  numbers
+- Beancount export excludes `review`, `blocked`, `duplicate`, and non-export
+  directions
+- `/runs`, `/review`, and `/finance` browser flows show lane status, findings,
+  readiness/mapping/export/tax state
 
 ## Import Dedup Test Matrix
 

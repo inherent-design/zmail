@@ -109,7 +109,7 @@ describe("jobs", () => {
 			scopeType: "account",
 			scopeId: "acct-1",
 		});
-		jobs.claimNextJob();
+		jobs.claimNextJob({ claimOwner: "worker-a" });
 		dbModule
 			.getSqlite()
 			.prepare("UPDATE jobs SET lease_expires_at = ?, status = ? WHERE id = ?")
@@ -120,7 +120,7 @@ describe("jobs", () => {
 		const row = await dbModule
 			.getDb()
 			.selectFrom("jobs")
-			.select(["status", "claimed_at", "lease_expires_at"])
+			.select(["status", "claimed_at", "lease_expires_at", "claim_owner"])
 			.where("id", "=", id)
 			.executeTakeFirstOrThrow();
 
@@ -128,6 +128,7 @@ describe("jobs", () => {
 			status: "queued",
 			claimed_at: null,
 			lease_expires_at: null,
+			claim_owner: null,
 		});
 	});
 
@@ -271,6 +272,66 @@ describe("jobs", () => {
 				scopeId: "account-backfill",
 			}),
 		).toMatchObject({ id: firstId });
+	});
+
+	it("claims compatible jobs across lanes while excluding same-resource jobs", async () => {
+		const runtime = await createTestRuntime();
+		await bootDb();
+		const jobs =
+			await runtime.importFresh<typeof import("#/lib/jobs")>("#/lib/jobs");
+		const dbModule =
+			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
+
+		const syncFullId = await jobs.queueJob({
+			kind: "sync_account_full",
+			scopeType: "account",
+			scopeId: "acct-1",
+			priority: 10,
+		});
+		const syncDeltaId = await jobs.queueJob({
+			kind: "sync_account_delta",
+			scopeType: "account",
+			scopeId: "acct-1",
+			priority: 20,
+		});
+		const rootId = await jobs.queueJob({
+			kind: "classify_account_backlog",
+			scopeType: "account",
+			scopeId: "acct-1",
+			priority: 30,
+		});
+
+		expect(jobs.claimNextJob({ claimOwner: "worker-a" })?.id).toBe(syncFullId);
+		expect(jobs.claimNextJob({ claimOwner: "worker-a" })?.id).toBe(rootId);
+
+		const blockedSync = await dbModule
+			.getDb()
+			.selectFrom("jobs")
+			.select(["id", "status"])
+			.where("id", "=", syncDeltaId)
+			.executeTakeFirstOrThrow();
+		expect(blockedSync).toEqual({ id: syncDeltaId, status: "queued" });
+	});
+
+	it("enforces lane caps even when resource locks differ", async () => {
+		const runtime = await createTestRuntime();
+		await bootDb();
+		const jobs =
+			await runtime.importFresh<typeof import("#/lib/jobs")>("#/lib/jobs");
+
+		const firstId = await jobs.queueJob({
+			kind: "classify_account_backlog",
+			scopeType: "account",
+			scopeId: "acct-1",
+		});
+		await jobs.queueJob({
+			kind: "classify_root_messages",
+			scopeType: "account",
+			scopeId: "acct-2",
+		});
+
+		expect(jobs.claimNextJob()?.id).toBe(firstId);
+		expect(jobs.claimNextJob()).toBeNull();
 	});
 
 	it("treats non-Error values as non-duplicate job errors", async () => {

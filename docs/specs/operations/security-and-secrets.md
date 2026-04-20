@@ -150,6 +150,10 @@ Rules:
 ## Cookie and Token Handling
 
 - session cookies are HTTP-only and secure in non-local environments
+- hosted deployments derive secure cookie behavior from
+  `ZMAIL_PUBLIC_ORIGIN=https://...`; deployments behind TLS termination may also
+  rely on trusted `X-Forwarded-Proto: https` or `Forwarded: proto=https`
+  request metadata
 - access tokens are never logged
 - WorkOS token claims are reduced to safe metadata in logs
 
@@ -223,6 +227,18 @@ The repo must ignore:
 - org-local raw RFC822 files
 - machine-local inference credentials
 - generated machine-token credentials or caches
+- decrypted server env caches, local observability logs, generated migration
+  reports, Playwright/browser test artifacts, and local IDE or agent state
+
+The container build context must exclude all local secret and runtime surfaces:
+
+- `.env` and `.env.*` except `.env.example`
+- `secrets.enc.yaml` and SOPS metadata
+- decrypted caches such as `.cache/zmail/server.env`
+- `data/`, test runtimes, reports, and observability logs
+
+The production image must receive secrets only through deployment/runtime env
+injection, never through copied build-context files.
 
 ## Out Of Scope
 

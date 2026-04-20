@@ -453,4 +453,137 @@ describe("shell nav", () => {
 			vi.useRealTimers();
 		}
 	});
+
+	it("keeps app main when an island refresh returns missing fragments with fallback none", async () => {
+		const dom = createFinanceDom();
+		vi.stubGlobal("DOMParser", dom.window.DOMParser);
+		const fetchImpl = vi.fn(async () =>
+			islandResponse({
+				page: "finance",
+				cursor: 14,
+				islands: [],
+				body: "",
+				missing: ["finance.summary"],
+			}),
+		);
+		const shellNav = createShellNav({
+			documentRef: dom.window.document,
+			windowRef: dom.window as unknown as Window,
+			fetchImpl: fetchImpl as typeof fetch,
+		});
+
+		await shellNav.refresh({
+			islands: ["finance.summary"],
+			fallback: "none",
+		});
+
+		expect(fetchImpl).toHaveBeenCalledTimes(1);
+		expect(dom.window.document.getElementById("app-main")?.dataset.page).toBe(
+			"finance",
+		);
+		expect(dom.window.document.body.textContent).toContain("Old summary");
+		expect(dom.window.document.body.textContent).toContain("Old chart");
+	});
+
+	it("defers max-wait main refresh while a form field is focused", async () => {
+		vi.useFakeTimers();
+		try {
+			const dom = createDom();
+			vi.stubGlobal("DOMParser", dom.window.DOMParser);
+			const input = dom.window.document.createElement("input");
+			const form = dom.window.document.createElement("form");
+			form.append(input);
+			dom.window.document.getElementById("app-main")?.append(form);
+			input.focus();
+			const fetchImpl = vi.fn(async () =>
+				partialResponse({
+					page: "home",
+					title: "Home",
+					cursor: 14,
+					body: "<section>Refreshed</section>",
+				}),
+			);
+			const shellNav = createShellNav({
+				documentRef: dom.window.document,
+				windowRef: dom.window as unknown as Window,
+				fetchImpl: fetchImpl as typeof fetch,
+			});
+
+			await shellNav.scheduleRefresh({ debounceMs: 1000, maxWaitMs: 5000 });
+			await vi.advanceTimersByTimeAsync(5000);
+
+			expect(fetchImpl).not.toHaveBeenCalled();
+			expect(dom.window.document.body.textContent).not.toContain("Refreshed");
+
+			input.blur();
+			await vi.advanceTimersByTimeAsync(0);
+
+			expect(fetchImpl).toHaveBeenCalledTimes(1);
+			expect(dom.window.document.body.textContent).toContain("Refreshed");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("defers the active island while refreshing unrelated scheduled islands", async () => {
+		vi.useFakeTimers();
+		try {
+			const dom = createFinanceDom();
+			vi.stubGlobal("DOMParser", dom.window.DOMParser);
+			const summary = dom.window.document.querySelector(
+				'[data-zmail-island="finance.summary"]',
+			);
+			if (!summary) {
+				throw new Error("summary island missing");
+			}
+			summary.innerHTML = '<textarea name="mapping">draft text</textarea>';
+			const textarea = summary.querySelector("textarea");
+			textarea?.focus();
+			const fetchImpl = vi.fn(async (_url, init) => {
+				const headers =
+					((init as RequestInit | undefined)?.headers as
+						| Record<string, string>
+						| undefined) ?? {};
+				const islands = String(headers["X-Zmail-Islands"] ?? "");
+				if (islands === "finance.cashflow") {
+					return islandResponse({
+						page: "finance",
+						cursor: 15,
+						islands: ["finance.cashflow"],
+						body: '<section data-zmail-island="finance.cashflow">New chart</section>',
+					});
+				}
+				return islandResponse({
+					page: "finance",
+					cursor: 16,
+					islands: ["finance.summary"],
+					body: '<section data-zmail-island="finance.summary">New summary</section>',
+				});
+			});
+			const shellNav = createShellNav({
+				documentRef: dom.window.document,
+				windowRef: dom.window as unknown as Window,
+				fetchImpl: fetchImpl as typeof fetch,
+			});
+
+			await shellNav.scheduleRefresh({
+				islands: ["finance.summary", "finance.cashflow"],
+				immediate: true,
+				fallback: "none",
+			});
+			await vi.advanceTimersByTimeAsync(0);
+
+			expect(fetchImpl).toHaveBeenCalledTimes(1);
+			expect(dom.window.document.body.textContent).toContain("draft text");
+			expect(dom.window.document.body.textContent).toContain("New chart");
+
+			textarea?.blur();
+			await vi.advanceTimersByTimeAsync(0);
+
+			expect(fetchImpl).toHaveBeenCalledTimes(2);
+			expect(dom.window.document.body.textContent).toContain("New summary");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });

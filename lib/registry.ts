@@ -12,6 +12,7 @@ import {
 	type FinanceAccountMapping,
 	type FinanceIntelV3,
 	financeAccountMappingFileSchema,
+	financeAccountMappingSchema,
 	parseCurrentMessageLabel,
 	type RegistryFinancialAccount,
 	type RegistryIdentity,
@@ -190,6 +191,34 @@ export function ensureOperatorRegistryFiles(baseDir = APP_CONFIG.registryDir) {
 	writeYamlIfMissing(paths.senderRules, []);
 	writeYamlIfMissing(paths.financeAccountMappings, []);
 	return paths;
+}
+
+export function upsertFinanceAccountMappingYaml(
+	mapping: FinanceAccountMapping,
+	baseDir = APP_CONFIG.registryDir,
+) {
+	const paths = ensureOperatorRegistryFiles(baseDir);
+	const normalized = normalizeFinanceAccountMapping(
+		financeAccountMappingSchema.parse(mapping),
+	);
+	const existing = loadYamlFile(
+		paths.financeAccountMappings,
+		(input) => financeAccountMappingFileSchema.parse(input),
+		[],
+	).map(normalizeFinanceAccountMapping);
+	const nextByKey = new Map(existing.map((row) => [row.mappingKey, row]));
+	nextByKey.set(normalized.mappingKey, normalized);
+	const next = sortByMappingKey([...nextByKey.values()]);
+	writeFileSync(
+		paths.financeAccountMappings,
+		`${stringify(next).trimEnd()}\n`,
+		"utf8",
+	);
+	return {
+		path: paths.financeAccountMappings,
+		count: next.length,
+		mappingKey: normalized.mappingKey,
+	};
 }
 
 export function buildRegistrySha256(input: {

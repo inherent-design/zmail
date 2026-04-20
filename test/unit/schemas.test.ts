@@ -5,12 +5,16 @@ import {
 	financeIntelJsonSchema,
 	financeIntelV3Schema,
 	financeLedgerExportSchema,
+	financeMappingUpsertInputSchema,
 	financeSourceImportV2Schema,
 	messageLabelSchema,
 	messageLabelV3Schema,
 	messageModerationSchema,
 	parseCurrentFinanceIntel,
 	resolveReviewInputSchema,
+	reviewClassifierSchema,
+	taxBusinessQuarterPackageInputSchema,
+	taxPersonalPackageInputSchema,
 } from "#/lib/schemas";
 
 const validLabel = {
@@ -137,6 +141,60 @@ describe("schemas", () => {
 				},
 			}),
 		).toThrow();
+	});
+
+	it("validates review-classifier output and finance close command inputs", () => {
+		expect(
+			reviewClassifierSchema.parse({
+				schemaVersion: "review-classifier.v1",
+				summary: "One mapping gap found.",
+				findings: [
+					{
+						targetKind: "finance_ledger_entry",
+						targetId: "ledger-1",
+						severity: "medium",
+						action: "mapping_needed",
+						confidence: 0.88,
+						reason: "Row has amount/date but no account mapping.",
+						evidenceRefs: ["ledger:ledger-1"],
+					},
+				],
+				targetedReclassification: [
+					{
+						classifier: "finance",
+						messageIds: ["msg-1"],
+						reason: "Finance extraction missed mapping evidence.",
+					},
+				],
+				mappingSuggestionRefs: ["suggestion-1"],
+				overseerSignals: ["Sender often sends business receipts."],
+			}),
+		).toMatchObject({ schemaVersion: "review-classifier.v1" });
+
+		expect(
+			financeMappingUpsertInputSchema.parse({
+				mapping: {
+					mappingKey: "example",
+					book: "business",
+					match: { textIncludes: ["Example"] },
+					debitAccount: "Expenses:Business:Software",
+					creditAccount: "Assets:Personal:Checking",
+					currency: "USD",
+					confidence: 0.9,
+					notes: null,
+				},
+			}),
+		).toMatchObject({ mapping: { mappingKey: "example" } });
+
+		expect(taxPersonalPackageInputSchema.parse({ year: 2025 })).toMatchObject({
+			year: 2025,
+		});
+		expect(
+			taxBusinessQuarterPackageInputSchema.parse({
+				year: 2025,
+				quarter: 2,
+			}),
+		).toMatchObject({ businessSlug: "inherent-design" });
 	});
 
 	it("accepts message-label.v3 finance gate labels", () => {

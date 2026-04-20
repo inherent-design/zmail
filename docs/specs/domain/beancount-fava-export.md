@@ -34,6 +34,33 @@ Rules:
 - `-f` / `--force` explicitly allows overwriting an existing export target
 - the command resolves the org runtime before reading any finance rows
 
+## Browser Export Contract
+
+The browser `POST /rpc/finance/export` flow is narrower than the CLI:
+
+- `outDir` is optional
+- omitted `outDir` writes under the active org runtime export root:
+  `operator/exports/finance/<orgId>/<exportRunId>/`
+- supplied `outDir` must be a relative subpath under
+  `operator/exports/finance/`
+- absolute paths and `..` traversal are rejected before a job is queued
+
+This keeps browser-triggered exports inside the org runtime boundary. Operators
+who need an arbitrary filesystem target should use the CLI with explicit
+`--org` and `--out`.
+
+The finance page export panel must show:
+
+- output directory
+- validation state
+- latest package manifest
+- Fava smoke command:
+  `mise run finance:fava -- <export-dir>`
+
+When the selected period has zero `ready` rows, the browser may still queue an
+export job, but the UI must warn that the package is audit-only and not an
+accepted ledger export.
+
 ## Output Package
 
 The export writes:
@@ -92,6 +119,25 @@ Mappings may come from:
 
 Classifier free text alone is not enough to create an export account.
 
+## Pre-Export Readiness
+
+Strict export is useful only when the selected period has nonzero
+`finance_ledger_entries.status = "ready"` rows. A package with zero ready rows
+is still valid as an audit artifact, but it is not a meaningful ledger export.
+
+Readiness checks before export should report:
+
+- ready, review, blocked, and duplicate row counts for the selected period
+- account mapping coverage
+- rows missing amount, currency, date, counterparty, dedupe key, or book scope
+- rows with `book = "mixed"` and no `businessUsePercent`
+- rows with `direction = "both"`, `direction = "neither"`, or
+  `direction = "unknown"`
+
+Missing account mappings keep rows out of `.beancount`. The exporter may still
+write those rows to raw and review sidecars so operators can repair mappings and
+rebuild finance knowledge.
+
 ## Transaction Metadata
 
 Exported transactions include stable zmail metadata:
@@ -119,6 +165,7 @@ A staged row may enter `.beancount` only when:
 - amount is known
 - currency is known
 - direction is `income` or `expense`
+- direction is not `both`, `neither`, or `unknown`
 - date is known
 - counterparty/payee is known
 - book scope is `personal`, `business`, or `mixed`
@@ -146,7 +193,7 @@ Rules:
 Fava can load the generated package with:
 
 ```bash
-fava main.beancount
+mise run finance:fava -- <export-dir>
 ```
 
 ## Validation
@@ -192,3 +239,5 @@ Remaining known drift:
 - document directives are emitted only when source document paths are available
   in staged provenance
 - statement parity checks are still staging-side validation work
+- implementation must explicitly keep `both`, `neither`, and `unknown`
+  directions in sidecars if any such row reaches `status = "ready"`

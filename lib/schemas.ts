@@ -394,6 +394,59 @@ export const secondaryHeadStatusSchema = z.enum([
 ]);
 export type SecondaryHeadStatus = z.infer<typeof secondaryHeadStatusSchema>;
 
+export const reviewClassifierTargetKindSchema = z.enum([
+	"root_review",
+	"finance_ledger_entry",
+]);
+export type ReviewClassifierTargetKind = z.infer<
+	typeof reviewClassifierTargetKindSchema
+>;
+
+export const reviewClassifierSeveritySchema = z.enum([
+	"info",
+	"low",
+	"medium",
+	"high",
+	"critical",
+]);
+
+export const reviewClassifierActionSchema = z.enum([
+	"no_action",
+	"needs_manual_review",
+	"enqueue_root_reclassify",
+	"enqueue_finance_reclassify",
+	"mapping_needed",
+	"overseer_signal",
+]);
+
+export const reviewClassifierFindingSchema = z.object({
+	targetKind: reviewClassifierTargetKindSchema,
+	targetId: z.string().min(1).max(240),
+	severity: reviewClassifierSeveritySchema,
+	action: reviewClassifierActionSchema,
+	confidence: z.number().min(0).max(1),
+	reason: z.string().min(1).max(800),
+	evidenceRefs: z.array(z.string().min(1).max(240)).max(20),
+});
+
+export const reviewClassifierTargetedReclassificationSchema = z.object({
+	classifier: z.enum(["root", "finance"]),
+	messageIds: z.array(z.string().min(1).max(240)).max(100),
+	reason: z.string().min(1).max(500),
+});
+
+export const reviewClassifierSchema = z.object({
+	schemaVersion: z.literal("review-classifier.v1"),
+	summary: z.string().min(1).max(1200),
+	findings: z.array(reviewClassifierFindingSchema).max(100),
+	targetedReclassification: z
+		.array(reviewClassifierTargetedReclassificationSchema)
+		.max(20),
+	mappingSuggestionRefs: z.array(z.string().min(1).max(240)).max(50),
+	overseerSignals: z.array(z.string().min(1).max(500)).max(50),
+});
+export type ReviewClassifierV1 = z.infer<typeof reviewClassifierSchema>;
+
 export const financeMessageKindSchema = z.enum([
 	"receipt",
 	"invoice",
@@ -732,6 +785,22 @@ export const registrySenderRuleFileSchema = z.array(registrySenderRuleSchema);
 export const financeAccountMappingFileSchema = z.array(
 	financeAccountMappingSchema,
 );
+
+export const financeMappingUpsertInputSchema = z.object({
+	mapping: financeAccountMappingSchema,
+});
+
+export const taxPersonalPackageInputSchema = z.object({
+	year: z.number().int().min(1900).max(2500),
+	outDir: z.string().min(1).max(1000).nullable().optional(),
+});
+
+export const taxBusinessQuarterPackageInputSchema = z.object({
+	year: z.number().int().min(1900).max(2500),
+	quarter: z.number().int().min(1).max(4),
+	businessSlug: z.literal("inherent-design").default("inherent-design"),
+	outDir: z.string().min(1).max(1000).nullable().optional(),
+});
 
 export const financeEventCandidateSchema = z.object({
 	id: z.string().min(1),
@@ -1266,6 +1335,15 @@ export const classifyOneInputSchema = z.object({
 	messageId: z.string().min(1),
 });
 
+export const classifyRootMessagesInputSchema = z.object({
+	messageIds: z.array(z.string().min(1)).min(1).max(250),
+});
+
+export const classifyReviewBacklogInputSchema = z.object({
+	accountId: z.string().min(1).optional(),
+	limit: z.number().int().positive().max(500).optional(),
+});
+
 export const resolveReviewInputSchema = z.object({
 	reviewId: z.string().min(1),
 	action: z.enum(["accept", "override"]),
@@ -1295,6 +1373,97 @@ export const purgeAccountInputSchema = z.object({
 	accountId: z.string().min(1),
 	confirmationEmail: z.string().min(1),
 });
+
+export const reviewClassifierJsonSchema = {
+	type: "object",
+	additionalProperties: false,
+	required: [
+		"schemaVersion",
+		"summary",
+		"findings",
+		"targetedReclassification",
+		"mappingSuggestionRefs",
+		"overseerSignals",
+	],
+	properties: {
+		schemaVersion: { type: "string", enum: ["review-classifier.v1"] },
+		summary: { type: "string" },
+		findings: {
+			type: "array",
+			maxItems: 100,
+			items: {
+				type: "object",
+				additionalProperties: false,
+				required: [
+					"targetKind",
+					"targetId",
+					"severity",
+					"action",
+					"confidence",
+					"reason",
+					"evidenceRefs",
+				],
+				properties: {
+					targetKind: {
+						type: "string",
+						enum: ["root_review", "finance_ledger_entry"],
+					},
+					targetId: { type: "string" },
+					severity: {
+						type: "string",
+						enum: ["info", "low", "medium", "high", "critical"],
+					},
+					action: {
+						type: "string",
+						enum: [
+							"no_action",
+							"needs_manual_review",
+							"enqueue_root_reclassify",
+							"enqueue_finance_reclassify",
+							"mapping_needed",
+							"overseer_signal",
+						],
+					},
+					confidence: { type: "number", minimum: 0, maximum: 1 },
+					reason: { type: "string" },
+					evidenceRefs: {
+						type: "array",
+						maxItems: 20,
+						items: { type: "string" },
+					},
+				},
+			},
+		},
+		targetedReclassification: {
+			type: "array",
+			maxItems: 20,
+			items: {
+				type: "object",
+				additionalProperties: false,
+				required: ["classifier", "messageIds", "reason"],
+				properties: {
+					classifier: { type: "string", enum: ["root", "finance"] },
+					messageIds: {
+						type: "array",
+						maxItems: 100,
+						items: { type: "string" },
+					},
+					reason: { type: "string" },
+				},
+			},
+		},
+		mappingSuggestionRefs: {
+			type: "array",
+			maxItems: 50,
+			items: { type: "string" },
+		},
+		overseerSignals: {
+			type: "array",
+			maxItems: 50,
+			items: { type: "string" },
+		},
+	},
+} as const;
 
 export const messageLabelNoNsfwJsonSchema = {
 	type: "object",

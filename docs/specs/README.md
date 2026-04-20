@@ -10,6 +10,66 @@ This spec set describes the target runtime:
 - per-org runtime roots under `data/orgs/<orgId>/...`
 - authenticated SSE plus enhanced MPA navigation for live browser UX
 
+## Current Runtime Snapshot
+
+This snapshot records the current implementation shape so near-term finance
+close work keeps source, specs, and live operator state aligned.
+
+Runtime shape:
+
+- one Hono server process owns HTTP, RPC, SSR, and authenticated SSE
+- in-process worker supervision starts one org-local worker loop per discovered
+  org runtime
+- each org stores jobs, messages, operator config, raw mail, derived finance
+  state, and runtime events in its own SQLite/runtime root
+- HTTP and RPC actions enqueue jobs; workers claim org-local lane-compatible
+  jobs and publish runtime events that the browser receives over SSE
+
+Pipeline shape:
+
+- Gmail sync stores raw RFC822 source and normalized message rows
+- moderation and root classification feed `finance-intel.v3`
+- finance classification stages current heads for finance materialization
+- review classification audits root reviews plus finance review/blocker ledger
+  rows and may enqueue targeted root or finance reclassification jobs
+- overseer profile rebuilds consume accepted review-classifier signals
+- materialization/export/report jobs consume current heads and rebuild snapshots
+- Beancount/Fava export and tax/business packages read staged ledger rows and
+  count only strict-ready rows in accepted totals
+
+Count-only observation for live org `org_01KPADQ5W2MM1C5XNEAW6DFKJD` on
+2026-04-20:
+
+- `messages`: 41,482
+- `finance_intel` heads: 2,044
+- `finance_ledger_entries`: 526
+- open root reviews: 62
+- 2025 ledger rows: 388, all email-derived
+- 2025 status: 345 `review`, 43 `blocked`, 0 `ready`
+- `finance_account_mappings`: 0
+- mapping gaps: 585
+- imported finance artifacts: 0 runs, 0 documents, 0 transactions
+- export runs: 0
+
+Strict Beancount export currently has no meaningful 2025 entries to export
+because the exporter writes only `ready` rows, and all current 2025 rows lack
+resolved account mappings.
+
+## Near-Term Finance Close Focus
+
+The active finance close workstream is:
+
+- 2025 classification and readiness audit
+- Beancount/Fava export readiness
+- annual personal tax workpapers
+- quarterly inherent.design business workpapers
+- purpose-first book semantics for business items paid through personal
+  accounts
+
+Purpose-first means book scope follows the transaction purpose. Business-purpose
+rows paid through personal accounts may be `business`; ambiguous shared-use rows
+are `mixed` only when explicit allocation metadata is present.
+
 ## What Is Authoritative
 
 The following rules are mandatory:
@@ -60,6 +120,7 @@ zmail does not keep stale active architecture notes in place.
 | Finance imports | [domain/finance-imports.md](./domain/finance-imports.md) | `lib/finance-imports.ts`, `scripts/import-finance-artifact.ts`, `scripts/submit_finance_artifact.py` |
 | Finance knowledge and rollups | [domain/finance-knowledge-and-rollups.md](./domain/finance-knowledge-and-rollups.md) | `lib/finance-knowledge.ts`, `lib/finance-rollups.ts` |
 | Beancount and Fava export | [domain/beancount-fava-export.md](./domain/beancount-fava-export.md) | `lib/finance-rollups.ts`, `scripts/export-finance-beancount.ts` |
+| Tax and business reporting | [domain/tax-and-business-reporting.md](./domain/tax-and-business-reporting.md) | `lib/finance-knowledge.ts`, `lib/finance-rollups.ts`, future report export services |
 | Migrations and scripts | [operations/migrations-cleanups-and-one-off-scripts.md](./operations/migrations-cleanups-and-one-off-scripts.md) | `db/migrations/**`, `scripts/**` |
 | Testing and proof | [operations/testing-and-proof.md](./operations/testing-and-proof.md) | `test/**`, CI commands, manual smoke docs |
 | Security and secrets | [operations/security-and-secrets.md](./operations/security-and-secrets.md) | `lib/log.ts`, auth config, secret loading, `.gitignore` |

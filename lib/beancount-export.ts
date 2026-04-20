@@ -121,6 +121,9 @@ function isExportable(row: LedgerRow) {
 	if (!currency) {
 		return { ok: false as const, reason: "missing_currency" };
 	}
+	if (row.direction !== "income" && row.direction !== "expense") {
+		return { ok: false as const, reason: `direction=${row.direction}` };
+	}
 	if (!validAccountName(row.debit_account)) {
 		return { ok: false as const, reason: "missing_debit_account" };
 	}
