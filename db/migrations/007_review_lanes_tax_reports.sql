@@ -1,0 +1,5 @@
+-- 007: Stable history stamp for review classifier, lane jobs, and tax report runs.
+--
+-- The new tables and columns are part of the canonical 001 baseline. Existing
+-- databases are repaired through adopt-history guarded DDL, not by replaying
+-- column-add statements during normal migration.

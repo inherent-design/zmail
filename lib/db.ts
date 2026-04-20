@@ -135,6 +135,10 @@ interface JobsTable {
 	error_count: number;
 	claimed_at: string | null;
 	lease_expires_at: string | null;
+	lane: Generated<string>;
+	priority: Generated<number>;
+	run_after_at: Generated<string | null>;
+	claim_owner: Generated<string | null>;
 	attempts: number;
 	last_error: string | null;
 	created_at: string;
@@ -335,6 +339,34 @@ interface ReviewsTable {
 	override_label_json: string | null;
 	created_at: string;
 	resolved_at: string | null;
+}
+
+interface ReviewClassificationResultsTable {
+	id: string;
+	job_id: string | null;
+	schema_version: string;
+	model: string;
+	prompt_version: string;
+	prompt_sha256: string | null;
+	source: string;
+	input_summary_json: string;
+	result_json: string;
+	raw_response_json: string;
+	usage_json: string | null;
+	created_at: string;
+}
+
+interface ReviewClassificationHeadsTable {
+	target_kind: string;
+	target_id: string;
+	result_id: string;
+	severity: string;
+	action: string;
+	status: string;
+	confidence: number;
+	reason: string;
+	evidence_refs_json: string;
+	updated_at: string;
 }
 
 interface OverseerProfilesTable {
@@ -590,6 +622,20 @@ interface FinanceExportItemsTable {
 	created_at: string;
 }
 
+interface TaxReportRunsTable {
+	id: string;
+	status: string;
+	report_kind: string;
+	year: number;
+	quarter: number | null;
+	business_slug: string | null;
+	out_dir: string;
+	manifest_json: string;
+	validation_json: string;
+	created_at: string;
+	completed_at: string | null;
+}
+
 interface FinanceAccountMappingsTable {
 	id: string;
 	mapping_key: string;
@@ -667,6 +713,8 @@ export interface DB {
 	finance_document_candidates: FinanceDocumentCandidatesTable;
 	finance_event_evidence: FinanceEventEvidenceTable;
 	reviews: ReviewsTable;
+	review_classification_results: ReviewClassificationResultsTable;
+	review_classification_heads: ReviewClassificationHeadsTable;
 	overseer_profiles: OverseerProfilesTable;
 	classification_rule_sets: ClassificationRuleSetsTable;
 	classification_rules: ClassificationRulesTable;
@@ -683,6 +731,7 @@ export interface DB {
 	finance_patterns: FinancePatternsTable;
 	finance_export_runs: FinanceExportRunsTable;
 	finance_export_items: FinanceExportItemsTable;
+	tax_report_runs: TaxReportRunsTable;
 	finance_account_mappings: FinanceAccountMappingsTable;
 	finance_model_migration_runs: FinanceModelMigrationRunsTable;
 	finance_v3_archive_rows: FinanceV3ArchiveRowsTable;
@@ -712,6 +761,8 @@ const REQUIRED_BASELINE_TABLES = [
 	"finance_event_candidates",
 	"finance_document_candidates",
 	"finance_event_evidence",
+	"review_classification_results",
+	"review_classification_heads",
 	"classification_rule_sets",
 	"classification_rules",
 	"message_category_assignments",
@@ -727,6 +778,7 @@ const REQUIRED_BASELINE_TABLES = [
 	"finance_patterns",
 	"finance_export_runs",
 	"finance_export_items",
+	"tax_report_runs",
 	"finance_account_mappings",
 	"finance_model_migration_runs",
 	"finance_v3_archive_rows",
@@ -758,6 +810,7 @@ const REQUIRED_MESSAGE_COLUMNS = [
 
 const REQUIRED_CANONICAL_COLUMNS = {
 	accounts: ["owner_principal_email", "connection_state"],
+	jobs: ["lane", "priority", "run_after_at", "claim_owner"],
 	classification_results: ["schema_version", "prompt_sha256"],
 	message_labels: ["schema_version"],
 	message_secondary_results: ["prompt_sha256"],
@@ -802,6 +855,12 @@ const ADOPTABLE_CANONICAL_COLUMNS = {
 		"ALTER TABLE accounts ADD COLUMN owner_principal_email TEXT;",
 	"accounts.connection_state": `ALTER TABLE accounts ADD COLUMN connection_state TEXT NOT NULL DEFAULT 'connected'
   CHECK (connection_state IN ('connected', 'config_error', 'paused', 'needs_reconnect', 'disconnected'));`,
+	"jobs.lane":
+		"ALTER TABLE jobs ADD COLUMN lane TEXT NOT NULL DEFAULT 'materialize';",
+	"jobs.priority":
+		"ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 100;",
+	"jobs.run_after_at": "ALTER TABLE jobs ADD COLUMN run_after_at TEXT;",
+	"jobs.claim_owner": "ALTER TABLE jobs ADD COLUMN claim_owner TEXT;",
 	"classification_results.schema_version":
 		"ALTER TABLE classification_results ADD COLUMN schema_version TEXT NOT NULL DEFAULT 'message-label.v1';",
 	"classification_results.prompt_sha256":
@@ -925,9 +984,11 @@ export class SchemaResetRequiredError extends Error {
 }
 
 export function buildSchemaAdoptionRequiredMessage(input?: {
+	orgId?: string;
 	missingColumns?: string[];
 	staleAppliedMigrations?: string[];
 }) {
+	const orgId = input?.orgId ?? currentOrgId();
 	const details = [
 		...(input?.missingColumns?.length
 			? [`Missing columns: ${input.missingColumns.join(", ")}`]
@@ -944,20 +1005,24 @@ Required recovery:
 1. pnpm db:migrate -- --all-orgs --adopt-history
 
 Single-org recovery:
-1. pnpm db:migrate -- --org ${currentOrgId()} --adopt-history${detailBlock}`;
+1. pnpm db:migrate -- --org ${orgId} --adopt-history${detailBlock}`;
 }
 
 export class SchemaAdoptionRequiredError extends Error {
 	readonly code = "SCHEMA_ADOPTION_REQUIRED";
+	readonly orgId: string;
 	readonly missingColumns: string[];
 	readonly staleAppliedMigrations: string[];
 
 	constructor(input: {
+		orgId?: string;
 		missingColumns: string[];
 		staleAppliedMigrations: string[];
 	}) {
-		super(buildSchemaAdoptionRequiredMessage(input));
+		const orgId = input.orgId ?? currentOrgId();
+		super(buildSchemaAdoptionRequiredMessage({ ...input, orgId }));
 		this.name = "SchemaAdoptionRequiredError";
+		this.orgId = orgId;
 		this.missingColumns = input.missingColumns;
 		this.staleAppliedMigrations = input.staleAppliedMigrations;
 	}
@@ -1132,16 +1197,28 @@ function assertExistingLegacyBaselineCompatibility(sqlite: Database.Database) {
 }
 
 function canAdoptCanonicalHistory(details: SchemaCompatibilityDetails) {
-	if (
-		details.missingTables.length > 0 ||
-		details.missingMessageColumns.length > 0
-	) {
+	if (details.missingMessageColumns.length > 0) {
 		return false;
 	}
-	return details.missingColumns.every(
+	return canAdoptCanonicalColumns(details.missingColumns);
+}
+
+function canAdoptCanonicalColumns(missingColumns: string[]) {
+	return missingColumns.every(
 		(columnName): columnName is CanonicalColumnRef =>
 			columnName in ADOPTABLE_CANONICAL_COLUMNS,
 	);
+}
+
+function missingColumnsForExistingTables(
+	sqlite: Database.Database,
+	missingColumns: string[],
+) {
+	const tables = tableNames(sqlite);
+	return missingColumns.filter((columnName) => {
+		const [tableName] = columnName.split(".");
+		return Boolean(tableName && tables.has(tableName));
+	});
 }
 
 export function getSqlite(orgId = currentOrgId()) {
@@ -1223,6 +1300,7 @@ export function runMigrations(orgId = currentOrgId()) {
 	}
 
 	assertBaselineSchemaCompatibility(sqlite, {
+		orgId,
 		appliedMigrations: [...applied].sort(),
 		activeMigrationFiles: files,
 	});
@@ -1231,6 +1309,7 @@ export function runMigrations(orgId = currentOrgId()) {
 export function assertBaselineSchemaCompatibility(
 	sqlite = getSqlite(),
 	input?: {
+		orgId?: string;
 		appliedMigrations?: string[];
 		activeMigrationFiles?: string[];
 	},
@@ -1250,6 +1329,7 @@ export function assertBaselineSchemaCompatibility(
 		details.missingColumns.length === 0
 	) {
 		throw new SchemaAdoptionRequiredError({
+			orgId: input?.orgId,
 			missingColumns: [],
 			staleAppliedMigrations: details.staleAppliedMigrations,
 		});
@@ -1257,6 +1337,7 @@ export function assertBaselineSchemaCompatibility(
 
 	if (canAdoptCanonicalHistory(details)) {
 		throw new SchemaAdoptionRequiredError({
+			orgId: input?.orgId,
 			missingColumns: details.missingColumns,
 			staleAppliedMigrations: details.staleAppliedMigrations,
 		});
@@ -1389,6 +1470,25 @@ export async function adoptCanonicalMigrationHistory(orgId = currentOrgId()) {
 		});
 	}
 
+	const missingExistingColumns = missingColumnsForExistingTables(
+		sqlite,
+		details.missingColumns,
+	);
+	if (!canAdoptCanonicalColumns(missingExistingColumns)) {
+		throw new SchemaResetRequiredError({
+			missingTables: details.missingTables,
+			missingMessageColumns: details.missingMessageColumns,
+			missingColumns: details.missingColumns,
+		});
+	}
+	if (missingExistingColumns.length > 0) {
+		addMissingAdoptableCanonicalColumns(sqlite, missingExistingColumns);
+		details = buildSchemaCompatibilityDetails(sqlite, {
+			appliedMigrations,
+			activeMigrationFiles,
+		});
+	}
+
 	if (details.missingTables.length > 0) {
 		applyCanonicalBaselineDdl(sqlite);
 		details = buildSchemaCompatibilityDetails(sqlite, {
@@ -1434,6 +1534,7 @@ export async function adoptCanonicalMigrationHistory(orgId = currentOrgId()) {
 
 	restampCanonicalMigrationHistory(sqlite, activeMigrationFiles);
 	assertBaselineSchemaCompatibility(sqlite, {
+		orgId,
 		appliedMigrations: activeMigrationFiles,
 		activeMigrationFiles,
 	});

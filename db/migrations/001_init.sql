@@ -118,6 +118,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   error_count INTEGER NOT NULL DEFAULT 0,
   claimed_at TEXT,
   lease_expires_at TEXT,
+  lane TEXT NOT NULL DEFAULT 'materialize',
+  priority INTEGER NOT NULL DEFAULT 100,
+  run_after_at TEXT,
+  claim_owner TEXT,
   attempts INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
   created_at TEXT NOT NULL,
@@ -305,6 +309,33 @@ CREATE TABLE IF NOT EXISTS reviews (
   override_label_json TEXT,
   created_at TEXT NOT NULL,
   resolved_at TEXT
+);
+CREATE TABLE IF NOT EXISTS review_classification_results (
+  id TEXT PRIMARY KEY,
+  job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
+  schema_version TEXT NOT NULL,
+  model TEXT NOT NULL,
+  prompt_version TEXT NOT NULL,
+  prompt_sha256 TEXT,
+  source TEXT NOT NULL,
+  input_summary_json TEXT NOT NULL DEFAULT '{}',
+  result_json TEXT NOT NULL,
+  raw_response_json TEXT NOT NULL,
+  usage_json TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS review_classification_heads (
+  target_kind TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  result_id TEXT NOT NULL REFERENCES review_classification_results(id) ON DELETE CASCADE,
+  severity TEXT NOT NULL,
+  action TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open',
+  confidence REAL NOT NULL DEFAULT 0,
+  reason TEXT NOT NULL,
+  evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (target_kind, target_id)
 );
 CREATE TABLE IF NOT EXISTS overseer_profiles (
   id TEXT PRIMARY KEY,
@@ -506,6 +537,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS jobs_open_scope_idx
   WHERE status IN ('queued', 'running');
 CREATE INDEX IF NOT EXISTS jobs_status_created_idx
   ON jobs (status, created_at);
+CREATE INDEX IF NOT EXISTS jobs_lane_status_priority_idx
+  ON jobs (lane, status, priority, created_at);
+CREATE INDEX IF NOT EXISTS jobs_run_after_idx
+  ON jobs (status, run_after_at);
 CREATE INDEX IF NOT EXISTS classification_results_message_created_idx
   ON classification_results (message_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS classification_results_message_prompt_idx
@@ -534,6 +569,10 @@ CREATE INDEX IF NOT EXISTS finance_event_evidence_document_idx
   ON finance_event_evidence (document_candidate_id);
 CREATE INDEX IF NOT EXISTS reviews_status_created_idx
   ON reviews (status, created_at);
+CREATE INDEX IF NOT EXISTS review_classification_results_created_idx
+  ON review_classification_results (created_at DESC);
+CREATE INDEX IF NOT EXISTS review_classification_heads_status_idx
+  ON review_classification_heads (status, severity, updated_at DESC);
 CREATE INDEX IF NOT EXISTS overseer_profiles_account_created_idx
   ON overseer_profiles (account_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS classification_rules_rule_set_priority_idx
@@ -629,6 +668,19 @@ CREATE TABLE IF NOT EXISTS finance_export_items (
   payload_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS tax_report_runs (
+  id TEXT PRIMARY KEY,
+  status TEXT NOT NULL,
+  report_kind TEXT NOT NULL,
+  year INTEGER NOT NULL,
+  quarter INTEGER,
+  business_slug TEXT,
+  out_dir TEXT NOT NULL,
+  manifest_json TEXT NOT NULL DEFAULT '{}',
+  validation_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  completed_at TEXT
+);
 CREATE TABLE IF NOT EXISTS finance_account_mappings (
   id TEXT PRIMARY KEY,
   mapping_key TEXT NOT NULL UNIQUE,
@@ -663,6 +715,10 @@ CREATE INDEX IF NOT EXISTS finance_export_runs_created_idx
   ON finance_export_runs (created_at DESC);
 CREATE INDEX IF NOT EXISTS finance_export_items_run_idx
   ON finance_export_items (export_run_id, status);
+CREATE INDEX IF NOT EXISTS tax_report_runs_created_idx
+  ON tax_report_runs (created_at DESC);
+CREATE INDEX IF NOT EXISTS tax_report_runs_kind_year_idx
+  ON tax_report_runs (report_kind, year, quarter, status);
 CREATE INDEX IF NOT EXISTS finance_account_mappings_key_idx
   ON finance_account_mappings (mapping_key);
 CREATE TABLE IF NOT EXISTS finance_model_migration_runs (

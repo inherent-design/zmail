@@ -19,6 +19,7 @@ data/orgs/<orgId>/operator/
     identities.yaml
     institutions.yaml
     financial-accounts.yaml
+    finance-account-mappings.yaml
     sender-rules.yaml
 ```
 
@@ -79,6 +80,20 @@ Owns:
 - owner identity linkage
 - institution linkage
 - display name and account hints
+
+### `finance-account-mappings.yaml`
+
+Owns:
+
+- mapping keys used by finance classifier prompt context and ledger staging
+- match conditions for sender/text/book/owner/institution/account evidence
+- Beancount debit and credit accounts
+- currency
+- confidence and operator notes
+
+The browser mapping editor writes validated YAML entries to this file, then
+queues registry import and finance knowledge/rollup rebuild jobs. LLM output may
+suggest mappings but must not write this file directly.
 
 ### `sender-rules.yaml`
 

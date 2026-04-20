@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -263,6 +264,65 @@ describe("new server actions", () => {
 				scope_id: "finance",
 			},
 		]);
+	});
+
+	it("confines browser finance export paths to the org runtime export directory", async () => {
+		const runtime = await createTestRuntime();
+		await bootDb();
+
+		vi.doMock("#/lib/worker", () => ({
+			ensureWorkerStarted: vi.fn(),
+		}));
+
+		const actions =
+			await runtime.importFresh<typeof import("#/server/actions")>(
+				"#/server/actions",
+			);
+
+		const defaultExport = await actions.queueFinanceExportCommand({
+			year: 2026,
+		});
+		expect(defaultExport.outDir).toContain(
+			resolve(
+				runtime.dataDir,
+				"orgs",
+				"local",
+				"operator",
+				"exports",
+				"finance",
+				"local",
+			),
+		);
+
+		const customExport = await actions.queueFinanceExportCommand({
+			year: 2026,
+			outDir: "manual/april",
+		});
+		expect(customExport.outDir).toBe(
+			resolve(
+				runtime.dataDir,
+				"orgs",
+				"local",
+				"operator",
+				"exports",
+				"finance",
+				"manual",
+				"april",
+			),
+		);
+
+		await expect(
+			actions.queueFinanceExportCommand({
+				year: 2026,
+				outDir: "../escape",
+			}),
+		).rejects.toThrow(/inside the org finance export directory/);
+		await expect(
+			actions.queueFinanceExportCommand({
+				year: 2026,
+				outDir: "/tmp/zmail-export",
+			}),
+		).rejects.toThrow(/relative path/);
 	});
 
 	it("loadAccountsData defaults grouped counts to zero for accounts without rows", async () => {
@@ -3678,7 +3738,7 @@ describe("new server actions", () => {
 					type: "complete",
 					event: "server.action.complete",
 					fields: expect.objectContaining({
-						status: "classified",
+						status: "queued",
 					}),
 				}),
 				expect.objectContaining({

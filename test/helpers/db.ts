@@ -160,6 +160,7 @@ export async function seedStaleCanonicalMigrationHistory(input?: {
 	withSampleData?: boolean;
 	missingOwnerPrincipalEmail?: boolean;
 	missingConnectionState?: boolean;
+	missingJobLaneColumns?: boolean;
 	migrationNames?: string[];
 }) {
 	const dbModule = await import("#/lib/db");
@@ -178,10 +179,30 @@ export async function seedStaleCanonicalMigrationHistory(input?: {
 			"  updated_at TEXT NOT NULL\n);",
 		);
 	}
+	if (input?.missingJobLaneColumns) {
+		const before = staleSql;
+		staleSql = staleSql
+			.replace("  lane TEXT NOT NULL DEFAULT 'materialize',\n", "")
+			.replace("  priority INTEGER NOT NULL DEFAULT 100,\n", "")
+			.replace("  run_after_at TEXT,\n", "")
+			.replace("  claim_owner TEXT,\n", "")
+			.replace(
+				/CREATE INDEX IF NOT EXISTS jobs_lane_status_priority_idx\n {2}ON jobs \(lane, status, priority, created_at\);\n/,
+				"",
+			)
+			.replace(
+				/CREATE INDEX IF NOT EXISTS jobs_run_after_idx\n {2}ON jobs \(status, run_after_at\);\n/,
+				"",
+			);
+		if (staleSql === before) {
+			throw new Error("Expected canonical 001_init.sql to contain job lanes");
+		}
+	}
 	if (
 		staleSql === canonicalSql &&
 		(input?.missingOwnerPrincipalEmail !== false ||
-			input?.missingConnectionState)
+			input?.missingConnectionState ||
+			input?.missingJobLaneColumns)
 	) {
 		throw new Error("Expected canonical 001_init.sql to contain owner column");
 	}

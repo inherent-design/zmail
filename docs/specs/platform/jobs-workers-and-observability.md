@@ -19,6 +19,7 @@ Each org runtime has:
 - one org-local SQLite jobs table
 - one org-local worker loop
 - one org-local watcher registry
+- bounded concurrent job execution across compatible per-org lanes
 
 ## Startup Rules
 
@@ -44,26 +45,76 @@ Active job kinds:
 - `sync_account_backfill`
 - `sync_account_reconcile`
 - `classify_account_backlog`
+- `classify_root_messages`
 - `classify_finance_backlog`
 - `classify_finance_messages`
+- `classify_review_backlog`
 - `rebuild_category_assignments`
 - `rebuild_finance_knowledge`
 - `rebuild_finance_rollups`
 - `reconcile_registry_suggestions`
 - `import_finance_artifact`
 - `export_finance_beancount`
+- `generate_tax_personal_package`
+- `generate_tax_business_quarter_package`
 - `rebuild_overseer`
 - `import_operator_registry`
 
 `scope_type = "system"` means system within one org DB, not machine-global.
 
+Job rows include scheduling and lane metadata:
+
+- `lane`
+- `priority`
+- `run_after_at`
+- `claim_owner`
+
+Lane mapping:
+
+- `sync`: Gmail full/delta/backfill/reconcile
+- `root_llm`: root backlog and targeted root message classification
+- `finance_llm`: finance backlog and targeted finance message classification
+- `review_llm`: review classifier backlog
+- `materialize`: registry import, registry suggestion reconcile, category
+  assignments, finance knowledge, and finance rollups
+- `export_report`: Beancount export and tax/business package generation
+- `overseer`: overseer profile rebuild
+
+Default worker config:
+
+- `worker.max_job_concurrency = 4`
+- each lane cap defaults to `1`
+- total cap is enforced per org worker
+- SQLite remains one DB per org with WAL and short write transactions
+
 ## Lease and Claim Rules
 
-- workers claim queued jobs FIFO inside one org DB
+- workers claim queued jobs inside one SQLite transaction
+- candidate order is `priority asc, created_at asc`
 - claimed jobs receive a lease expiration time
 - long-running jobs renew their lease heartbeat
 - expired running jobs are requeued on org-worker startup
 - queue idempotency applies within one org DB only
+- a worker must not claim a queued job when the lane cap is full
+- a worker must not claim a queued job when any running job holds an
+  incompatible resource lock
+
+Static resource locks:
+
+- sync jobs: `sync:<accountId>`
+- root LLM jobs: `root:<accountId>`
+- finance LLM jobs: `finance:<accountId>`
+- review LLM jobs: `review:<accountId>`
+- finance materialization: `finance:materialize`
+- export/report jobs: `finance:export-report`
+- overseer rebuilds: `overseer:<accountId>`
+
+Materialization may run while LLM jobs run. It must record an input watermark at
+start and requeue itself when upstream heads or review findings change before
+finish.
+
+Export/report jobs may run while upstream work exists, but packages must mark
+stale or audit-only when open jobs can change accepted totals.
 
 ## Queue Idempotency Rules
 
@@ -74,9 +125,16 @@ Examples:
 - targeted finance repair extraction:
   `(kind=classify_finance_messages, scope_type=account, scope_id=accountId)`
   with `meta.targetMessageIds`
+- targeted root repair classification:
+  `(kind=classify_root_messages, scope_type=account, scope_id=accountId)` with
+  `meta.targetMessageIds`
+- review classifier:
+  `(kind=classify_review_backlog, scope_type=account|system, scope_id=...)`
 - finance rollup rebuild: `(kind, scope_type=system, scope_id=finance_rollups)`
 - finance import: `(kind, scope_type=system, scope_id=artifactSha256)`
 - finance export: `(kind=export_finance_beancount, scope_type=system, scope_id=exportRunId)`
+- tax/report package:
+  `(kind=generate_tax_*_package, scope_type=system, scope_id=taxReportRunId)`
 
 The finance import queue scope must match the artifact dedup key:
 

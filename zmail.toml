@@ -13,6 +13,16 @@ force_org_layout = false
 enabled = true
 poll_ms = 1000
 live_heartbeat_ms = 30000
+max_job_concurrency = 4
+
+[worker.lane_caps]
+sync = 1
+root_llm = 1
+finance_llm = 1
+review_llm = 1
+materialize = 1
+export_report = 1
+overseer = 1
 
 [logging]
 level = "info"

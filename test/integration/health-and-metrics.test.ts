@@ -41,6 +41,10 @@ describe("health and metrics routes", () => {
 
 		const health = await app.request("http://localhost/healthz");
 		expect(health.status).toBe(200);
+		expect(health.headers.get("x-content-type-options")).toBe("nosniff");
+		expect(health.headers.get("x-frame-options")).toBe("SAMEORIGIN");
+		expect(health.headers.get("referrer-policy")).toBe("no-referrer");
+		expect(health.headers.get("permissions-policy")).toContain("camera=()");
 		await expect(health.json()).resolves.toMatchObject({
 			ok: true,
 			status: "ok",

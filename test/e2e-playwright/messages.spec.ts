@@ -17,6 +17,12 @@ test("classify backlog queues a run and leaves a current v3 label", async ({
 	await clickAndWaitForServerAction(page, () =>
 		page.getByRole("button", { name: "Classify backlog" }).click(),
 	);
+	await expect(
+		page.locator('[data-zmail-island="account.mailbox-sync"]'),
+	).not.toContainText("Phaseunknown");
+	await expect(
+		page.locator('[data-zmail-island="account.lanes"]'),
+	).toContainText("Root classifier");
 
 	await waitForRun(page, {
 		kind: "classify_account_backlog",
@@ -50,6 +56,14 @@ test("classify now produces a current v3 label on message detail", async ({
 
 	await clickAndWaitForServerAction(page, () =>
 		page.getByRole("button", { name: "Classify now" }).click(),
+	);
+	await waitForRun(page, {
+		kind: "classify_root_messages",
+		scopeId: PLAYWRIGHT_SCENARIOS.classifyNow.account.id,
+	});
+	await gotoAndHydrate(
+		page,
+		`/messages/${PLAYWRIGHT_SCENARIOS.classifyNow.message.id}`,
 	);
 
 	const currentLabelCard = page

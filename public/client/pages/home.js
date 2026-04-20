@@ -1,18 +1,36 @@
+const HOME_STATS = ["home.stats"];
+const HOME_JOB_ISLANDS = ["home.stats", "home.lanes"];
+
+function isTerminalJob(event) {
+	return (
+		event.eventType === "job.updated" &&
+		(event.payload?.status === "complete" || event.payload?.status === "failed")
+	);
+}
+
 export function init(app) {
-	const refresh = () => void app.scheduleRefresh({ immediate: true });
+	const refreshStats = () =>
+		void app.scheduleRefresh({
+			islands: HOME_STATS,
+			immediate: true,
+			fallback: "none",
+		});
 	const onJob = (event) => {
-		if (event.eventType !== "job.updated") {
+		if (
+			!["job.queued", "job.claimed", "job.updated"].includes(event.eventType)
+		) {
 			return;
 		}
-		const terminal =
-			event.payload?.status === "complete" ||
-			event.payload?.status === "failed";
-		void app.scheduleRefresh({ immediate: terminal });
+		void app.scheduleRefresh({
+			islands: HOME_JOB_ISLANDS,
+			immediate: isTerminalJob(event),
+			fallback: "none",
+		});
 	};
 	const unsubscribers = [
 		app.subscribe("jobs", onJob),
-		app.subscribe("accounts", refresh),
-		app.subscribe("reviews", refresh),
+		app.subscribe("accounts", refreshStats),
+		app.subscribe("reviews", refreshStats),
 	];
 	return () => {
 		for (const unsubscribe of unsubscribers) {

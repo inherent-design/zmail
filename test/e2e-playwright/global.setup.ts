@@ -286,7 +286,7 @@ async function seedRuntime(dataDir: string) {
 		accountId: PLAYWRIGHT_SCENARIOS.delete.account.id,
 		message: PLAYWRIGHT_SCENARIOS.delete.message,
 		label: {
-			label: buildSeededReviewLabel(),
+			label: buildMessageLabelV3(),
 			lowConfidence: 0,
 		},
 	});

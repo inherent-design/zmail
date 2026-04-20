@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 
 import {
 	APP_CONFIG,
@@ -8,6 +8,7 @@ import {
 	FINANCE_INTEL_PROMPT_VERSION,
 	FINANCE_KNOWLEDGE_PROMPT_VERSION,
 	OVERSEER_PROMPT_VERSION,
+	REVIEW_CLASSIFIER_PROMPT_VERSION,
 } from "#/lib/config";
 import { isGoogleOAuthBootstrapErrorMessage } from "#/lib/google-oauth";
 import { type LogFields, type LogTrace, startTrace } from "#/lib/log";
@@ -495,31 +496,36 @@ export async function loadHomeData() {
 		run: async () => {
 			const { getDb } = await bootServer();
 			const db = getDb();
-			const [messages, reviews, jobs, accounts] = await Promise.all([
-				db
-					.selectFrom("messages")
-					.select((eb) => eb.fn.countAll<number>().as("count"))
-					.executeTakeFirstOrThrow(),
-				db
-					.selectFrom("reviews")
-					.select((eb) => eb.fn.countAll<number>().as("count"))
-					.where("status", "=", "open")
-					.executeTakeFirstOrThrow(),
-				db
-					.selectFrom("jobs")
-					.select((eb) => eb.fn.countAll<number>().as("count"))
-					.executeTakeFirstOrThrow(),
-				db
-					.selectFrom("accounts")
-					.select((eb) => eb.fn.countAll<number>().as("count"))
-					.executeTakeFirstOrThrow(),
-			]);
+			const [messages, reviews, jobs, accounts, laneProgress] =
+				await Promise.all([
+					db
+						.selectFrom("messages")
+						.select((eb) => eb.fn.countAll<number>().as("count"))
+						.executeTakeFirstOrThrow(),
+					db
+						.selectFrom("reviews")
+						.select((eb) => eb.fn.countAll<number>().as("count"))
+						.where("status", "=", "open")
+						.executeTakeFirstOrThrow(),
+					db
+						.selectFrom("jobs")
+						.select((eb) => eb.fn.countAll<number>().as("count"))
+						.executeTakeFirstOrThrow(),
+					db
+						.selectFrom("accounts")
+						.select((eb) => eb.fn.countAll<number>().as("count"))
+						.executeTakeFirstOrThrow(),
+					import("#/lib/job-lane-progress").then((module) =>
+						module.loadGlobalLaneProgress(),
+					),
+				]);
 
 			return {
 				messages: Number(messages.count),
 				openReviews: Number(reviews.count),
 				jobs: Number(jobs.count),
 				accounts: Number(accounts.count),
+				laneProgress,
 			};
 		},
 		summarize: (result) => ({
@@ -527,6 +533,7 @@ export async function loadHomeData() {
 			open_reviews: result.openReviews,
 			jobs: result.jobs,
 			accounts: result.accounts,
+			lanes: result.laneProgress.length,
 		}),
 	});
 }
@@ -1001,14 +1008,51 @@ export async function loadReviewData() {
 				.orderBy("reviews.created_at", "asc")
 				.execute();
 
-			return rows.map(({ body_text_forwarded, ...row }) => ({
-				...row,
-				has_forwarded: body_text_forwarded.length > 0,
-				result: safeJsonParse(row.result_json, null),
-			}));
+			const [findingRows, resultRows] = await Promise.all([
+				db
+					.selectFrom("review_classification_heads")
+					.selectAll()
+					.orderBy("updated_at", "desc")
+					.limit(100)
+					.execute(),
+				db
+					.selectFrom("review_classification_results")
+					.select([
+						"id",
+						"schema_version",
+						"model",
+						"prompt_version",
+						"created_at",
+						"result_json",
+					])
+					.orderBy("created_at", "desc")
+					.limit(20)
+					.execute(),
+			]);
+
+			return {
+				rootReviews: rows.map(({ body_text_forwarded, ...row }) => ({
+					...row,
+					has_forwarded: body_text_forwarded.length > 0,
+					result: safeJsonParse(row.result_json, null),
+				})),
+				findings: findingRows.map((row) => ({
+					...row,
+					evidenceRefs: safeJsonParse(row.evidence_refs_json, []),
+				})),
+				actionHistory: resultRows.map((row) => ({
+					id: row.id,
+					schemaVersion: row.schema_version,
+					model: row.model,
+					promptVersion: row.prompt_version,
+					createdAt: row.created_at,
+					result: safeJsonParse(row.result_json, null),
+				})),
+			};
 		},
 		summarize: (result) => ({
-			count: result.length,
+			count: result.rootReviews.length,
+			findings: result.findings.length,
 		}),
 	});
 }
@@ -1018,22 +1062,30 @@ export async function loadRunsData() {
 		operation: "loadRunsData",
 		kind: "loader",
 		run: async () => {
-			const [{ listJobs }, { getPiStatus }] = await Promise.all([
-				import("#/lib/jobs"),
-				import("#/lib/pi"),
-			]);
+			const [{ listJobs }, { getPiStatus }, { loadGlobalLaneProgress }] =
+				await Promise.all([
+					import("#/lib/jobs"),
+					import("#/lib/pi"),
+					import("#/lib/job-lane-progress"),
+				]);
 			await bootServer();
-			const [jobs, runtime] = await Promise.all([listJobs(), getPiStatus()]);
+			const [jobs, runtime, laneProgress] = await Promise.all([
+				listJobs(),
+				getPiStatus(),
+				loadGlobalLaneProgress(),
+			]);
 			return {
 				jobs: jobs.map((job) => ({
 					...job,
 					progress: parseJobProgressFields(job.meta_json),
 				})),
 				runtime,
+				laneProgress,
 			};
 		},
 		summarize: (result) => ({
 			jobs: result.jobs.length,
+			lanes: result.laneProgress.length,
 			resolved_backend: result.runtime.resolvedBackend ?? "unavailable",
 		}),
 	});
@@ -1149,14 +1201,21 @@ export async function loadFinanceData(
 				exportItems,
 				patternRows,
 				mappingRows,
+				reviewFindingRows,
+				taxReportRows,
+				laneProgress,
 			] = await Promise.all([
 				loadRegistryState(db, safeJsonParse),
 				loadFinanceCoverageSummary({ db, safeJsonParse }),
 				loadOpenJobCounts(db, [
 					"classify_finance_backlog",
+					"classify_finance_messages",
+					"classify_review_backlog",
 					"rebuild_finance_knowledge",
 					"rebuild_finance_rollups",
 					"export_finance_beancount",
+					"generate_tax_personal_package",
+					"generate_tax_business_quarter_package",
 				]),
 				loadCombinedFinanceLedger(),
 				db
@@ -1264,6 +1323,21 @@ export async function loadFinanceData(
 					.selectAll()
 					.orderBy("mapping_key", "asc")
 					.execute(),
+				db
+					.selectFrom("review_classification_heads")
+					.selectAll()
+					.orderBy("updated_at", "desc")
+					.limit(100)
+					.execute(),
+				db
+					.selectFrom("tax_report_runs")
+					.selectAll()
+					.orderBy("created_at", "desc")
+					.limit(50)
+					.execute(),
+				import("#/lib/job-lane-progress").then((module) =>
+					module.loadFinanceLaneProgress(),
+				),
 			]);
 
 			if (rollupRows.length === 0 && ledger.length > 0) {
@@ -1410,6 +1484,47 @@ export async function loadFinanceData(
 			});
 			const summary = derivedRollups.summary;
 			const yearLedger = ledger.filter((entry) => entry.year === selectedYear);
+			const readinessRows = yearLedger.filter(
+				(entry) => entry.status !== "duplicate",
+			);
+			const readiness = {
+				year: selectedYear,
+				statusCounts: {
+					ready: readinessRows.filter((row) => row.status === "ready").length,
+					review: readinessRows.filter((row) => row.status === "review").length,
+					blocked: readinessRows.filter((row) => row.status === "blocked")
+						.length,
+					duplicate: yearLedger.filter((row) => row.status === "duplicate")
+						.length,
+				},
+				openJobsThatMayChangeTotals: Object.entries(jobCounts).flatMap(
+					([kind, counts]) =>
+						counts.queued + counts.running > 0
+							? [{ kind, queued: counts.queued, running: counts.running }]
+							: [],
+				),
+				mappingCoverage: {
+					mappingCount: mappingRows.length,
+					mappedRows: readinessRows.filter((row) => row.accountMappingKey)
+						.length,
+					totalRows: readinessRows.length,
+				},
+				missing: {
+					amount: readinessRows.filter((row) => row.amountMinor === null)
+						.length,
+					date: readinessRows.filter((row) => !row.occurredAt).length,
+					counterparty: readinessRows.filter((row) => !row.counterparty).length,
+					mapping: readinessRows.filter((row) => !row.accountMappingKey).length,
+					book: readinessRows.filter(
+						(row) => row.book === "unknown" || !row.book,
+					).length,
+					dedupe: readinessRows.filter((row) => !row.canonicalKey).length,
+				},
+				freshness: {
+					registryImportedAt: registry.importedAt,
+					latestReviewFindingAt: reviewFindingRows[0]?.updated_at ?? null,
+				},
+			};
 			const yearDocuments = importDocumentRows.filter(matchesSelectedYear);
 			const institutionIds = Array.from(
 				new Set(
@@ -1576,6 +1691,7 @@ export async function loadFinanceData(
 				},
 				registry,
 				coverage,
+				readiness,
 				pipelineStatus: {
 					rootFinanceRelevantCount: coverage.rootFinanceRelevantCount,
 					financeHeadCount: coverage.totalHeads,
@@ -1591,6 +1707,7 @@ export async function loadFinanceData(
 					registryImportedAt: registry.importedAt,
 					jobs: jobCounts,
 				},
+				laneProgress,
 				summary,
 				cashflowSeries,
 				categoryBreakdown,
@@ -1747,6 +1864,30 @@ export async function loadFinanceData(
 					match: safeJsonParse(row.match_json, {}),
 					notes: row.notes,
 				})),
+				reviewFindings: reviewFindingRows.map((row) => ({
+					targetKind: row.target_kind,
+					targetId: row.target_id,
+					severity: row.severity,
+					action: row.action,
+					status: row.status,
+					confidence: row.confidence,
+					reason: row.reason,
+					evidenceRefs: safeJsonParse(row.evidence_refs_json, []),
+					updatedAt: row.updated_at,
+				})),
+				taxReportRuns: taxReportRows.map((row) => ({
+					id: row.id,
+					status: row.status,
+					reportKind: row.report_kind,
+					year: row.year,
+					quarter: row.quarter,
+					businessSlug: row.business_slug,
+					outDir: row.out_dir,
+					manifest: safeJsonParse(row.manifest_json, null),
+					validation: safeJsonParse(row.validation_json, null),
+					createdAt: row.created_at,
+					completedAt: row.completed_at,
+				})),
 				registrySuggestions: filteredSuggestionRows.map((row) => ({
 					id: row.id,
 					entityKind: row.entity_kind,
@@ -1769,6 +1910,7 @@ export async function loadFinanceData(
 			exports: result.exportRuns.length,
 			finance_heads: result.coverage.totalHeads,
 			rollups: result.rollups.length,
+			lanes: result.laneProgress.length,
 		}),
 	});
 }
@@ -1932,76 +2074,27 @@ export async function classifyOneNowCommand(input: { messageId: string }) {
 			const db = getDb();
 			const message = await db
 				.selectFrom("messages")
-				.innerJoin("accounts", "accounts.id", "messages.account_id")
-				.select([
-					"messages.id",
-					"messages.account_id",
-					"accounts.label as account_label",
-					"messages.sender_address",
-					"messages.subject",
-					"messages.received_at",
-					"messages.body_text_normalized",
-				])
+				.select(["messages.id", "messages.account_id"])
 				.where("messages.id", "=", input.messageId)
 				.executeTakeFirstOrThrow();
 			trace.add({
+				message_id: message.id,
 				account_id: message.account_id,
 			});
-
-			const attachments = await db
-				.selectFrom("attachments")
-				.select(["filename", "mime_type"])
-				.where("message_id", "=", input.messageId)
-				.execute();
-
-			const [
-				{ ensureModerationForMessage, topModerationScores },
-				classifyModule,
-				overseer,
-			] = await Promise.all([
-				import("#/lib/moderation"),
-				import("#/lib/classify"),
-				import("#/lib/overseer"),
-			]);
-
-			const moderation = await ensureModerationForMessage({
-				jobId: null,
-				messageId: message.id,
-				sender: message.sender_address ?? "(unknown)",
-				subject: message.subject ?? "(no subject)",
-				bodyText: message.body_text_normalized,
+			const { queueJobIdempotent } = await import("#/lib/jobs");
+			const jobId = await queueJobIdempotent({
+				kind: "classify_root_messages",
+				scopeType: "account",
+				scopeId: message.account_id,
+				model: APP_CONFIG.classifierModel,
+				promptVersion: CLASSIFY_PROMPT_VERSION,
+				meta: { targetMessageIds: [message.id] },
 			});
-
-			const context = await overseer.loadLatestOverseerContext(
-				message.account_id,
-			);
-
-			const classification = await classifyModule.classifyMessageNow({
-				jobId: null,
-				accountId: message.account_id,
-				messageId: message.id,
-				accountLabel: message.account_label,
-				sender: message.sender_address ?? "(unknown)",
-				subject: message.subject ?? "(no subject)",
-				receivedAt: message.received_at ?? "(unknown)",
-				bodyText: message.body_text_normalized,
-				attachmentsSummary: classifyModule.buildAttachmentSummary(attachments),
-				moderationFlag: moderation.nsfwFlag,
-				moderationScores: topModerationScores(moderation.scores),
-				promptPreamble: context.promptPreamble,
-				allowedTags: classifyModule.mergeAllowedTags(context.promotedTags),
-			});
-
-			if (classification.label.finance.relevant) {
-				await queueFinanceBacklogJob(message.account_id);
-			} else {
-				await queueFinanceKnowledgeJob();
-			}
-
-			return { status: "classified" as const };
+			return { status: "queued" as const, jobId };
 		},
 		summarize: (result) => ({
 			status: result.status,
+			job_id: result.jobId ?? undefined,
 		}),
 	});
 }
@@ -2095,6 +2188,7 @@ export async function loadAccountDetailData(input: { accountId: string }) {
 				tombCount,
 				financeCoverage,
 				syncProgress,
+				laneProgress,
 			] = await Promise.all([
 				db
 					.selectFrom("account_sync_state")
@@ -2128,6 +2222,9 @@ export async function loadAccountDetailData(input: { accountId: string }) {
 				import("#/lib/sync-progress").then((module) =>
 					module.loadAccountSyncProgress(input.accountId),
 				),
+				import("#/lib/job-lane-progress").then((module) =>
+					module.loadAccountLaneProgress(input.accountId),
+				),
 			]);
 
 			return {
@@ -2140,6 +2237,7 @@ export async function loadAccountDetailData(input: { accountId: string }) {
 				connection_state: accountState.connectionState,
 				financeCoverage,
 				syncProgress,
+				laneProgress,
 				syncState: syncState ?? null,
 				recentJobs,
 				messageCount: Number(msgCount.count),
@@ -2582,6 +2680,40 @@ export async function queueAccountClassifyBacklogCommand(input: {
 	});
 }
 
+export async function queueTargetedRootMessagesCommand(input: {
+	accountId: string;
+	messageIds: string[];
+}) {
+	return runLoggedAction({
+		operation: "queueTargetedRootMessagesCommand",
+		kind: "command",
+		context: {
+			account_id: input.accountId,
+		},
+		run: async () => {
+			await bootServer();
+			const messageIds = Array.from(
+				new Set(input.messageIds.map((value) => value.trim()).filter(Boolean)),
+			);
+			if (messageIds.length === 0) {
+				throw new Error("messageIds is required");
+			}
+			const { queueJobIdempotent } = await import("#/lib/jobs");
+			return queueJobIdempotent({
+				kind: "classify_root_messages",
+				scopeType: "account",
+				scopeId: input.accountId,
+				model: APP_CONFIG.classifierModel,
+				promptVersion: CLASSIFY_PROMPT_VERSION,
+				meta: { targetMessageIds: messageIds },
+			});
+		},
+		summarize: (result) => ({
+			job_id: result,
+		}),
+	});
+}
+
 export async function queueAccountFinanceBacklogCommand(input: {
 	accountId: string;
 }) {
@@ -2594,6 +2726,37 @@ export async function queueAccountFinanceBacklogCommand(input: {
 		run: async () => {
 			await bootServer();
 			return queueFinanceBacklogJob(input.accountId);
+		},
+		summarize: (result) => ({
+			job_id: result,
+		}),
+	});
+}
+
+export async function queueReviewClassifierCommand(input?: {
+	accountId?: string;
+	limit?: number;
+}) {
+	return runLoggedAction({
+		operation: "queueReviewClassifierCommand",
+		kind: "command",
+		context: {
+			account_id: input?.accountId,
+		},
+		run: async () => {
+			await bootServer();
+			const { queueJobIdempotent } = await import("#/lib/jobs");
+			return queueJobIdempotent({
+				kind: "classify_review_backlog",
+				scopeType: input?.accountId ? "account" : "system",
+				scopeId: input?.accountId ?? "review_classifier",
+				model: APP_CONFIG.classifierModel,
+				promptVersion: REVIEW_CLASSIFIER_PROMPT_VERSION,
+				meta: {
+					...(input?.accountId ? { accountId: input.accountId } : {}),
+					...(input?.limit ? { limit: input.limit } : {}),
+				},
+			});
 		},
 		summarize: (result) => ({
 			job_id: result,
@@ -2648,6 +2811,36 @@ export async function queueRebuildFinanceRollupsCommand() {
 	});
 }
 
+function resolveFinanceExportOutDir(input: {
+	exportRoot: string;
+	orgId: string;
+	exportRunId: string;
+	requestedOutDir?: string | null;
+}) {
+	const requested = input.requestedOutDir?.trim();
+	if (!requested) {
+		return resolve(input.exportRoot, input.orgId, input.exportRunId);
+	}
+	if (isAbsolute(requested)) {
+		throw new Error(
+			"Finance export outDir must be a relative path inside the org finance export directory.",
+		);
+	}
+	const outDir = resolve(input.exportRoot, requested);
+	const relativeOutDir = relative(input.exportRoot, outDir);
+	if (
+		relativeOutDir === ".." ||
+		relativeOutDir.startsWith("../") ||
+		relativeOutDir.startsWith("..\\") ||
+		isAbsolute(relativeOutDir)
+	) {
+		throw new Error(
+			"Finance export outDir must stay inside the org finance export directory.",
+		);
+	}
+	return outDir;
+}
+
 export async function queueFinanceExportCommand(input: {
 	year?: number | null;
 	outDir?: string | null;
@@ -2670,15 +2863,17 @@ export async function queueFinanceExportCommand(input: {
 			const strict = input.strict ?? true;
 			const force = input.force ?? false;
 			const year = input.year ?? null;
-			const outDir = input.outDir?.trim()
-				? resolve(input.outDir.trim())
-				: resolve(
-						runtime.runtimePaths(orgId).operatorDir,
-						"exports",
-						"finance",
-						orgId,
-						exportRunId,
-					);
+			const exportRoot = resolve(
+				runtime.runtimePaths(orgId).operatorDir,
+				"exports",
+				"finance",
+			);
+			const outDir = resolveFinanceExportOutDir({
+				exportRoot,
+				orgId,
+				exportRunId,
+				requestedOutDir: input.outDir,
+			});
 			const createdAt = nowIso();
 			await getDb()
 				.insertInto("finance_export_runs")
@@ -2713,6 +2908,200 @@ export async function queueFinanceExportCommand(input: {
 			job_id: result.jobId,
 			export_run_id: result.exportRunId,
 			out_dir: result.outDir,
+		}),
+	});
+}
+
+function resolveFinanceReportOutDir(input: {
+	reportRoot: string;
+	requestedOutDir?: string | null;
+}) {
+	const requested = input.requestedOutDir?.trim();
+	if (!requested) {
+		return null;
+	}
+	if (isAbsolute(requested)) {
+		throw new Error(
+			"Finance report outDir must be a relative path inside the org finance report directory.",
+		);
+	}
+	const outDir = resolve(input.reportRoot, requested);
+	const relativeOutDir = relative(input.reportRoot, outDir);
+	if (
+		relativeOutDir === ".." ||
+		relativeOutDir.startsWith("../") ||
+		relativeOutDir.startsWith("..\\") ||
+		isAbsolute(relativeOutDir)
+	) {
+		throw new Error(
+			"Finance report outDir must stay inside the org finance report directory.",
+		);
+	}
+	return outDir;
+}
+
+export async function upsertFinanceMappingCommand(input: { mapping: unknown }) {
+	return runLoggedAction({
+		operation: "upsertFinanceMappingCommand",
+		kind: "command",
+		run: async () => {
+			await bootServer();
+			const [
+				{ financeAccountMappingSchema },
+				{ upsertFinanceAccountMappingYaml },
+			] = await Promise.all([
+				import("#/lib/schemas"),
+				import("#/lib/registry"),
+			]);
+			const mapping = financeAccountMappingSchema.parse(input.mapping);
+			const result = upsertFinanceAccountMappingYaml(mapping);
+			const { queueJobIdempotent } = await import("#/lib/jobs");
+			const importJobId = await queueJobIdempotent({
+				kind: "import_operator_registry",
+				scopeType: "system",
+				scopeId: "operator_registry",
+				meta: {
+					source: "finance_mapping_upsert",
+					mappingKey: mapping.mappingKey,
+				},
+			});
+			await Promise.all([queueFinanceKnowledgeJob(), queueFinanceRollupsJob()]);
+			return {
+				...result,
+				importJobId,
+			};
+		},
+		summarize: (result) => ({
+			mapping_key: result.mappingKey,
+			import_job_id: result.importJobId ?? undefined,
+		}),
+	});
+}
+
+export async function queueTaxPersonalPackageCommand(input: {
+	year: number;
+	outDir?: string | null;
+}) {
+	return runLoggedAction({
+		operation: "queueTaxPersonalPackageCommand",
+		kind: "command",
+		run: async () => {
+			const [{ getDb, jsonText }, { nowIso }, { queueJob }, runtime] =
+				await Promise.all([
+					bootServer(),
+					import("#/lib/config"),
+					import("#/lib/jobs"),
+					import("#/lib/runtime"),
+				]);
+			const orgId = runtime.currentOrgId();
+			const reportRunId = randomUUID();
+			const reportRoot = resolve(
+				runtime.runtimePaths(orgId).operatorDir,
+				"reports",
+				"tax",
+			);
+			const outDir = resolveFinanceReportOutDir({
+				reportRoot,
+				requestedOutDir: input.outDir,
+			});
+			const createdAt = nowIso();
+			await getDb()
+				.insertInto("tax_report_runs")
+				.values({
+					id: reportRunId,
+					status: "queued",
+					report_kind: "personal_annual",
+					year: input.year,
+					quarter: null,
+					business_slug: null,
+					out_dir: outDir ?? "",
+					manifest_json: jsonText({}),
+					validation_json: jsonText({}),
+					created_at: createdAt,
+					completed_at: null,
+				})
+				.execute();
+			const jobId = await queueJob({
+				kind: "generate_tax_personal_package",
+				scopeType: "system",
+				scopeId: reportRunId,
+				meta: {
+					reportRunId,
+					year: input.year,
+					outDir,
+				},
+			});
+			return { jobId, reportRunId, outDir };
+		},
+		summarize: (result) => ({
+			job_id: result.jobId,
+			report_run_id: result.reportRunId,
+		}),
+	});
+}
+
+export async function queueTaxBusinessQuarterPackageCommand(input: {
+	year: number;
+	quarter: number;
+	businessSlug?: "inherent-design";
+	outDir?: string | null;
+}) {
+	return runLoggedAction({
+		operation: "queueTaxBusinessQuarterPackageCommand",
+		kind: "command",
+		run: async () => {
+			const [{ getDb, jsonText }, { nowIso }, { queueJob }, runtime] =
+				await Promise.all([
+					bootServer(),
+					import("#/lib/config"),
+					import("#/lib/jobs"),
+					import("#/lib/runtime"),
+				]);
+			const orgId = runtime.currentOrgId();
+			const reportRunId = randomUUID();
+			const reportRoot = resolve(
+				runtime.runtimePaths(orgId).operatorDir,
+				"reports",
+				"tax",
+			);
+			const outDir = resolveFinanceReportOutDir({
+				reportRoot,
+				requestedOutDir: input.outDir,
+			});
+			const createdAt = nowIso();
+			await getDb()
+				.insertInto("tax_report_runs")
+				.values({
+					id: reportRunId,
+					status: "queued",
+					report_kind: "business_quarter",
+					year: input.year,
+					quarter: input.quarter,
+					business_slug: input.businessSlug ?? "inherent-design",
+					out_dir: outDir ?? "",
+					manifest_json: jsonText({}),
+					validation_json: jsonText({}),
+					created_at: createdAt,
+					completed_at: null,
+				})
+				.execute();
+			const jobId = await queueJob({
+				kind: "generate_tax_business_quarter_package",
+				scopeType: "system",
+				scopeId: reportRunId,
+				meta: {
+					reportRunId,
+					year: input.year,
+					quarter: input.quarter,
+					businessSlug: input.businessSlug ?? "inherent-design",
+					outDir,
+				},
+			});
+			return { jobId, reportRunId, outDir };
+		},
+		summarize: (result) => ({
+			job_id: result.jobId,
+			report_run_id: result.reportRunId,
 		}),
 	});
 }

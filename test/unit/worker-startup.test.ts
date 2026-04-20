@@ -134,7 +134,7 @@ describe("worker edge cases", () => {
 		await firstLoopPromise;
 
 		expect(runMigrations).toHaveBeenCalledTimes(1);
-		expect(requeueExpiredJobs).toHaveBeenCalledTimes(1);
+		expect(requeueExpiredJobs).toHaveBeenCalledTimes(2);
 		expect(claimNextJob).toHaveBeenCalledTimes(2);
 		expect(globalThis.__zmailWorkerStarted__).toBe(true);
 		expect(globalThis.__zmailWorkerLoop__).toBeUndefined();
@@ -152,7 +152,7 @@ describe("worker edge cases", () => {
 		await secondLoopPromise;
 
 		expect(runMigrations).toHaveBeenCalledTimes(2);
-		expect(requeueExpiredJobs).toHaveBeenCalledTimes(2);
+		expect(requeueExpiredJobs).toHaveBeenCalledTimes(4);
 		expect(claimNextJob).toHaveBeenCalledTimes(4);
 		expect(globalThis.__zmailWorkerStarted__).toBe(true);
 		expect(globalThis.__zmailWorkerLoop__).toBeUndefined();
@@ -323,7 +323,7 @@ describe("worker edge cases", () => {
 		await restartedLoopPromise;
 
 		expect(runMigrations).toHaveBeenCalledTimes(2);
-		expect(requeueExpiredJobs).toHaveBeenCalledTimes(1);
+		expect(requeueExpiredJobs).toHaveBeenCalledTimes(2);
 		expect(claimNextJob).toHaveBeenCalledTimes(2);
 		expect(globalThis.__zmailWorkerStarted__).toBe(true);
 		expect(globalThis.__zmailWorkerLoop__).toBeUndefined();

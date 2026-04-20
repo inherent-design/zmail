@@ -81,6 +81,7 @@ export const OVERSEER_PROMPT_VERSION = "overseer-profile-v1";
 export const MODERATION_PROMPT_VERSION = "moderate-email-v2";
 export const FINANCE_INTEL_PROMPT_VERSION = "finance-intel-v3";
 export const FINANCE_KNOWLEDGE_PROMPT_VERSION = "finance-knowledge-merge-v1";
+export const REVIEW_CLASSIFIER_PROMPT_VERSION = "review-classifier-v1";
 
 export const FINANCE_MODEL_TARGET_PROMPT_VERSIONS = {
 	classify: "classify-email-v3",
@@ -114,6 +115,8 @@ export const APP_CONFIG = {
 	),
 	overseerRebuildEvery: Number(process.env.OVERSEER_REBUILD_EVERY ?? "1000"),
 	workerPollMs: RESOLVED_CONFIG.worker.pollMs,
+	workerMaxJobConcurrency: RESOLVED_CONFIG.worker.maxJobConcurrency,
+	workerLaneCaps: RESOLVED_CONFIG.worker.laneCaps,
 	jobLeaseMs: 10 * 60 * 1000,
 	liveHeartbeatMs: RESOLVED_CONFIG.worker.liveHeartbeatMs,
 	runWorker: RESOLVED_CONFIG.worker.enabled,

@@ -28,6 +28,8 @@ const PHASE_BY_JOB_KIND: Record<string, SyncProgressSnapshot["phase"]> = {
 	sync_account_reconcile: "reconcile",
 };
 
+const SYNC_JOB_KINDS = Object.keys(PHASE_BY_JOB_KIND);
+
 function numberOrNull(value: unknown) {
 	return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
@@ -164,6 +166,7 @@ async function loadProgressSnapshots(accountId?: string) {
 				.where("scope_type", "=", "account")
 				.where("scope_id", "=", account.id)
 				.where("status", "=", "running")
+				.where("kind", "in", SYNC_JOB_KINDS)
 				.orderBy("started_at", "desc")
 				.executeTakeFirst(),
 			db

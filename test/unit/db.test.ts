@@ -13,6 +13,7 @@ const ACTIVE_MIGRATIONS = [
 	{ name: "004_finance_v3_archive.sql" },
 	{ name: "005_finance_v3_target.sql" },
 	{ name: "006_finance_v3_clean.sql" },
+	{ name: "007_review_lanes_tax_reports.sql" },
 ];
 
 describe("db", () => {
@@ -236,6 +237,7 @@ describe("db", () => {
 			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
 
 		const message = dbModule.buildSchemaAdoptionRequiredMessage({
+			orgId: "org-custom",
 			missingColumns: ["accounts.owner_principal_email"],
 			staleAppliedMigrations: ["002_secondary_schema.sql"],
 		});
@@ -243,6 +245,9 @@ describe("db", () => {
 			"pre-cleanup zmail migration history and must be adopted",
 		);
 		expect(message).toContain("pnpm db:migrate -- --all-orgs --adopt-history");
+		expect(message).toContain(
+			"pnpm db:migrate -- --org org-custom --adopt-history",
+		);
 		expect(message).toContain("accounts.owner_principal_email");
 		expect(message).toContain("002_secondary_schema.sql");
 	});
@@ -273,6 +278,17 @@ describe("db", () => {
 		);
 		expect(() => dbModule.runMigrations()).toThrowError(
 			/pnpm db:migrate -- --all-orgs --adopt-history/,
+		);
+	});
+
+	it("formats adoption recovery with the explicit migration org", async () => {
+		const runtime = await createTestRuntime();
+		await seedStaleCanonicalMigrationHistory({ orgId: "org-explicit" });
+		const dbModule =
+			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
+
+		expect(() => dbModule.runMigrations("org-explicit")).toThrowError(
+			/pnpm db:migrate -- --org org-explicit --adopt-history/,
 		);
 	});
 
@@ -379,6 +395,41 @@ describe("db", () => {
 				.prepare("SELECT COUNT(*) AS count FROM classification_results")
 				.get() as { count: number },
 		).toEqual({ count: 1 });
+	});
+
+	it("repairs existing columns before replaying baseline for missing tables", async () => {
+		const runtime = await createTestRuntime();
+		await seedStaleCanonicalMigrationHistory({
+			missingJobLaneColumns: true,
+			withSampleData: true,
+		});
+		const dbModule =
+			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
+		const sqlite = dbModule.getSqlite();
+		sqlite.exec("DROP TABLE tax_report_runs;");
+
+		await dbModule.adoptCanonicalMigrationHistory();
+
+		const jobColumns = sqlite
+			.prepare("PRAGMA table_info(jobs)")
+			.all() as Array<{
+			name: string;
+		}>;
+		expect(jobColumns.map((column) => column.name)).toEqual(
+			expect.arrayContaining([
+				"lane",
+				"priority",
+				"run_after_at",
+				"claim_owner",
+			]),
+		);
+		expect(
+			sqlite
+				.prepare(
+					"SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tax_report_runs'",
+				)
+				.get(),
+		).toEqual({ name: "tax_report_runs" });
 	});
 
 	it("adds and backfills connection_state during canonical adoption", async () => {

@@ -122,7 +122,7 @@ describe("Hono web routes", () => {
 		const accountDetailHtml = await accountDetail.text();
 		expect(accountDetailHtml).toContain("Classify backlog");
 		expect(accountDetailHtml).toContain("Delete local account");
-		expect(accountDetailHtml).toContain("<h2>Sync progress</h2>");
+		expect(accountDetailHtml).toContain("<h2>Mailbox sync</h2>");
 
 		const messages = await app.request(
 			"http://localhost/messages?q=Route&pageSize=50",
@@ -142,7 +142,9 @@ describe("Hono web routes", () => {
 
 		const review = await app.request("http://localhost/review");
 		expect(review.status).toBe(200);
-		await expect(review.text()).resolves.toContain("Low-confidence review");
+		await expect(review.text()).resolves.toContain(
+			"Review classifier findings",
+		);
 
 		const finance = await app.request("http://localhost/finance");
 		expect(finance.status).toBe(200);
@@ -227,6 +229,90 @@ describe("Hono web routes", () => {
 		expect(html).toContain('data-zmail-island="finance.cashflow"');
 		expect(html).not.toContain('id="app-main"');
 		expect(html).not.toContain('data-zmail-island="finance.filters"');
+	});
+
+	it("returns requested account, home, and runs island fragments only", async () => {
+		const { app } = await loadServerApp();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-islands",
+			label: "Island Account",
+			emailAddress: "islands@example.com",
+		});
+		await insertAccountSyncStateRow(db, {
+			accountId: "acct-islands",
+			backfillSnapshotUid: 200,
+			backfillNextUid: 50,
+		});
+
+		const account = await app.request(
+			"http://localhost/accounts/acct-islands",
+			{
+				headers: {
+					"X-Zmail-Partial": "islands",
+					"X-Zmail-Islands": "account.mailbox-sync,account.lanes",
+				},
+			},
+		);
+		expect(account.status).toBe(200);
+		expect(account.headers.get("X-Zmail-Islands")).toBe(
+			"account.mailbox-sync,account.lanes",
+		);
+		const accountHtml = await account.text();
+		expect(accountHtml).toContain('data-zmail-island="account.mailbox-sync"');
+		expect(accountHtml).toContain('data-zmail-island="account.lanes"');
+		expect(accountHtml).not.toContain('data-zmail-island="account.header"');
+		expect(accountHtml).not.toContain('id="app-main"');
+
+		const home = await app.request("http://localhost/", {
+			headers: {
+				"X-Zmail-Partial": "islands",
+				"X-Zmail-Islands": "home.stats,home.lanes",
+			},
+		});
+		expect(home.status).toBe(200);
+		expect(home.headers.get("X-Zmail-Islands")).toBe("home.stats,home.lanes");
+		const homeHtml = await home.text();
+		expect(homeHtml).toContain('data-zmail-island="home.stats"');
+		expect(homeHtml).toContain('data-zmail-island="home.lanes"');
+		expect(homeHtml).not.toContain('data-zmail-island="home.actions"');
+
+		const runs = await app.request("http://localhost/runs", {
+			headers: {
+				"X-Zmail-Partial": "islands",
+				"X-Zmail-Islands": "runs.lanes,runs.jobs",
+			},
+		});
+		expect(runs.status).toBe(200);
+		expect(runs.headers.get("X-Zmail-Islands")).toBe("runs.lanes,runs.jobs");
+		const runsHtml = await runs.text();
+		expect(runsHtml).toContain('data-zmail-island="runs.lanes"');
+		expect(runsHtml).toContain('data-zmail-island="runs.jobs"');
+		expect(runsHtml).not.toContain("<h1>Runs</h1>");
+	});
+
+	it("returns the active finance tab island without unrelated tab content", async () => {
+		const { app } = await loadServerApp();
+		await bootDb({ seedDefaultAccount: true });
+
+		const response = await app.request(
+			"http://localhost/finance?tab=mappings",
+			{
+				headers: {
+					"X-Zmail-Partial": "islands",
+					"X-Zmail-Islands": "finance.mappings",
+				},
+			},
+		);
+
+		expect(response.status).toBe(200);
+		expect(response.headers.get("X-Zmail-Islands")).toBe("finance.mappings");
+		const html = await response.text();
+		expect(html).toContain('data-zmail-island="finance.mappings"');
+		expect(html).toContain("YAML-backed mapping editor");
+		expect(html).not.toContain("Readiness workbench");
+		expect(html).not.toContain("Review classifier findings");
+		expect(html).not.toContain('data-zmail-island="finance.ledger-preview"');
 	});
 
 	it("escapes JSON island props in raw script bodies", async () => {

@@ -1,9 +1,12 @@
 /** @jsxImportSource hono/jsx */
+import { isAbsolute } from "node:path";
+
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { zValidator } from "@hono/zod-validator";
 import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
+import { secureHeaders } from "hono/secure-headers";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 
@@ -24,6 +27,13 @@ import {
 	runtimeEventEnvelope,
 	waitForRuntimeEvent,
 } from "#/lib/runtime-events";
+import {
+	classifyReviewBacklogInputSchema,
+	classifyRootMessagesInputSchema,
+	financeMappingUpsertInputSchema,
+	taxBusinessQuarterPackageInputSchema,
+	taxPersonalPackageInputSchema,
+} from "#/lib/schemas";
 import {
 	beginGoogleConnectCommand,
 	beginGoogleReconnectCommand,
@@ -56,8 +66,13 @@ import {
 	queueRebuildFinanceKnowledgeCommand,
 	queueRebuildFinanceRollupsCommand,
 	queueReconcileRegistrySuggestionsCommand,
+	queueReviewClassifierCommand,
+	queueTargetedRootMessagesCommand,
+	queueTaxBusinessQuarterPackageCommand,
+	queueTaxPersonalPackageCommand,
 	resolveReviewCommand,
 	resumeAccountSyncCommand,
+	upsertFinanceMappingCommand,
 } from "#/server/actions";
 import {
 	activeBrowserOrgMiddleware,
@@ -87,11 +102,13 @@ import {
 	type IslandRenderMap,
 	PartialMain,
 	renderAccountDeletePage,
+	renderAccountDetailIslandMap,
 	renderAccountDetailPage,
 	renderAccountFormPage,
 	renderAccountsPage,
 	renderFinanceIslandMap,
 	renderFinancePage,
+	renderHomeIslandMap,
 	renderHomePage,
 	renderMessageDetailPage,
 	renderMessagesPage,
@@ -100,6 +117,7 @@ import {
 	renderOrgSelectPage,
 	renderProfilePage,
 	renderReviewPage,
+	renderRunsIslandMap,
 	renderRunsPage,
 } from "#/server/ui";
 
@@ -117,9 +135,25 @@ const reviewResolveSchema = z.object({
 	note: z.string().nullable().optional(),
 });
 
+function isBrowserFinanceExportSubpath(value: string) {
+	const trimmed = value.trim();
+	if (!trimmed || isAbsolute(trimmed) || trimmed.includes("\0")) {
+		return false;
+	}
+	return !trimmed.split(/[\\/]+/).includes("..");
+}
+
 const financeExportRequestSchema = z.object({
 	year: z.number().int().min(1900).max(2500).nullable().optional(),
-	outDir: z.string().min(1).nullable().optional(),
+	outDir: z
+		.string()
+		.min(1)
+		.refine(isBrowserFinanceExportSubpath, {
+			message:
+				"outDir must be a relative path inside the org finance export directory.",
+		})
+		.nullable()
+		.optional(),
 	strict: z.boolean().optional(),
 	force: z.boolean().optional(),
 });
@@ -335,6 +369,20 @@ const financeImportAuth: MiddlewareHandler = async (c, next) => {
 	});
 	return blockedResponse ?? nestedResponse;
 };
+
+app.use(
+	"*",
+	secureHeaders({
+		crossOriginEmbedderPolicy: false,
+		permissionsPolicy: {
+			camera: [],
+			geolocation: [],
+			microphone: [],
+			payment: [],
+			usb: [],
+		},
+	}),
+);
 
 app.use("*", async (c, next) => {
 	const pathname = new URL(c.req.url).pathname;
@@ -644,6 +692,7 @@ webApp.get(
 			title: "zmail",
 			page: "home",
 			children: renderHomePage(data),
+			islands: renderHomeIslandMap(data),
 		});
 	},
 );
@@ -697,16 +746,18 @@ webApp.get(
 			accountId,
 		});
 		const principal = c.get("principal");
+		const accountOptions = {
+			canManageLifecycle: canManageAccountLifecycle(
+				principal,
+				data.account.owner_principal_email,
+			),
+			canOperate: canOperateAccount(principal),
+		};
 		return renderPage(c, {
 			title: data.account.label,
 			page: "account-detail",
-			children: renderAccountDetailPage(data, {
-				canManageLifecycle: canManageAccountLifecycle(
-					principal,
-					data.account.owner_principal_email,
-				),
-				canOperate: canOperateAccount(principal),
-			}),
+			children: renderAccountDetailPage(data, accountOptions),
+			islands: renderAccountDetailIslandMap(data, accountOptions),
 		});
 	},
 );
@@ -878,6 +929,7 @@ webApp.get(
 			title: "Runs",
 			page: "runs",
 			children: renderRunsPage(data),
+			islands: renderRunsIslandMap(data),
 		});
 	},
 );
@@ -1041,6 +1093,22 @@ webApp.post(
 );
 
 webApp.post(
+	"/rpc/accounts/:accountId/classify/root/messages",
+	browserSessionMiddleware,
+	activeBrowserOrgMiddleware,
+	requireOrgRole("org_operator"),
+	zValidator("json", classifyRootMessagesInputSchema),
+	async (c) => {
+		const body = c.req.valid("json");
+		const result = await queueTargetedRootMessagesCommand({
+			accountId: c.req.param("accountId"),
+			messageIds: body.messageIds,
+		});
+		return c.json(okJson("queued", { jobId: result }));
+	},
+);
+
+webApp.post(
 	"/rpc/accounts/:accountId/classify/finance",
 	browserSessionMiddleware,
 	activeBrowserOrgMiddleware,
@@ -1163,6 +1231,22 @@ webApp.post(
 );
 
 webApp.post(
+	"/rpc/reviews/classify",
+	browserSessionMiddleware,
+	activeBrowserOrgMiddleware,
+	requireOrgRole("org_operator"),
+	zValidator("json", classifyReviewBacklogInputSchema),
+	async (c) => {
+		const body = c.req.valid("json");
+		const result = await queueReviewClassifierCommand({
+			accountId: body.accountId,
+			limit: body.limit,
+		});
+		return c.json(okJson("queued", { jobId: result }));
+	},
+);
+
+webApp.post(
 	"/rpc/finance/registry/import",
 	browserSessionMiddleware,
 	activeBrowserOrgMiddleware,
@@ -1207,6 +1291,19 @@ webApp.post(
 );
 
 webApp.post(
+	"/rpc/finance/mappings/upsert",
+	browserSessionMiddleware,
+	activeBrowserOrgMiddleware,
+	requireOrgRole("org_operator"),
+	zValidator("json", financeMappingUpsertInputSchema),
+	async (c) => {
+		const body = c.req.valid("json");
+		const result = await upsertFinanceMappingCommand({ mapping: body.mapping });
+		return c.json(okJson("queued", result));
+	},
+);
+
+webApp.post(
 	"/rpc/finance/export",
 	browserSessionMiddleware,
 	activeBrowserOrgMiddleware,
@@ -1219,6 +1316,40 @@ webApp.post(
 			outDir: body.outDir ?? null,
 			strict: body.strict ?? true,
 			force: body.force ?? false,
+		});
+		return c.json(okJson("queued", result));
+	},
+);
+
+webApp.post(
+	"/rpc/finance/tax/personal",
+	browserSessionMiddleware,
+	activeBrowserOrgMiddleware,
+	requireOrgRole("org_operator"),
+	zValidator("json", taxPersonalPackageInputSchema),
+	async (c) => {
+		const body = c.req.valid("json");
+		const result = await queueTaxPersonalPackageCommand({
+			year: body.year,
+			outDir: body.outDir ?? null,
+		});
+		return c.json(okJson("queued", result));
+	},
+);
+
+webApp.post(
+	"/rpc/finance/tax/business/inherent-design",
+	browserSessionMiddleware,
+	activeBrowserOrgMiddleware,
+	requireOrgRole("org_operator"),
+	zValidator("json", taxBusinessQuarterPackageInputSchema),
+	async (c) => {
+		const body = c.req.valid("json");
+		const result = await queueTaxBusinessQuarterPackageCommand({
+			year: body.year,
+			quarter: body.quarter,
+			businessSlug: body.businessSlug,
+			outDir: body.outDir ?? null,
 		});
 		return c.json(okJson("queued", result));
 	},

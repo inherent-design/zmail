@@ -12,6 +12,7 @@ import {
 	FINANCE_KNOWLEDGE_PROMPT_VERSION,
 	MODERATION_PROMPT_VERSION,
 	OVERSEER_PROMPT_VERSION,
+	REVIEW_CLASSIFIER_PROMPT_VERSION,
 } from "#/lib/config";
 import {
 	ensureAccountOwnershipBackfill,
@@ -260,6 +261,36 @@ async function importOperatorRegistryJob(job: JobRecord, trace: LogTrace) {
 	});
 }
 
+async function loadMaterializeInputWatermark() {
+	const db = getDb();
+	const [headState, reviewCreatedState, reviewResolvedState, findingState] =
+		await Promise.all([
+			db
+				.selectFrom("message_secondary_heads")
+				.select((eb) => eb.fn.max("updated_at").as("updated_at"))
+				.where("classifier_key", "=", "finance_intel")
+				.executeTakeFirstOrThrow(),
+			db
+				.selectFrom("reviews")
+				.select((eb) => eb.fn.max("created_at").as("created_at"))
+				.executeTakeFirstOrThrow(),
+			db
+				.selectFrom("reviews")
+				.select((eb) => eb.fn.max("resolved_at").as("resolved_at"))
+				.executeTakeFirstOrThrow(),
+			db
+				.selectFrom("review_classification_heads")
+				.select((eb) => eb.fn.max("updated_at").as("updated_at"))
+				.executeTakeFirstOrThrow(),
+		]);
+	return maxIsoValue([
+		headState.updated_at ?? null,
+		reviewCreatedState.created_at ?? null,
+		reviewResolvedState.resolved_at ?? null,
+		findingState.updated_at ?? null,
+	]);
+}
+
 async function rebuildFinanceKnowledgeJob(job: JobRecord, trace: LogTrace) {
 	const jobTrace = trace.child({
 		kind: "worker",
@@ -267,8 +298,13 @@ async function rebuildFinanceKnowledgeJob(job: JobRecord, trace: LogTrace) {
 		job_id: job.id,
 		job_kind: job.kind,
 	});
+	const inputWatermark = await loadMaterializeInputWatermark();
 	const { rebuildFinanceKnowledge } = await import("#/lib/finance-knowledge");
 	const result = await rebuildFinanceKnowledge();
+	const outputWatermark = await loadMaterializeInputWatermark();
+	const requeuedForChangedInputs = Boolean(
+		inputWatermark && outputWatermark && outputWatermark > inputWatermark,
+	);
 	await completeJob({
 		id: job.id,
 		successCount: result.events + result.documents,
@@ -278,6 +314,9 @@ async function rebuildFinanceKnowledgeJob(job: JobRecord, trace: LogTrace) {
 			events: result.events,
 			documents: result.documents,
 			evidence: result.evidence,
+			inputWatermark,
+			outputWatermark,
+			requeuedForChangedInputs,
 		},
 	});
 	jobTrace.complete("worker.rebuild_finance_knowledge.complete", {
@@ -285,12 +324,26 @@ async function rebuildFinanceKnowledgeJob(job: JobRecord, trace: LogTrace) {
 		documents: result.documents,
 		evidence: result.evidence,
 	});
+	if (requeuedForChangedInputs) {
+		await queueFinanceKnowledgeRebuild();
+	}
 	await publishActionEvent({
 		topic: "finance",
 		eventType: "finance.ledger_rebuilt",
 		entityKind: "job",
 		entityId: job.id,
-		payload: result,
+		payload: {
+			...result,
+			changeHints: {
+				islands: [
+					"finance.summary",
+					"finance.cashflow",
+					"finance.categories",
+					"finance.overview.rollups",
+					"finance.lanes",
+				],
+			},
+		},
 	});
 	await queueFinanceRollupsRebuild();
 }
@@ -302,8 +355,13 @@ async function rebuildFinanceRollupsJob(job: JobRecord, trace: LogTrace) {
 		job_id: job.id,
 		job_kind: job.kind,
 	});
+	const inputWatermark = await loadMaterializeInputWatermark();
 	const { rebuildFinanceRollups } = await import("#/lib/finance-rollups");
 	const result = await rebuildFinanceRollups();
+	const outputWatermark = await loadMaterializeInputWatermark();
+	const requeuedForChangedInputs = Boolean(
+		inputWatermark && outputWatermark && outputWatermark > inputWatermark,
+	);
 	await completeJob({
 		id: job.id,
 		successCount: result.rollups + result.subcategoryRollups,
@@ -313,6 +371,9 @@ async function rebuildFinanceRollupsJob(job: JobRecord, trace: LogTrace) {
 			years: result.years,
 			rollups: result.rollups,
 			subcategoryRollups: result.subcategoryRollups,
+			inputWatermark,
+			outputWatermark,
+			requeuedForChangedInputs,
 		},
 	});
 	jobTrace.complete("worker.rebuild_finance_rollups.complete", {
@@ -320,12 +381,20 @@ async function rebuildFinanceRollupsJob(job: JobRecord, trace: LogTrace) {
 		rollups: result.rollups,
 		subcategory_rollups: result.subcategoryRollups,
 	});
+	if (requeuedForChangedInputs) {
+		await queueFinanceRollupsRebuild();
+	}
 	await publishActionEvent({
 		topic: "finance",
 		eventType: "finance.patterns_rebuilt",
 		entityKind: "job",
 		entityId: job.id,
-		payload: result,
+		payload: {
+			...result,
+			changeHints: {
+				islands: ["finance.subscriptions", "finance.summary", "finance.lanes"],
+			},
+		},
 	});
 }
 
@@ -352,7 +421,12 @@ async function exportFinanceBeancountJob(job: JobRecord, trace: LogTrace) {
 		eventType: "finance.export_started",
 		entityKind: "job",
 		entityId: job.id,
-		payload: meta,
+		payload: {
+			...meta,
+			changeHints: {
+				islands: ["finance.export-health", "finance.lanes"],
+			},
+		},
 	});
 	try {
 		const { exportFinanceBeancountPackage } = await import(
@@ -383,7 +457,12 @@ async function exportFinanceBeancountJob(job: JobRecord, trace: LogTrace) {
 					: "finance.export_completed",
 			entityKind: "finance_export_run",
 			entityId: result.exportRunId,
-			payload: result,
+			payload: {
+				...result,
+				changeHints: {
+					islands: ["finance.export-health", "finance.lanes"],
+				},
+			},
 		});
 		jobTrace.complete("worker.export_finance_beancount.complete", {
 			export_run_id: result.exportRunId,
@@ -400,10 +479,81 @@ async function exportFinanceBeancountJob(job: JobRecord, trace: LogTrace) {
 			payload: {
 				...meta,
 				error: error instanceof Error ? error.message : String(error),
+				changeHints: {
+					islands: ["finance.export-health", "finance.lanes"],
+				},
 			},
 		});
 		throw error;
 	}
+}
+
+async function generateTaxReportJob(job: JobRecord, trace: LogTrace) {
+	const operation =
+		job.kind === "generate_tax_business_quarter_package"
+			? "generate_tax_business_quarter_package"
+			: "generate_tax_personal_package";
+	const jobTrace = trace.child({
+		kind: "worker",
+		operation,
+		job_id: job.id,
+		job_kind: job.kind,
+	});
+	const meta = parseJobMeta<{
+		year?: number;
+		quarter?: number | null;
+		businessSlug?: string | null;
+		outDir?: string | null;
+		reportRunId?: string;
+	}>(job, {});
+	if (!meta.year) {
+		throw new Error(`${job.kind} job missing year`);
+	}
+	const { generateTaxReportPackage } = await import("#/lib/tax-reporting");
+	const result = await generateTaxReportPackage({
+		reportRunId: meta.reportRunId ?? job.scope_id,
+		reportKind:
+			job.kind === "generate_tax_business_quarter_package"
+				? "business_quarter"
+				: "personal_annual",
+		year: meta.year,
+		quarter: meta.quarter ?? null,
+		businessSlug: meta.businessSlug ?? null,
+		outDir: meta.outDir ?? null,
+	});
+	await completeJob({
+		id: job.id,
+		successCount: result.acceptedRows,
+		errorCount: 0,
+		meta: {
+			mode: "live",
+			processed: result.acceptedRows + result.reviewRows,
+			total: result.acceptedRows + result.reviewRows,
+			reportRunId: result.reportRunId,
+			status: result.status,
+			outDir: result.outDir,
+			acceptedRows: result.acceptedRows,
+			reviewRows: result.reviewRows,
+		},
+	});
+	jobTrace.complete(`worker.${operation}.complete`, {
+		report_run_id: result.reportRunId,
+		status: result.status,
+		accepted_rows: result.acceptedRows,
+		review_rows: result.reviewRows,
+	});
+	await publishActionEvent({
+		topic: "finance",
+		eventType: "finance.tax_report_completed",
+		entityKind: "tax_report_run",
+		entityId: result.reportRunId,
+		payload: {
+			...result,
+			changeHints: {
+				islands: ["finance.tax", "finance.export-health", "finance.lanes"],
+			},
+		},
+	});
 }
 
 async function reconcileRegistrySuggestionsJob(
@@ -513,6 +663,43 @@ async function importFinanceArtifactJob(job: JobRecord, trace: LogTrace) {
 	await queueFinanceRollupsRebuild();
 }
 
+async function classifyReviewBacklogJob(job: JobRecord, trace: LogTrace) {
+	const jobTrace = trace.child({
+		kind: "worker",
+		operation: "classify_review_backlog",
+		job_id: job.id,
+		job_kind: job.kind,
+	});
+	const meta = parseJobMeta<{ accountId?: string; limit?: number }>(job, {});
+	const { runReviewClassifier } = await import("#/lib/review-classifier");
+	const result = await runReviewClassifier({
+		jobId: job.id,
+		accountId: meta.accountId,
+		limit: meta.limit,
+	});
+	await completeJob({
+		id: job.id,
+		successCount: result.result.findings.length,
+		errorCount: 0,
+		meta: {
+			mode: "live",
+			processed: result.result.findings.length,
+			total:
+				result.inputCounts.rootReviews + result.inputCounts.financeLedgerRows,
+			resultId: result.resultId,
+			rootReviews: result.inputCounts.rootReviews,
+			financeLedgerRows: result.inputCounts.financeLedgerRows,
+			targetedReclassification: result.result.targetedReclassification.length,
+		},
+	});
+	jobTrace.complete("worker.classify_review_backlog.complete", {
+		result_id: result.resultId,
+		findings: result.result.findings.length,
+		root_reviews: result.inputCounts.rootReviews,
+		finance_ledger_rows: result.inputCounts.financeLedgerRows,
+	});
+}
+
 async function queueAccountBacklog(accountId: string) {
 	await queueJobIdempotent({
 		kind: "classify_account_backlog",
@@ -520,6 +707,16 @@ async function queueAccountBacklog(accountId: string) {
 		scopeId: accountId,
 		model: APP_CONFIG.classifierModel,
 		promptVersion: CLASSIFY_PROMPT_VERSION,
+	});
+}
+
+async function queueReviewClassifierBacklog() {
+	await queueJobIdempotent({
+		kind: "classify_review_backlog",
+		scopeType: "system",
+		scopeId: "review_classifier",
+		model: APP_CONFIG.classifierModel,
+		promptVersion: REVIEW_CLASSIFIER_PROMPT_VERSION,
 	});
 }
 
@@ -1058,13 +1255,42 @@ async function syncAccountReconcileJob(job: JobRecord, trace?: LogTrace) {
 }
 
 async function classifyAccountBacklogJob(job: JobRecord, trace: LogTrace) {
+	const isTargeted = job.kind === "classify_root_messages";
+	const operation = isTargeted
+		? "classify_root_messages"
+		: "classify_account_backlog";
+	const eventOperation = isTargeted ? operation : "classify_backlog";
+	const targetMessageIds = isTargeted ? targetMessageIdsForJob(job) : [];
 	const backlogTrace = trace.child({
 		kind: "worker",
-		operation: "classify_account_backlog",
+		operation,
 		job_id: job.id,
 		job_kind: job.kind,
 		account_id: job.scope_id,
 	});
+
+	if (isTargeted && targetMessageIds.length === 0) {
+		await completeJob({
+			id: job.id,
+			successCount: 0,
+			errorCount: 0,
+			meta: {
+				mode: "live",
+				processed: 0,
+				total: 0,
+				targetMessageIds,
+				skipped: [],
+			},
+		});
+		backlogTrace.complete(`worker.${eventOperation}.complete`, {
+			processed: 0,
+			success_count: 0,
+			error_count: 0,
+			total: 0,
+		});
+		return;
+	}
+
 	const db = getDb();
 	const account = await db
 		.selectFrom("accounts")
@@ -1073,7 +1299,7 @@ async function classifyAccountBacklogJob(job: JobRecord, trace: LogTrace) {
 		.executeTakeFirstOrThrow();
 	const classifyPromptSha256 = promptSha256ForName("classify-email-v3.md");
 
-	const messages = await db
+	let messagesQuery = db
 		.selectFrom("messages")
 		.leftJoin("message_labels", "message_labels.message_id", "messages.id")
 		.leftJoin(
@@ -1096,8 +1322,12 @@ async function classifyAccountBacklogJob(job: JobRecord, trace: LogTrace) {
 			"message_labels.content_sha256 as label_sha256",
 			"message_labels.schema_version as label_schema_version",
 		])
-		.where("messages.account_id", "=", job.scope_id)
-		.where((eb) =>
+		.where("messages.account_id", "=", job.scope_id);
+
+	if (isTargeted) {
+		messagesQuery = messagesQuery.where("messages.id", "in", targetMessageIds);
+	} else {
+		messagesQuery = messagesQuery.where((eb) =>
 			eb.or([
 				eb("moderation_results.message_id", "is", null),
 				staleModerationPromptSql(),
@@ -1106,11 +1336,23 @@ async function classifyAccountBacklogJob(job: JobRecord, trace: LogTrace) {
 				sql<boolean>`coalesce(message_labels.content_sha256, '') != coalesce(messages.content_sha256, '')`,
 				staleRootPromptSql(classifyPromptSha256),
 			]),
-		)
+		);
+	}
+
+	const messages = await messagesQuery
 		.orderBy("messages.received_at", "desc")
 		.orderBy("messages.id", "desc")
-		.limit(ROOT_BACKLOG_BATCH_SIZE)
+		.limit(isTargeted ? targetMessageIds.length : ROOT_BACKLOG_BATCH_SIZE)
 		.execute();
+	const skipped: Array<{ messageId: string; reason: string }> = [];
+	if (isTargeted) {
+		const foundIds = new Set(messages.map((message) => message.id));
+		for (const messageId of targetMessageIds) {
+			if (!foundIds.has(messageId)) {
+				skipped.push({ messageId, reason: "not_found" });
+			}
+		}
+	}
 
 	backlogTrace.add({
 		total: messages.length,
@@ -1121,9 +1363,14 @@ async function classifyAccountBacklogJob(job: JobRecord, trace: LogTrace) {
 			id: job.id,
 			successCount: 0,
 			errorCount: 0,
-			meta: { processed: 0, total: 0, mode: "live" },
+			meta: {
+				processed: 0,
+				total: 0,
+				mode: "live",
+				...(isTargeted ? { targetMessageIds, skipped } : {}),
+			},
 		});
-		backlogTrace.complete("worker.classify_backlog.complete", {
+		backlogTrace.complete(`worker.${eventOperation}.complete`, {
 			processed: 0,
 			success_count: 0,
 			error_count: 0,
@@ -1166,9 +1413,14 @@ async function classifyAccountBacklogJob(job: JobRecord, trace: LogTrace) {
 		requestCount: messages.length,
 		model: APP_CONFIG.classifierModel,
 		promptVersion: CLASSIFY_PROMPT_VERSION,
-		meta: { mode: "live", processed: 0, total: messages.length },
+		meta: {
+			mode: "live",
+			processed: 0,
+			total: messages.length,
+			...(isTargeted ? { targetMessageIds, skipped } : {}),
+		},
 	});
-	backlogTrace.info("worker.classify_backlog.start", {
+	backlogTrace.info(`worker.${eventOperation}.start`, {
 		total: messages.length,
 	});
 
@@ -1215,11 +1467,12 @@ async function classifyAccountBacklogJob(job: JobRecord, trace: LogTrace) {
 					mode: "live",
 					processed: successCount + errorCount,
 					total: messages.length,
+					...(isTargeted ? { targetMessageIds, skipped } : {}),
 				},
 			});
 			const processed = successCount + errorCount;
 			if (processed % 25 === 0 || processed === messages.length) {
-				backlogTrace.info("worker.classify_backlog.progress", {
+				backlogTrace.info(`worker.${eventOperation}.progress`, {
 					processed,
 					success_count: successCount,
 					error_count: errorCount,
@@ -1237,9 +1490,10 @@ async function classifyAccountBacklogJob(job: JobRecord, trace: LogTrace) {
 			mode: "live",
 			processed: successCount + errorCount,
 			total: messages.length,
+			...(isTargeted ? { targetMessageIds, skipped } : {}),
 		},
 	});
-	backlogTrace.complete("worker.classify_backlog.complete", {
+	backlogTrace.complete(`worker.${eventOperation}.complete`, {
 		processed: successCount + errorCount,
 		success_count: successCount,
 		error_count: errorCount,
@@ -1258,8 +1512,9 @@ async function classifyAccountBacklogJob(job: JobRecord, trace: LogTrace) {
 
 	if (successCount > 0) {
 		await queueAccountFinanceBacklog(account.id);
+		await queueReviewClassifierBacklog();
 	}
-	if (await hasPendingRootBacklog(account.id)) {
+	if (!isTargeted && (await hasPendingRootBacklog(account.id))) {
 		await queueAccountBacklog(account.id);
 	}
 }
@@ -1704,6 +1959,7 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 	if (successCount > 0) {
 		await queueFinanceKnowledgeRebuild();
 		await queueFinanceRollupsRebuild();
+		await queueReviewClassifierBacklog();
 	}
 	if (!isTargeted && (await hasPendingFinanceBacklog(account.id))) {
 		await queueAccountFinanceBacklog(account.id);
@@ -1733,6 +1989,13 @@ async function processJob(job: JobRecord, trace: LogTrace) {
 		case "export_finance_beancount":
 			await exportFinanceBeancountJob(job, trace);
 			return;
+		case "generate_tax_personal_package":
+		case "generate_tax_business_quarter_package":
+			await generateTaxReportJob(job, trace);
+			return;
+		case "classify_review_backlog":
+			await classifyReviewBacklogJob(job, trace);
+			return;
 		case "reconcile_registry_suggestions":
 			await reconcileRegistrySuggestionsJob(job, trace);
 			return;
@@ -1751,6 +2014,9 @@ async function processJob(job: JobRecord, trace: LogTrace) {
 		case "classify_account_backlog":
 			await classifyAccountBacklogJob(job, trace);
 			return;
+		case "classify_root_messages":
+			await classifyAccountBacklogJob(job, trace);
+			return;
 		case "classify_finance_backlog":
 			await classifyFinanceBacklogJob(job, trace);
 			return;
@@ -1762,15 +2028,7 @@ async function processJob(job: JobRecord, trace: LogTrace) {
 	}
 }
 
-export async function runWorkerIteration(input: { waitOnIdle: boolean }) {
-	const job = claimNextJob();
-	if (!job) {
-		if (input.waitOnIdle) {
-			await delay(APP_CONFIG.workerPollMs);
-		}
-		return false;
-	}
-
+async function processClaimedJob(job: JobRecord) {
 	const trace = startTrace({
 		kind: "worker",
 		operation: "process_job",
@@ -1811,6 +2069,18 @@ export async function runWorkerIteration(input: { waitOnIdle: boolean }) {
 	return true;
 }
 
+export async function runWorkerIteration(input: { waitOnIdle: boolean }) {
+	const job = claimNextJob();
+	if (!job) {
+		if (input.waitOnIdle) {
+			await delay(APP_CONFIG.workerPollMs);
+		}
+		return false;
+	}
+
+	return processClaimedJob(job);
+}
+
 async function workerLoop(orgId: string) {
 	return runWithOrgContext(orgId, async () => {
 		const workerTrace = startTrace({
@@ -1821,7 +2091,6 @@ async function workerLoop(orgId: string) {
 		workerTrace.info("worker.start");
 		runMigrations();
 		await ensureAccountOwnershipBackfill();
-		requeueExpiredJobs();
 
 		try {
 			const { restoreWatchers } = await import("#/lib/watchers");
@@ -1834,8 +2103,28 @@ async function workerLoop(orgId: string) {
 		await queuePendingBackfills(workerTrace);
 		await queueStartupReconciliation(workerTrace);
 
+		const inFlight = new Set<Promise<boolean>>();
 		while (true) {
-			await runWorkerIteration({ waitOnIdle: true });
+			requeueExpiredJobs();
+			let claimed = 0;
+			while (inFlight.size < APP_CONFIG.workerMaxJobConcurrency) {
+				const job = claimNextJob({ claimOwner: orgId });
+				if (!job) {
+					break;
+				}
+				let task: Promise<boolean>;
+				task = processClaimedJob(job).finally(() => {
+					inFlight.delete(task);
+				});
+				inFlight.add(task);
+				claimed += 1;
+			}
+
+			if (inFlight.size === 0 && claimed === 0) {
+				await delay(APP_CONFIG.workerPollMs);
+				continue;
+			}
+			await Promise.race(inFlight);
 		}
 	});
 }

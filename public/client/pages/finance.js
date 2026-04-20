@@ -1,15 +1,42 @@
 import { getChart, initChart } from "../core/charting.js";
 
-const ANALYTICS_ISLANDS = [
-	"finance.summary",
-	"finance.cashflow",
-	"finance.categories",
-	"finance.subscriptions",
-	"finance.ledger-preview",
-	"finance.export-health",
-];
+const FINANCE_JOB_LANES = new Set([
+	"finance_llm",
+	"review_llm",
+	"materialize",
+	"export_report",
+]);
 
-const STATUS_ISLANDS = ["finance.command-bar", "finance.export-health"];
+const STATUS_ISLANDS = ["finance.command-bar", "finance.lanes"];
+
+function unique(values) {
+	return Array.from(new Set(values.filter(Boolean)));
+}
+
+export function activeFinanceTabIsland(tab = currentFinanceTab()) {
+	switch (tab) {
+		case "readiness":
+			return "finance.readiness";
+		case "ledger":
+			return "finance.ledger";
+		case "imports":
+			return "finance.imports";
+		case "mappings":
+			return "finance.mappings";
+		case "review":
+			return "finance.review";
+		case "tax":
+			return "finance.tax";
+		case "exports":
+			return "finance.export-health";
+		default:
+			return "finance.overview.rollups";
+	}
+}
+
+function currentFinanceTab() {
+	return new URLSearchParams(window.location.search).get("tab") ?? "overview";
+}
 
 function shouldRefreshAnalytics(event) {
 	return (
@@ -19,35 +46,83 @@ function shouldRefreshAnalytics(event) {
 	);
 }
 
-function financeIslandHints(event) {
+export function financeIslandHints(event, tab = currentFinanceTab()) {
 	const hinted = event.payload?.changeHints?.islands;
 	if (Array.isArray(hinted)) {
 		const financeHints = hinted
 			.map((value) => String(value))
 			.filter((value) => value.startsWith("finance."));
 		if (financeHints.length > 0) {
-			return financeHints;
+			return unique(
+				financeHints.filter((id) => {
+					if (
+						id === "finance.review" ||
+						id === "finance.readiness" ||
+						id === "finance.ledger" ||
+						id === "finance.imports" ||
+						id === "finance.mappings" ||
+						id === "finance.tax" ||
+						id === "finance.overview.rollups"
+					) {
+						return id === activeFinanceTabIsland(tab);
+					}
+					return true;
+				}),
+			);
 		}
 	}
 	switch (event.eventType) {
 		case "finance.ledger_rebuilt":
+			return unique([
+				"finance.summary",
+				"finance.cashflow",
+				"finance.categories",
+				activeFinanceTabIsland(tab),
+				"finance.lanes",
+			]);
 		case "finance.patterns_rebuilt":
-			return ANALYTICS_ISLANDS;
+			return ["finance.subscriptions", "finance.summary", "finance.lanes"];
 		case "finance.export_started":
 		case "finance.export_completed":
 		case "finance.export_failed":
-			return STATUS_ISLANDS;
+		case "finance.tax_report_completed":
+			return unique([
+				"finance.export-health",
+				tab === "tax" ? "finance.tax" : null,
+				"finance.lanes",
+			]);
+		case "review_classifier.completed":
+			return unique([
+				tab === "review" ? "finance.review" : null,
+				tab === "readiness" ? "finance.readiness" : null,
+				"finance.lanes",
+			]);
 		default:
-			return ["finance.command-bar"];
+			return STATUS_ISLANDS;
 	}
 }
 
-function actionRefreshIslands(target) {
+export function actionRefreshIslands(target, tab = currentFinanceTab()) {
 	const island = target.closest("[data-zmail-island]")?.dataset.zmailIsland;
-	if (island === "finance.export-health") {
-		return STATUS_ISLANDS;
+	const rpc =
+		target.dataset.rpc ?? target.closest("form[data-rpc]")?.dataset.rpc ?? "";
+	if (rpc.includes("/finance/mappings/upsert")) {
+		return ["finance.mappings", "finance.readiness", "finance.lanes"];
 	}
-	return ["finance.command-bar", ...ANALYTICS_ISLANDS];
+	if (rpc.includes("/finance/tax/")) {
+		return ["finance.tax", "finance.lanes"];
+	}
+	if (rpc.includes("/finance/export")) {
+		return ["finance.export-health", "finance.lanes"];
+	}
+	if (island === "finance.export-health") {
+		return ["finance.export-health", "finance.lanes"];
+	}
+	return unique([
+		"finance.command-bar",
+		"finance.lanes",
+		activeFinanceTabIsland(tab),
+	]);
 }
 
 function parseFormPayload(form) {
@@ -56,8 +131,10 @@ function parseFormPayload(form) {
 	for (const [key, value] of formData.entries()) {
 		if (value === "") {
 			payload[key] = null;
-		} else if (key === "year") {
+		} else if (key === "year" || key === "quarter") {
 			payload[key] = Number(value);
+		} else if (key === "mapping") {
+			payload[key] = JSON.parse(value);
 		} else if (key === "strict" || key === "force") {
 			payload[key] = value === "on" || value === "true";
 		} else {
@@ -250,7 +327,7 @@ export function init(app) {
 		}
 		try {
 			await app.postJson(form.dataset.rpc, parseFormPayload(form));
-			await app.refresh({ islands: STATUS_ISLANDS });
+			await app.refresh({ islands: actionRefreshIslands(form) });
 		} catch (error) {
 			window.alert(error instanceof Error ? error.message : String(error));
 			if (submit) {
@@ -266,25 +343,36 @@ export function init(app) {
 	const isFinanceJob = (event) => {
 		const kind = String(event.payload?.kind ?? "");
 		const scopeId = String(event.payload?.scopeId ?? "");
+		const lane = String(event.payload?.lane ?? "");
 		return (
+			FINANCE_JOB_LANES.has(lane) ||
 			kind.includes("finance") ||
+			kind.includes("tax") ||
 			kind.includes("registry") ||
 			scopeId === "finance" ||
 			scopeId === "registry_suggestions"
 		);
 	};
+	const financeJobIslands = (event) =>
+		unique([
+			...STATUS_ISLANDS,
+			isTerminalJob(event) ? activeFinanceTabIsland() : null,
+			event.payload?.lane === "export_report" ? "finance.export-health" : null,
+		]);
 	const onFinance = (event) =>
 		void app.scheduleRefresh({
 			islands: financeIslandHints(event),
 			immediate: true,
+			fallback: "none",
 		});
 	const onJobs = (event) => {
 		if (!isFinanceJob(event)) {
 			return;
 		}
 		void app.scheduleRefresh({
-			islands: STATUS_ISLANDS,
+			islands: financeJobIslands(event),
 			immediate: isTerminalJob(event),
+			fallback: "none",
 		});
 	};
 	const unsubscribers = [

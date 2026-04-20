@@ -856,6 +856,11 @@ describe("worker finance jobs", () => {
 		});
 		expect(queuedJobs).toEqual([
 			{
+				kind: "classify_review_backlog",
+				scope_id: "review_classifier",
+				status: "queued",
+			},
+			{
 				kind: "rebuild_finance_knowledge",
 				scope_id: "finance",
 				status: "queued",

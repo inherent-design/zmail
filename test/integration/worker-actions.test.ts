@@ -375,10 +375,10 @@ describe("worker and server actions", () => {
 		expect(detail.currentLabel).toBeTruthy();
 
 		const reviewData = await actions.loadReviewData();
-		expect(reviewData).toHaveLength(1);
+		expect(reviewData.rootReviews).toHaveLength(1);
 		await expect(
 			actions.resolveReviewCommand({
-				reviewId: reviewData[0].id,
+				reviewId: reviewData.rootReviews[0].id,
 				action: "override",
 			}),
 		).rejects.toThrow("Override label is required for override action");
@@ -405,16 +405,11 @@ describe("worker and server actions", () => {
 		const classifyNow = await actions.classifyOneNowCommand({
 			messageId: receiptMessageId,
 		});
-		expect(classifyNow.status).toBe("classified");
-		const classifyNowLabel = await db
-			.selectFrom("message_labels")
-			.select(["label_json"])
-			.where("message_id", "=", receiptMessageId)
-			.executeTakeFirstOrThrow();
-		expect(classifyNowLabel.label_json).toContain("message-label.v3");
+		expect(classifyNow.status).toBe("queued");
+		expect(classifyNow.jobId).toBeTruthy();
 
 		const accepted = await actions.resolveReviewCommand({
-			reviewId: reviewData[0].id,
+			reviewId: reviewData.rootReviews[0].id,
 			action: "accept",
 		});
 		expect(accepted.status).toBe("accepted");
@@ -455,6 +450,8 @@ describe("worker and server actions", () => {
 			await runtime.importFresh<typeof import("#/server/actions")>(
 				"#/server/actions",
 			);
+		const worker =
+			await runtime.importFresh<typeof import("#/lib/worker")>("#/lib/worker");
 		const dbModule =
 			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
 		const { db } = await bootDb({ seedDefaultAccount: true });
@@ -480,7 +477,8 @@ describe("worker and server actions", () => {
 		).toBe(true);
 
 		const result = await actions.classifyOneNowCommand({ messageId });
-		expect(result.status).toBe("classified");
+		expect(result.status).toBe("queued");
+		await runWorkerUntilQuiet(worker, db);
 
 		const latestLabel = await dbModule
 			.getDb()

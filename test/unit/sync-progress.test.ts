@@ -105,6 +105,49 @@ describe("sync progress", () => {
 		});
 	});
 
+	it("ignores running account classifier jobs for mailbox sync progress", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-classifier-running",
+			syncStatus: "backfilling",
+		});
+		await insertAccountSyncStateRow(db, {
+			accountId: "acct-classifier-running",
+			backfillSnapshotUid: 300,
+			backfillNextUid: 120,
+		});
+		await insertJob({
+			id: "job-classifier-running",
+			kind: "classify_account_backlog",
+			scopeId: "acct-classifier-running",
+			status: "running",
+			startedAt: "2026-01-01T00:00:00.000Z",
+			finishedAt: null,
+			meta: {
+				phase: "unknown",
+				processed: 114,
+				total: 250,
+				etaSeconds: 395,
+			},
+		});
+		const progress = await runtime.importFresh<
+			typeof import("#/lib/sync-progress")
+		>("#/lib/sync-progress");
+
+		const snapshot = await progress.loadAccountSyncProgress(
+			"acct-classifier-running",
+		);
+		expect(snapshot).toMatchObject({
+			phase: "backfill",
+			processed: 180,
+			total: 300,
+			remaining: 120,
+		});
+		expect(snapshot.processed).not.toBe(114);
+		expect(snapshot.phase).not.toBe("unknown");
+	});
+
 	it("returns null ETA without recent rate and no negative spans", async () => {
 		const runtime = await createTestRuntime();
 		const { db } = await bootDb();

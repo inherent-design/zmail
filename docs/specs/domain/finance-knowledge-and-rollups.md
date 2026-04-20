@@ -26,6 +26,9 @@ zmail vNext.
 Operational rule of thumb: `ready` rows can be counted and exported, `review`
 rows can be counted for planning dashboards but need operator attention before
 strict export, and `blocked` / `duplicate` rows should stay out of rollup totals.
+Tax and business reporting uses a stricter accepted-total rule: only `ready`
+rows count. See
+[tax-and-business-reporting.md](./tax-and-business-reporting.md).
 
 ## Inputs
 
@@ -35,6 +38,8 @@ Finance knowledge is built from:
 - imported finance transactions
 - imported finance documents
 - current operator registry and taxonomy state
+- review classifier findings for finance ledger entries, used as audit inputs
+  and freshness signals
 
 ## Materialized Tables
 
@@ -44,6 +49,9 @@ Finance knowledge is built from:
 - `finance_export_runs`
 - `finance_export_items`
 - `finance_account_mappings`
+- `review_classification_results`
+- `review_classification_heads`
+- `tax_report_runs`
 - `finance_yearly_rollups`
 - `finance_yearly_subcategory_rollups`
 
@@ -165,6 +173,10 @@ Rollups combine:
 - imported finance transactions from artifact imports when not deduped into
   staged entries yet
 
+Rollups are planning and operator-review materializations. They may include
+`review` rows when the UI needs estimated totals, but strict Beancount export
+and tax/business accepted totals use `ready` rows only.
+
 Primary rollups group by:
 
 - year
@@ -220,9 +232,23 @@ outside one org runtime.
 Rebuild when:
 
 - current finance heads change
+- review classifier heads change in a way that can affect accepted work
 - imported finance artifacts change
 - registry reconciliation materially changes matched refs
 - finance taxonomy changes
+
+## Snapshot Rebuild Semantics
+
+Finance knowledge and rollup jobs record an input watermark when work begins.
+The watermark includes current finance heads, root review resolution state, and
+review classifier heads. If those inputs advance before the materialization job
+finishes, the job persists its current output and requeues itself so exports and
+reports eventually see a fresh snapshot.
+
+Readiness audits read ledger status, mapping coverage, missing amount/date/
+counterparty/mapping/book/dedupe counts, open finance-affecting jobs, and root/
+finance/review classifier freshness. They are read-only and must not repair
+rows directly.
 
 ## Failure Modes
 

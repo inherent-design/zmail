@@ -63,6 +63,33 @@ Active classifier:
 - `classifier_key = "finance_intel"`
 - schema version: `finance-intel.v3`
 
+## Review Classifier Heads
+
+The review classifier is not a secondary classifier result overwrite path. It
+persists separate append-only model output and current finding heads:
+
+- `review_classification_results`
+- `review_classification_heads`
+
+Targets:
+
+- `target_kind = "root_review"` for root `reviews` rows
+- `target_kind = "finance_ledger_entry"` for ledger rows in `review` or
+  `blocked`
+
+Findings may request:
+
+- manual review
+- targeted `classify_root_messages`
+- targeted `classify_finance_messages`
+- mapping suggestions
+- overseer signals
+
+They must not mutate `message_secondary_heads`, `message_labels`,
+`finance_ledger_entries`, or operator YAML directly. Finance review findings
+are separate audit heads and are never promotion of secondary output into root
+labels.
+
 ### Trigger rules
 
 Root eligibility requires:
@@ -280,6 +307,8 @@ Outputs:
 - deterministic projections do not overwrite secondary result history
 - finance knowledge materialization consumes current finance heads and imported
   artifacts, not arbitrary historical secondary rows
+- review classifier findings do not overwrite secondary-result heads; they
+  enqueue targeted work or surface operator actions
 
 ## Failure Modes
 
@@ -290,7 +319,8 @@ Outputs:
 
 ## Out Of Scope
 
-- automatic promotion of secondary outputs into the main review queue
+- silent promotion of secondary outputs into root labels or manual review
+  decisions
 - secondary classifiers unrelated to an explicitly specified domain contract
 - new visible opportunity, relationship, spam/fatigue, travel, or legal lenses
   in this finance rewrite

@@ -195,8 +195,8 @@ Rules:
 - browser swaps `#app-main`, updates `document.title`, and manages history
 - browser swaps matching island roots, restores session state, and remounts only
   changed island modules
-- missing or unsupported island responses may fall back to a main refresh for
-  the same page only
+- missing or unsupported island responses are skipped by default; explicit
+  user actions may opt into a same-page main fallback
 - View Transitions may be used when available
 - failures fall back to normal navigation
 
@@ -263,7 +263,9 @@ Rules:
 - running job bursts are debounced, with a max wait to prevent stale views
 - terminal job events refresh immediately when relevant to the current page
 - focused inputs, textareas, selects, contenteditable regions, and active forms
-  defer scheduled refresh until blur or max wait
+  defer scheduled refresh for their owning island until blur or submit
+- unrelated scheduled islands may refresh while the active island is deferred
+- SSE-triggered island refreshes must not replace `#app-main`
 - fragment refresh preserves replay cursor from `X-Zmail-Event-Cursor` or the
   incoming fragment dataset
 - scheduled SSE refresh captures origin page, URL, and requested island ids

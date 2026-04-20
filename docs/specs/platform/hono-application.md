@@ -131,18 +131,41 @@ org data, runtime DB files, or operator artifacts.
 - `POST /rpc/accounts/:accountId/sync/delta`
 - `POST /rpc/accounts/:accountId/sync/reconcile`
 - `POST /rpc/accounts/:accountId/classify/root`
+- `POST /rpc/accounts/:accountId/classify/root/messages`
 - `POST /rpc/accounts/:accountId/classify/finance`
 - `POST /rpc/accounts/:accountId/overseer/rebuild`
 - `POST /rpc/messages/:messageId/classify`
+- `POST /rpc/reviews/classify`
 - `POST /rpc/reviews/:reviewId/resolve`
 - `POST /rpc/finance/registry/import`
+- `POST /rpc/finance/mappings/upsert`
 - `POST /rpc/finance/suggestions/reconcile`
 - `POST /rpc/finance/knowledge/rebuild`
 - `POST /rpc/finance/rollups/rebuild`
 - `POST /rpc/finance/export`
+- `POST /rpc/finance/tax/personal`
+- `POST /rpc/finance/tax/business/inherent-design`
 
 These mutation routes may be implemented through internal `commands`, but the
 external transport contract stays standard Hono HTTP routes.
+
+Classification RPC behavior:
+
+- `POST /rpc/messages/:messageId/classify` queues `classify_root_messages`; it
+  must not call the LLM inline
+- `POST /rpc/accounts/:accountId/classify/root/messages` queues targeted root
+  classification for explicit message ids
+- `POST /rpc/reviews/classify` queues `classify_review_backlog`
+- review classifier actions may enqueue targeted root or finance jobs through
+  worker dispatch only
+
+Finance repair/report RPC behavior:
+
+- `POST /rpc/finance/mappings/upsert` validates one mapping, writes it to
+  `operator/registry/finance-account-mappings.yaml`, then queues registry import
+  and finance rebuild jobs
+- tax/business package RPC routes create `tax_report_runs` rows and queue worker
+  jobs; they do not generate packages inline
 
 ### Hono RPC routes
 
@@ -189,6 +212,18 @@ Middleware order is fixed:
 
 No route handler may touch org-scoped storage before step 6 completes.
 
+Secure headers are applied globally before route handling. The baseline uses
+Hono's `secureHeaders` middleware with cross-origin embedder policy disabled
+for browser module compatibility and denies unused browser capabilities through
+`Permissions-Policy` (`camera`, `geolocation`, `microphone`, `payment`, `usb`).
+The app must emit at least:
+
+- `X-Content-Type-Options: nosniff`
+- `X-Frame-Options: SAMEORIGIN`
+- `Referrer-Policy: no-referrer`
+- `Strict-Transport-Security` on all responses
+- `Permissions-Policy` denying unused privileged browser APIs
+
 ## Request Lifecycle
 
 ### Browser GET
@@ -231,7 +266,8 @@ The response HTML body contains only an island fragment envelope with the
 rendered island roots. It must not include `#app-main`, document chrome, or
 unrequested sibling islands. If one or more requested islands are unsupported,
 the response may include fallback metadata such as `X-Zmail-Island-Missing`;
-the browser may then refresh `main` for the same page only.
+SSE-triggered refreshes skip unsupported islands, while explicit user actions
+may opt into a same-page `main` fallback.
 
 ### Browser POST
 
