@@ -199,6 +199,42 @@ export function createJobProgressSink(
 	};
 }
 
+function buildProgressMeta(
+	job: Pick<JobRecord, "started_at">,
+	input: {
+		processed: number;
+		total: number;
+		extra?: Record<string, unknown>;
+	},
+) {
+	const updatedAt = new Date().toISOString();
+	const processed = Math.max(0, input.processed);
+	const total = Math.max(0, input.total);
+	let etaSeconds: number | null = null;
+	if (total === 0 || processed >= total) {
+		etaSeconds = 0;
+	} else if (processed > 0 && job.started_at) {
+		const elapsedSeconds = Math.max(
+			0,
+			(Date.now() - new Date(job.started_at).getTime()) / 1000,
+		);
+		const ratePerSecond =
+			elapsedSeconds > 0 ? processed / elapsedSeconds : null;
+		etaSeconds =
+			ratePerSecond && ratePerSecond > 0
+				? Math.max(0, (total - processed) / ratePerSecond)
+				: null;
+	}
+	return {
+		mode: "live",
+		processed,
+		total,
+		etaSeconds,
+		updatedAt,
+		...(input.extra ?? {}),
+	};
+}
+
 async function rebuildOverseerJob(job: JobRecord, trace: LogTrace) {
 	const jobTrace = trace.child({
 		kind: "worker",
@@ -1274,13 +1310,11 @@ async function classifyAccountBacklogJob(job: JobRecord, trace: LogTrace) {
 			id: job.id,
 			successCount: 0,
 			errorCount: 0,
-			meta: {
-				mode: "live",
+			meta: buildProgressMeta(job, {
 				processed: 0,
 				total: 0,
-				targetMessageIds,
-				skipped: [],
-			},
+				extra: { targetMessageIds, skipped: [] },
+			}),
 		});
 		backlogTrace.complete(`worker.${eventOperation}.complete`, {
 			processed: 0,
@@ -1363,12 +1397,11 @@ async function classifyAccountBacklogJob(job: JobRecord, trace: LogTrace) {
 			id: job.id,
 			successCount: 0,
 			errorCount: 0,
-			meta: {
-				processed: 0,
+			meta: buildProgressMeta(job, {
 				total: 0,
-				mode: "live",
-				...(isTargeted ? { targetMessageIds, skipped } : {}),
-			},
+				processed: 0,
+				extra: isTargeted ? { targetMessageIds, skipped } : {},
+			}),
 		});
 		backlogTrace.complete(`worker.${eventOperation}.complete`, {
 			processed: 0,
@@ -1413,12 +1446,11 @@ async function classifyAccountBacklogJob(job: JobRecord, trace: LogTrace) {
 		requestCount: messages.length,
 		model: APP_CONFIG.classifierModel,
 		promptVersion: CLASSIFY_PROMPT_VERSION,
-		meta: {
-			mode: "live",
+		meta: buildProgressMeta(job, {
 			processed: 0,
 			total: messages.length,
-			...(isTargeted ? { targetMessageIds, skipped } : {}),
-		},
+			extra: isTargeted ? { targetMessageIds, skipped } : {},
+		}),
 	});
 	backlogTrace.info(`worker.${eventOperation}.start`, {
 		total: messages.length,
@@ -1463,12 +1495,11 @@ async function classifyAccountBacklogJob(job: JobRecord, trace: LogTrace) {
 				id: job.id,
 				successCount,
 				errorCount,
-				meta: {
-					mode: "live",
+				meta: buildProgressMeta(job, {
 					processed: successCount + errorCount,
 					total: messages.length,
-					...(isTargeted ? { targetMessageIds, skipped } : {}),
-				},
+					extra: isTargeted ? { targetMessageIds, skipped } : {},
+				}),
 			});
 			const processed = successCount + errorCount;
 			if (processed % 25 === 0 || processed === messages.length) {
@@ -1486,12 +1517,11 @@ async function classifyAccountBacklogJob(job: JobRecord, trace: LogTrace) {
 		id: job.id,
 		successCount,
 		errorCount,
-		meta: {
-			mode: "live",
+		meta: buildProgressMeta(job, {
 			processed: successCount + errorCount,
 			total: messages.length,
-			...(isTargeted ? { targetMessageIds, skipped } : {}),
-		},
+			extra: isTargeted ? { targetMessageIds, skipped } : {},
+		}),
 	});
 	backlogTrace.complete(`worker.${eventOperation}.complete`, {
 		processed: successCount + errorCount,
@@ -1538,13 +1568,11 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 			id: job.id,
 			successCount: 0,
 			errorCount: 0,
-			meta: {
-				mode: "live",
+			meta: buildProgressMeta(job, {
 				processed: 0,
 				total: 0,
-				targetMessageIds,
-				skipped: [],
-			},
+				extra: { targetMessageIds, skipped: [] },
+			}),
 		});
 		backlogTrace.complete(`worker.${operation}.complete`, {
 			processed: 0,
@@ -1649,12 +1677,11 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 			id: job.id,
 			successCount: 0,
 			errorCount: 0,
-			meta: {
-				mode: "live",
+			meta: buildProgressMeta(job, {
 				processed: 0,
 				total: 0,
-				...(isTargeted ? { targetMessageIds, skipped } : {}),
-			},
+				extra: isTargeted ? { targetMessageIds, skipped } : {},
+			}),
 		});
 		backlogTrace.complete(`worker.${operation}.complete`, {
 			processed: 0,
@@ -1753,14 +1780,15 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 			id: job.id,
 			successCount: 0,
 			errorCount: 0,
-			meta: {
-				mode: "live",
+			meta: buildProgressMeta(job, {
 				processed: 0,
 				total: 0,
-				registrySha256: registry.sha256,
-				blockedModelOutputCount: 0,
-				...(isTargeted ? { targetMessageIds, skipped } : {}),
-			},
+				extra: {
+					registrySha256: registry.sha256,
+					blockedModelOutputCount: 0,
+					...(isTargeted ? { targetMessageIds, skipped } : {}),
+				},
+			}),
 		});
 		backlogTrace.complete(`worker.${operation}.complete`, {
 			processed: 0,
@@ -1780,14 +1808,15 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 		requestCount: workItems.length,
 		model: APP_CONFIG.classifierModel,
 		promptVersion: FINANCE_INTEL_PROMPT_VERSION,
-		meta: {
-			mode: "live",
+		meta: buildProgressMeta(job, {
 			processed: 0,
 			total: workItems.length,
-			registrySha256: registry.sha256,
-			blockedModelOutputCount,
-			...(isTargeted ? { targetMessageIds, skipped } : {}),
-		},
+			extra: {
+				registrySha256: registry.sha256,
+				blockedModelOutputCount,
+				...(isTargeted ? { targetMessageIds, skipped } : {}),
+			},
+		}),
 	});
 	backlogTrace.info(`worker.${operation}.start`, {
 		total: workItems.length,
@@ -1910,26 +1939,28 @@ async function classifyFinanceBacklogJob(job: JobRecord, trace: LogTrace) {
 				id: job.id,
 				successCount,
 				errorCount,
-				meta: {
-					mode: "live",
+				meta: buildProgressMeta(job, {
 					processed: successCount + errorCount,
 					total: workItems.length,
-					registrySha256: registry.sha256,
-					blockedModelOutputCount,
-					...(isTargeted ? { targetMessageIds, skipped } : {}),
-				},
+					extra: {
+						registrySha256: registry.sha256,
+						blockedModelOutputCount,
+						...(isTargeted ? { targetMessageIds, skipped } : {}),
+					},
+				}),
 			});
 		},
 	);
 
-	const finalMeta = {
-		mode: "live",
+	const finalMeta = buildProgressMeta(job, {
 		processed: successCount + errorCount,
 		total: workItems.length,
-		registrySha256: registry.sha256,
-		blockedModelOutputCount,
-		...(isTargeted ? { targetMessageIds, skipped } : {}),
-	};
+		extra: {
+			registrySha256: registry.sha256,
+			blockedModelOutputCount,
+			...(isTargeted ? { targetMessageIds, skipped } : {}),
+		},
+	});
 
 	if (errorCount > 0) {
 		await updateJob({

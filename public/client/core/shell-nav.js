@@ -58,7 +58,8 @@ export function createShellNav(input = {}) {
 	let scheduledRefreshTimer = null;
 	let scheduledRefreshMaxTimer = null;
 	let scheduledRefreshRequest = null;
-	let deferredUntilBlur = false;
+	const deferredRefreshes = new Map();
+	let deferredCleanup = null;
 	let navigationSerial = 0;
 	let activeNavigation = null;
 
@@ -90,21 +91,61 @@ export function createShellNav(input = {}) {
 		}
 	}
 
+	function isDevelopment() {
+		const host = windowRef.location.hostname;
+		return (
+			documentRef.documentElement.dataset.zmailDebugRefresh === "1" ||
+			(Boolean(windowRef.location.port) &&
+				(host === "localhost" || host === "127.0.0.1" || host === "::1"))
+		);
+	}
+
+	function debugRefresh(reason, detail = {}) {
+		if (!isDevelopment()) {
+			return;
+		}
+		windowRef.console?.debug?.("[zmail:refresh]", {
+			reason,
+			...detail,
+		});
+	}
+
+	function refreshFallback(source, islands, fallback) {
+		if (source === "sse") {
+			return "none";
+		}
+		return fallback ?? (islands?.length ? "none" : "main");
+	}
+
 	function buildRefreshRequest(options = {}) {
 		const islands = normalizeIslandIds(options.islands);
+		const source = options.source ?? "action";
 		return {
 			islands,
+			source,
 			originPage: options.originPage ?? null,
 			originUrl: normalizeUrl(options.originUrl) ?? null,
-			fallback: options.fallback ?? (islands?.length ? "none" : "main"),
+			fallback: refreshFallback(source, islands, options.fallback),
 		};
 	}
 
 	function sameRefreshOrigin(request) {
 		if (request.originPage && request.originPage !== currentPage()) {
+			debugRefresh("route-origin-mismatch-drop", {
+				originPage: request.originPage,
+				currentPage: currentPage(),
+				islands: request.islands,
+				source: request.source,
+			});
 			return false;
 		}
 		if (request.originUrl && request.originUrl !== currentUrl()) {
+			debugRefresh("route-origin-mismatch-drop", {
+				originUrl: request.originUrl,
+				currentUrl: currentUrl(),
+				islands: request.islands,
+				source: request.source,
+			});
 			return false;
 		}
 		return true;
@@ -115,16 +156,34 @@ export function createShellNav(input = {}) {
 			return next;
 		}
 		if (!current.islands || !next.islands) {
-			return { ...next, islands: null };
+			const source = next.source ?? current.source ?? "action";
+			return {
+				...next,
+				source,
+				islands: null,
+				fallback: refreshFallback(source, null, next.fallback),
+			};
 		}
+		const source = next.source ?? current.source ?? "action";
+		const islands = Array.from(new Set([...current.islands, ...next.islands]));
 		return {
 			...next,
-			islands: Array.from(new Set([...current.islands, ...next.islands])),
-			fallback:
+			source,
+			islands,
+			fallback: refreshFallback(
+				source,
+				islands,
 				current.fallback === "main" || next.fallback === "main"
 					? "main"
 					: "none",
+			),
 		};
+	}
+
+	function clearDeferredRefreshes() {
+		deferredCleanup?.();
+		deferredCleanup = null;
+		deferredRefreshes.clear();
 	}
 
 	function beginNavigation(source) {
@@ -140,6 +199,7 @@ export function createShellNav(input = {}) {
 
 		if (source === "user" || source === "popstate") {
 			clearScheduledRefresh();
+			clearDeferredRefreshes();
 			refreshQueued = null;
 		}
 
@@ -251,6 +311,13 @@ export function createShellNav(input = {}) {
 	}
 
 	async function fallbackMainRefresh(request) {
+		if (request.source === "sse") {
+			debugRefresh("main-fallback-blocked", {
+				source: request.source,
+				islands: request.islands,
+			});
+			return;
+		}
 		if (!sameRefreshOrigin(request)) {
 			return;
 		}
@@ -264,6 +331,11 @@ export function createShellNav(input = {}) {
 		if (!request.islands?.length || !sameRefreshOrigin(request)) {
 			return;
 		}
+		debugRefresh("island-refresh-requested", {
+			islands: request.islands,
+			source: request.source,
+			fallback: request.fallback,
+		});
 		const navigation = beginNavigation("refresh");
 		if (!navigation) {
 			return;
@@ -302,6 +374,13 @@ export function createShellNav(input = {}) {
 			const missingIds = splitHeaderList(
 				response.headers.get("X-Zmail-Island-Missing"),
 			);
+			if (missingIds.length > 0) {
+				debugRefresh("missing-islands-skipped", {
+					missingIslands: missingIds,
+					requestedIslands: request.islands,
+					source: request.source,
+				});
+			}
 			if (!envelope) {
 				if (request.fallback === "main") {
 					await fallbackMainRefresh(request);
@@ -376,6 +455,13 @@ export function createShellNav(input = {}) {
 			await refreshIslandsNow(request);
 			return;
 		}
+		if (request.source === "sse") {
+			debugRefresh("main-fallback-blocked", {
+				source: request.source,
+				islands: request.islands,
+			});
+			return;
+		}
 		await navigate(currentUrl(), {
 			replace: true,
 			source: "refresh",
@@ -420,6 +506,12 @@ export function createShellNav(input = {}) {
 		scheduledRefreshRequest = null;
 	}
 
+	function takeScheduledRefreshRequest(fallback) {
+		const request = scheduledRefreshRequest ?? fallback;
+		scheduledRefreshRequest = null;
+		return request;
+	}
+
 	function activeEditElement() {
 		const active = documentRef.activeElement;
 		if (!active || active === documentRef.body) {
@@ -440,45 +532,65 @@ export function createShellNav(input = {}) {
 		);
 	}
 
-	function deferRefreshUntilInactive(active, request) {
-		if (deferredUntilBlur) {
+	function flushDeferredRefreshes() {
+		const requests = Array.from(deferredRefreshes.values());
+		clearDeferredRefreshes();
+		for (const request of requests) {
+			runScheduledRefresh(request);
+		}
+	}
+
+	function deferRefreshUntilInactive(active, key, request) {
+		deferredRefreshes.set(
+			key,
+			mergeRefreshRequest(deferredRefreshes.get(key) ?? null, request),
+		);
+		debugRefresh("deferred-active-island", {
+			deferredKey: key,
+			islands: request.islands,
+			source: request.source,
+		});
+		if (deferredCleanup) {
 			return;
 		}
-		deferredUntilBlur = true;
 		const form = active.closest?.("form") ?? null;
 		const cleanup = () => {
-			deferredUntilBlur = false;
 			active.removeEventListener("blur", run, true);
+			active.removeEventListener("focusout", run, true);
 			form?.removeEventListener("submit", run, true);
 		};
 		const run = () => {
-			cleanup();
-			runScheduledRefresh(request);
+			flushDeferredRefreshes();
 		};
 		active.addEventListener("blur", run, true);
+		active.addEventListener("focusout", run, true);
 		form?.addEventListener("submit", run, true);
+		deferredCleanup = cleanup;
 	}
 
 	function runScheduledRefresh(request) {
 		if (!sameRefreshOrigin(request)) {
 			return;
 		}
+		if (request.source === "sse" && !request.islands?.length) {
+			debugRefresh("main-fallback-blocked", {
+				source: request.source,
+				islands: request.islands,
+			});
+			return;
+		}
 		const active = activeEditElement();
 		if (active) {
 			if (!request.islands?.length) {
-				deferRefreshUntilInactive(active, request);
+				deferRefreshUntilInactive(active, "main", request);
 				return;
 			}
 			const currentIsland = activeIslandId(active);
-			if (!currentIsland) {
-				deferRefreshUntilInactive(active, request);
-				return;
-			}
-			if (request.islands.includes(currentIsland)) {
+			if (currentIsland && request.islands.includes(currentIsland)) {
 				const readyIslands = request.islands.filter(
 					(id) => id !== currentIsland,
 				);
-				deferRefreshUntilInactive(active, {
+				deferRefreshUntilInactive(active, currentIsland, {
 					...request,
 					islands: [currentIsland],
 					fallback: "none",
@@ -493,7 +605,6 @@ export function createShellNav(input = {}) {
 				return;
 			}
 		}
-		deferredUntilBlur = false;
 		void refresh(request);
 	}
 
@@ -509,8 +620,19 @@ export function createShellNav(input = {}) {
 			scheduledRefreshRequest,
 			request,
 		);
+		debugRefresh("scheduled-refresh", {
+			islands: scheduledRefreshRequest?.islands,
+			source: scheduledRefreshRequest?.source,
+			fallback: scheduledRefreshRequest?.fallback,
+			originPage: scheduledRefreshRequest?.originPage,
+			originUrl: scheduledRefreshRequest?.originUrl,
+			immediate: Boolean(options.immediate),
+			debounceMs,
+			maxWaitMs,
+		});
 		if (options.immediate && !activeEditElement()) {
-			return refresh(scheduledRefreshRequest ?? request);
+			const pending = takeScheduledRefreshRequest(request);
+			return refresh(pending);
 		}
 		if (scheduledRefreshTimer) {
 			clearTimeout(scheduledRefreshTimer);
@@ -518,7 +640,11 @@ export function createShellNav(input = {}) {
 		scheduledRefreshTimer = setTimeout(
 			() => {
 				scheduledRefreshTimer = null;
-				runScheduledRefresh(scheduledRefreshRequest ?? request);
+				if (scheduledRefreshMaxTimer) {
+					clearTimeout(scheduledRefreshMaxTimer);
+					scheduledRefreshMaxTimer = null;
+				}
+				runScheduledRefresh(takeScheduledRefreshRequest(request));
 			},
 			options.immediate ? 0 : debounceMs,
 		);
@@ -529,7 +655,7 @@ export function createShellNav(input = {}) {
 					clearTimeout(scheduledRefreshTimer);
 					scheduledRefreshTimer = null;
 				}
-				runScheduledRefresh(scheduledRefreshRequest ?? request);
+				runScheduledRefresh(takeScheduledRefreshRequest(request));
 			}, maxWaitMs);
 		}
 		return Promise.resolve();

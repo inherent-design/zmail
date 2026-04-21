@@ -7,6 +7,27 @@ type RuntimeEvent = {
 	payload?: Record<string, unknown>;
 };
 
+type RefreshSource = "sse" | "action" | "navigation";
+type IslandFallback = "none" | "main";
+
+type IslandStatePolicy = {
+	semanticUrlKeys: string[];
+	sessionKeys: string[];
+	ephemeralKeys: string[];
+	restoreOnSwap: boolean;
+	shareable: "none" | "committed" | "live";
+};
+
+type IslandDefinition = {
+	id: string;
+	page: string;
+	mode: "server" | "client" | "dynamic-root";
+	fragmentUrl: string;
+	topics: string[];
+	statePolicy: IslandStatePolicy;
+	fallback: IslandFallback;
+};
+
 type IslandApp = {
 	basePath: string;
 	appPath(path: string): string;
@@ -16,14 +37,16 @@ type IslandApp = {
 		islands?: string | string[];
 		originPage?: string;
 		originUrl?: string;
-		fallback?: "none" | "main";
+		fallback?: IslandFallback;
+		source?: RefreshSource;
 	}): Promise<void>;
 	refreshIsland(
 		ids: string | string[],
 		options?: {
 			originPage?: string;
 			originUrl?: string;
-			fallback?: "none" | "main";
+			fallback?: IslandFallback;
+			source?: RefreshSource;
 		},
 	): Promise<void>;
 	scheduleRefresh(options?: {
@@ -33,7 +56,8 @@ type IslandApp = {
 		islands?: string | string[];
 		originPage?: string;
 		originUrl?: string;
-		fallback?: "none" | "main";
+		fallback?: IslandFallback;
+		source?: RefreshSource;
 	}): Promise<void>;
 	navigate(url: string | URL, options?: unknown): Promise<void>;
 	currentPage(): string | null;
@@ -79,7 +103,17 @@ declare module "#/public/client/core/realtime.js" {
 }
 
 declare module "#/public/client/core/island-registry.js" {
-	export type { IslandApp, IslandContext, IslandModule, RuntimeEvent };
+	export type {
+		IslandApp,
+		IslandContext,
+		IslandDefinition,
+		IslandFallback,
+		IslandModule,
+		IslandStatePolicy,
+		RefreshSource,
+		RuntimeEvent,
+	};
+	export function captureGenericState(root: Element): unknown;
 	export function createIslandRegistry(
 		loaders: Record<string, () => Promise<unknown>>,
 	): {
@@ -95,6 +129,7 @@ declare module "#/public/client/core/island-registry.js" {
 		cleanup(): void;
 		currentPage(): string | null;
 	};
+	export function restoreGenericState(root: Element, state: unknown): void;
 }
 
 declare module "#/public/client/core/shell-nav.js" {
@@ -115,21 +150,23 @@ declare module "#/public/client/core/shell-nav.js" {
 			options?: {
 				replace?: boolean;
 				history?: boolean;
-				source?: "user" | "refresh" | "popstate" | "action";
+				source?: "user" | "refresh" | "popstate" | "action" | "navigation";
 			},
 		): Promise<void>;
 		refresh(options?: {
 			islands?: string | string[];
 			originPage?: string;
 			originUrl?: string;
-			fallback?: "none" | "main";
+			fallback?: IslandFallback;
+			source?: RefreshSource;
 		}): Promise<void>;
 		refreshIsland(
 			ids: string | string[],
 			options?: {
 				originPage?: string;
 				originUrl?: string;
-				fallback?: "none" | "main";
+				fallback?: IslandFallback;
+				source?: RefreshSource;
 			},
 		): Promise<void>;
 		scheduleRefresh(options?: {
@@ -139,7 +176,8 @@ declare module "#/public/client/core/shell-nav.js" {
 			islands?: string | string[];
 			originPage?: string;
 			originUrl?: string;
-			fallback?: "none" | "main";
+			fallback?: IslandFallback;
+			source?: RefreshSource;
 		}): Promise<void>;
 		bindLinkClicks(): () => void;
 		bindPopState(): () => void;
@@ -183,6 +221,13 @@ declare module "#/public/client/pages/account-detail.js" {
 	export function init(app: unknown): null | (() => void);
 }
 
+declare module "#/public/client/pages/accounts.js" {
+	import type { RuntimeEvent } from "#/public/client/core/island-registry.js";
+
+	export function accountsIslandHints(event: RuntimeEvent): string[];
+	export function init(app: unknown): null | (() => void);
+}
+
 declare module "#/public/client/pages/finance.js" {
 	import type { RuntimeEvent } from "#/public/client/core/island-registry.js";
 
@@ -192,5 +237,29 @@ declare module "#/public/client/pages/finance.js" {
 		tab?: string,
 	): string[];
 	export function actionRefreshIslands(target: Element, tab?: string): string[];
+	export function init(app: unknown): null | (() => void);
+}
+
+declare module "#/public/client/pages/message-detail.js" {
+	import type { RuntimeEvent } from "#/public/client/core/island-registry.js";
+
+	export function messageDetailIslandHints(event: RuntimeEvent): string[];
+	export function init(app: unknown): null | (() => void);
+}
+
+declare module "#/public/client/pages/profiles.js" {
+	import type { RuntimeEvent } from "#/public/client/core/island-registry.js";
+
+	export function profileIslandHints(
+		event: RuntimeEvent,
+		accountId: string,
+	): string[];
+	export function init(app: unknown): null | (() => void);
+}
+
+declare module "#/public/client/pages/review.js" {
+	import type { RuntimeEvent } from "#/public/client/core/island-registry.js";
+
+	export function reviewIslandHints(event: RuntimeEvent): string[];
 	export function init(app: unknown): null | (() => void);
 }

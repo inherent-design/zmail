@@ -139,6 +139,7 @@ type IslandDefinition = {
   fragmentUrl: string;
   topics: string[];
   statePolicy: IslandStatePolicy;
+  fallback: "none" | "main";
 };
 
 type IslandModule = {
@@ -153,6 +154,8 @@ DOM contract:
 
 - island root: `data-zmail-island="finance.cashflow"`
 - island mode: `data-zmail-island-mode="server|client|dynamic-root"`
+- island state policy: `data-zmail-state-policy="{...}"`
+- island refresh topics: `data-zmail-refresh-topics="finance,jobs"`
 - island props:
   `<script type="application/json" data-zmail-island-props="finance.cashflow">...</script>`
 - optional document state scope:
@@ -195,6 +198,8 @@ Rules:
 - browser swaps `#app-main`, updates `document.title`, and manages history
 - browser swaps matching island roots, restores session state, and remounts only
   changed island modules
+- every rendered island root must have a registry definition with page, mode,
+  fragment URL, refresh topics, state policy, and fallback policy
 - missing or unsupported island responses are skipped by default; explicit
   user actions may opt into a same-page main fallback
 - View Transitions may be used when available
@@ -262,10 +267,29 @@ Rules:
 - page modules filter noisy job events before scheduling refresh work
 - running job bursts are debounced, with a max wait to prevent stale views
 - terminal job events refresh immediately when relevant to the current page
+- refresh requests carry a source:
+
+```ts
+type RefreshSource = "sse" | "action" | "navigation";
+type IslandFallback = "none" | "main";
+
+interface ScheduledRefreshOptions {
+  islands?: string[];
+  fallback?: IslandFallback;
+  source?: RefreshSource;
+  debounceMs?: number;
+  maxWaitMs?: number;
+  immediate?: boolean;
+}
+```
+
+- `source: "sse"` implies `fallback: "none"` even if a caller passes `main`
 - focused inputs, textareas, selects, contenteditable regions, and active forms
-  defer scheduled refresh for their owning island until blur or submit
+  defer scheduled refresh for their owning island until blur, focusout, or
+  submit
 - unrelated scheduled islands may refresh while the active island is deferred
 - SSE-triggered island refreshes must not replace `#app-main`
+- route changes drop pending scheduled or deferred island refreshes
 - fragment refresh preserves replay cursor from `X-Zmail-Event-Cursor` or the
   incoming fragment dataset
 - scheduled SSE refresh captures origin page, URL, and requested island ids
@@ -286,6 +310,11 @@ type RuntimeEventPayload = {
 Initial publishers do not need to emit `changeHints`; page modules may map
 topics and event names to islands. Retargeting a stale event to another safe
 page is a future extension, not part of the first island implementation.
+
+Development refresh instrumentation emits structured `console.debug` records
+under the `[zmail:refresh]` label for scheduled refreshes, requested islands,
+missing islands skipped by the server, active island deferrals, SSE main
+fallback blocks, and route-origin mismatch drops.
 
 ## Bundle and Performance Rules
 

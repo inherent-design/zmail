@@ -485,6 +485,37 @@ describe("shell nav", () => {
 		expect(dom.window.document.body.textContent).toContain("Old chart");
 	});
 
+	it("blocks SSE island refresh fallback from replacing app main", async () => {
+		const dom = createFinanceDom();
+		vi.stubGlobal("DOMParser", dom.window.DOMParser);
+		const fetchImpl = vi.fn(async () =>
+			islandResponse({
+				page: "finance",
+				cursor: 14,
+				islands: [],
+				body: "",
+				missing: ["finance.summary"],
+			}),
+		);
+		const shellNav = createShellNav({
+			documentRef: dom.window.document,
+			windowRef: dom.window as unknown as Window,
+			fetchImpl: fetchImpl as typeof fetch,
+		});
+
+		await shellNav.refresh({
+			islands: ["finance.summary"],
+			fallback: "main",
+			source: "sse",
+		});
+
+		expect(fetchImpl).toHaveBeenCalledTimes(1);
+		expect(dom.window.document.getElementById("app-main")?.dataset.page).toBe(
+			"finance",
+		);
+		expect(dom.window.document.body.textContent).toContain("Old summary");
+	});
+
 	it("defers max-wait main refresh while a form field is focused", async () => {
 		vi.useFakeTimers();
 		try {
@@ -582,6 +613,70 @@ describe("shell nav", () => {
 
 			expect(fetchImpl).toHaveBeenCalledTimes(2);
 			expect(dom.window.document.body.textContent).toContain("New summary");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps separate deferred active island and main refresh requests", async () => {
+		vi.useFakeTimers();
+		try {
+			const dom = createFinanceDom();
+			vi.stubGlobal("DOMParser", dom.window.DOMParser);
+			const summary = dom.window.document.querySelector(
+				'[data-zmail-island="finance.summary"]',
+			);
+			if (!summary) {
+				throw new Error("summary island missing");
+			}
+			summary.innerHTML = '<textarea name="mapping">draft text</textarea>';
+			const textarea = summary.querySelector("textarea");
+			textarea?.focus();
+			const fetchImpl = vi.fn(async (_url, init) => {
+				const headers =
+					((init as RequestInit | undefined)?.headers as
+						| Record<string, string>
+						| undefined) ?? {};
+				if (headers["X-Zmail-Partial"] === "islands") {
+					return islandResponse({
+						page: "finance",
+						cursor: 15,
+						islands: ["finance.summary"],
+						body: '<section data-zmail-island="finance.summary">New summary</section>',
+					});
+				}
+				return partialResponse({
+					page: "finance",
+					title: "Finance",
+					cursor: 16,
+					body: "<section>Main refresh</section>",
+				});
+			});
+			const shellNav = createShellNav({
+				documentRef: dom.window.document,
+				windowRef: dom.window as unknown as Window,
+				fetchImpl: fetchImpl as typeof fetch,
+			});
+
+			await shellNav.scheduleRefresh({
+				debounceMs: 1000,
+				maxWaitMs: 5000,
+			});
+			await vi.advanceTimersByTimeAsync(1000);
+			await shellNav.scheduleRefresh({
+				islands: ["finance.summary"],
+				debounceMs: 1000,
+				maxWaitMs: 5000,
+			});
+			await vi.advanceTimersByTimeAsync(1000);
+
+			expect(fetchImpl).not.toHaveBeenCalled();
+
+			textarea?.blur();
+			await vi.advanceTimersByTimeAsync(0);
+
+			expect(fetchImpl).toHaveBeenCalledTimes(2);
+			expect(dom.window.document.body.textContent).toContain("Main refresh");
 		} finally {
 			vi.useRealTimers();
 		}
