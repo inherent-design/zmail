@@ -60,6 +60,7 @@ export function createShellNav(input = {}) {
 	let scheduledRefreshRequest = null;
 	const deferredRefreshes = new Map();
 	let deferredCleanup = null;
+	let selectionDeferredCleanup = null;
 	let navigationSerial = 0;
 	let activeNavigation = null;
 
@@ -183,6 +184,8 @@ export function createShellNav(input = {}) {
 	function clearDeferredRefreshes() {
 		deferredCleanup?.();
 		deferredCleanup = null;
+		selectionDeferredCleanup?.();
+		selectionDeferredCleanup = null;
 		deferredRefreshes.clear();
 	}
 
@@ -532,12 +535,79 @@ export function createShellNav(input = {}) {
 		);
 	}
 
+	function islandIdForNode(node) {
+		if (!node) {
+			return null;
+		}
+		const element =
+			node.nodeType === 1 ? node : (node.parentElement ?? node.parentNode);
+		return (
+			element?.closest?.("[data-zmail-island]")?.dataset.zmailIsland ?? null
+		);
+	}
+
+	function selectedIslandIds() {
+		const selection =
+			documentRef.getSelection?.() ?? windowRef.getSelection?.() ?? null;
+		if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+			return [];
+		}
+		return Array.from(
+			new Set(
+				[
+					islandIdForNode(selection.anchorNode),
+					islandIdForNode(selection.focusNode),
+				].filter(Boolean),
+			),
+		);
+	}
+
+	function requestWouldReplaceSelectedIsland(request) {
+		if (request.source !== "sse" || !request.islands?.length) {
+			return false;
+		}
+		const selected = selectedIslandIds();
+		return request.islands.some((id) => selected.includes(id));
+	}
+
 	function flushDeferredRefreshes() {
 		const requests = Array.from(deferredRefreshes.values());
 		clearDeferredRefreshes();
 		for (const request of requests) {
 			runScheduledRefresh(request);
 		}
+	}
+
+	function deferRefreshUntilSelectionClears(key, request) {
+		deferredRefreshes.set(
+			key,
+			mergeRefreshRequest(deferredRefreshes.get(key) ?? null, request),
+		);
+		debugRefresh("deferred-selected-island", {
+			deferredKey: key,
+			islands: request.islands,
+			source: request.source,
+		});
+		if (selectionDeferredCleanup) {
+			return;
+		}
+		const run = () => {
+			if (selectedIslandIds().length === 0) {
+				flushDeferredRefreshes();
+			}
+		};
+		const runSoon = () => {
+			windowRef.setTimeout?.(run, 0);
+			run();
+		};
+		documentRef.addEventListener("selectionchange", run, true);
+		documentRef.addEventListener("pointerup", runSoon, true);
+		documentRef.addEventListener("keyup", runSoon, true);
+		selectionDeferredCleanup = () => {
+			documentRef.removeEventListener("selectionchange", run, true);
+			documentRef.removeEventListener("pointerup", runSoon, true);
+			documentRef.removeEventListener("keyup", runSoon, true);
+		};
 	}
 
 	function deferRefreshUntilInactive(active, key, request) {
@@ -580,21 +650,33 @@ export function createShellNav(input = {}) {
 			return;
 		}
 		const active = activeEditElement();
-		if (active) {
-			if (!request.islands?.length) {
-				deferRefreshUntilInactive(active, "main", request);
-				return;
-			}
-			const currentIsland = activeIslandId(active);
-			if (currentIsland && request.islands.includes(currentIsland)) {
+		if (active && !request.islands?.length) {
+			deferRefreshUntilInactive(active, "main", request);
+			return;
+		}
+		if (request.islands?.length) {
+			const activeSelectedIsland = activeIslandId(active);
+			const selectedIslands =
+				request.source === "sse" ? selectedIslandIds() : [];
+			const deferredIslands = request.islands.filter(
+				(id) => id === activeSelectedIsland || selectedIslands.includes(id),
+			);
+			if (deferredIslands.length > 0) {
 				const readyIslands = request.islands.filter(
-					(id) => id !== currentIsland,
+					(id) => !deferredIslands.includes(id),
 				);
-				deferRefreshUntilInactive(active, currentIsland, {
-					...request,
-					islands: [currentIsland],
-					fallback: "none",
-				});
+				for (const islandId of deferredIslands) {
+					const deferredRequest = {
+						...request,
+						islands: [islandId],
+						fallback: "none",
+					};
+					if (islandId === activeSelectedIsland && active) {
+						deferRefreshUntilInactive(active, islandId, deferredRequest);
+					} else {
+						deferRefreshUntilSelectionClears(islandId, deferredRequest);
+					}
+				}
 				if (readyIslands.length > 0) {
 					void refresh({
 						...request,
@@ -630,7 +712,11 @@ export function createShellNav(input = {}) {
 			debounceMs,
 			maxWaitMs,
 		});
-		if (options.immediate && !activeEditElement()) {
+		if (
+			options.immediate &&
+			!activeEditElement() &&
+			!requestWouldReplaceSelectedIsland(scheduledRefreshRequest)
+		) {
 			const pending = takeScheduledRefreshRequest(request);
 			return refresh(pending);
 		}

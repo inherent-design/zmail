@@ -396,6 +396,7 @@ describe("Hono web routes", () => {
 		expect(response.headers.get("X-Zmail-Islands")).toBe("finance.mappings");
 		const html = await response.text();
 		expect(html).toContain('data-zmail-island="finance.mappings"');
+		expect(html).toContain("Mapping candidates");
 		expect(html).toContain("YAML-backed mapping editor");
 		expect(html).not.toContain("Readiness workbench");
 		expect(html).not.toContain("Review classifier findings");

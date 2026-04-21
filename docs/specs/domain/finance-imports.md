@@ -9,11 +9,13 @@ This document defines the finance artifact import contract for zmail vNext.
 Covered here:
 
 - artifact schema
+- PDF/ZIP upload extraction surface
 - CLI and HTTP import surfaces
 - auth model
 - dedup semantics
 - duplicate behavior
 - storage contract
+- local system dependencies
 
 ## Artifact Schema
 
@@ -96,6 +98,60 @@ V2 transaction rows add:
 - `evidenceText`
 
 ## Import Surfaces
+
+### PDF/ZIP Uploads
+
+Canonical browser/operator upload API:
+
+- `POST /api/finance/uploads`
+
+Request:
+
+- `multipart/form-data`
+- fields:
+  - `file`: required PDF or ZIP
+  - `mode`: optional, `auto | direct_llm | voyage_gate`, default `auto`
+  - `sourceKindHint`: optional, `pdf | statement`
+
+Response:
+
+- `202`
+  - `ok: true`
+  - `uploadId`
+  - `jobId`
+  - `status: "queued"`
+
+Rules:
+
+- upload callers use the same browser auth boundary as finance import operators
+- files are stored under the org runtime root:
+  - `data/orgs/<orgId>/operator/imports/uploads/<uploadId>/`
+- ZIP entry names are display/provenance only; storage paths are generated from
+  content and row ids
+- ZIP traversal, symlink entries, empty files, and nested ZIPs are rejected
+- PDFs are probed with embedded PDF text only; OCR is not introduced
+- rendered PDF pages may be routed through Voyage multimodal embeddings before
+  extraction LLM calls
+- Voyage-routed uploads require `VOYAGE_API_KEY` in the worker runtime
+  environment
+- Voyage vectors are not persisted by default; only model name, vector
+  dimension, vector hash, candidate score, page hashes, and selection metadata
+  are stored
+- final output is still a `finance-source-import.v2` artifact and is submitted
+  through the existing import flow
+
+`mode` behavior:
+
+- `direct_llm`: skip Voyage and send selected text/page batches to extraction
+  LLMs
+- `voyage_gate`: render and embed pages before LLM extraction
+- `auto`: skip Voyage only when embedded text probes show enough transaction
+  rows; use Voyage for scanned, layout-heavy, long, ZIP, or weak-text uploads
+
+The upload worker emits one merged artifact per upload, queues
+`import_finance_artifact`, then the import completion path queues
+`rebuild_finance_knowledge` before finance rollups and mapping candidate
+generation.
 
 ### CLI
 
@@ -206,7 +262,82 @@ Exact duplicate artifact:
 
 Queue idempotency and DB uniqueness must use the same key.
 
+`process_finance_upload` job idempotency uses:
+
+- `scope_type = "finance_upload"`
+- `scope_id = uploadId`
+
 ## Storage Contract
+
+### `finance_import_uploads`
+
+Must store:
+
+- `id`
+- `org_id`
+- `status`
+- `mode`
+- `source_kind_hint`
+- `upload_sha256`
+- `original_filename`
+- `stored_path`
+- `total_bytes`
+- `artifact_sha256`
+- `import_run_id`
+- `error_json`
+- `created_at`
+- `updated_at`
+
+### `finance_import_upload_files`
+
+Must store:
+
+- `id`
+- `upload_id`
+- `logical_path`
+- `stored_path`
+- `mime_type`
+- `sha256`
+- `size_bytes`
+- `page_count`
+- `status`
+- `created_at`
+
+### `finance_import_upload_pages`
+
+Must store:
+
+- `id`
+- `upload_file_id`
+- `page_number`
+- `image_path`
+- `image_sha256`
+- `width`
+- `height`
+- `text_probe_chars`
+- `voyage_model`
+- `embedding_dimension`
+- `embedding_sha256`
+- `candidate_score`
+- `candidate_reasons_json`
+- `selected_for_llm`
+- `created_at`
+
+No raw vector column is part of the default storage contract.
+
+### `finance_import_upload_extractions`
+
+Must store:
+
+- `id`
+- `upload_id`
+- `model`
+- `prompt_version`
+- `input_page_refs_json`
+- `output_artifact_sha256`
+- `usage_json`
+- `error_json`
+- `created_at`
 
 ### `finance_import_runs`
 
@@ -256,6 +387,32 @@ submitter. It accepts a URL and posts JSON, but does not yet acquire WorkOS
 machine tokens or derive `base_path`. Treat it as a convenience wrapper, not the
 production external extractor client.
 
+## Local System Dependencies
+
+zmail does not use project-local `mise` tool linking for every system binary.
+The following CLIs are machine-level dependencies for finance workflows.
+
+Required for PDF/ZIP upload processing:
+
+- Poppler:
+  - `pdfinfo`
+  - `pdftotext`
+  - `pdftoppm`
+- Voyage API key:
+  - `VOYAGE_API_KEY`, required when routing through Voyage multimodal embeddings
+
+Required for full Beancount/Fava export workflows:
+
+- Beancount:
+  - `bean-check`
+- Fava:
+  - `fava`
+- uv:
+  - `uvx`, used by the `finance:fava` task as a fallback launcher
+
+Missing Poppler binaries fail upload extraction. Missing `bean-check` skips
+Beancount validation during export; install Beancount for full validation.
+
 ## Failure Modes
 
 - malformed JSON: `400`
@@ -269,4 +426,5 @@ production external extractor client.
 
 - unauthenticated local-only HTTP imports
 - dedup by `sourceFile.sha256`
-- raw PDF storage inside zmail
+- direct Plaid ingestion
+- persistent vector search for uploads

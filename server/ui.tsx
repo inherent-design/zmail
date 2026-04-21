@@ -2083,6 +2083,22 @@ function percent(value: number) {
 	return `${Math.round(value * 100)}%`;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function readinessBlockerCount(manifest: unknown) {
+	if (!isRecord(manifest) || !isRecord(manifest.readiness)) {
+		return 0;
+	}
+	const blockers = manifest.readiness.blockers;
+	return Array.isArray(blockers) ? blockers.length : 0;
+}
+
+function taxRunStatusLabel(status: string) {
+	return status === "audit_only" ? "audit snapshot" : status;
+}
+
 function financeActiveTabIslandId(activeTab: string) {
 	switch (activeTab) {
 		case "readiness":
@@ -2112,6 +2128,14 @@ export function renderFinanceIslandMap(
 		data,
 		currentSearch,
 	);
+	const mappingSuggestions = data.registrySuggestions.filter((row) => {
+		const suggestion = row.suggestion as unknown;
+		return (
+			row.entityKind === "finance_account_mapping" &&
+			isRecord(suggestion) &&
+			suggestion.schemaVersion === "finance-account-mapping-suggestion.v1"
+		);
+	});
 
 	return {
 		"finance.command-bar": (
@@ -2129,6 +2153,12 @@ export function renderFinanceIslandMap(
 						<Button
 							label="Reconcile suggestions"
 							action="/rpc/finance/suggestions/reconcile"
+							variant="secondary"
+						/>
+						<Button
+							label="Generate mappings"
+							action="/rpc/finance/mappings/generate"
+							payload={{ year: data.year }}
 							variant="secondary"
 						/>
 						<Button
@@ -2572,6 +2602,99 @@ export function renderFinanceIslandMap(
 
 				{activeTab === "imports" ? (
 					<>
+						<h2>Upload transactions</h2>
+						<form
+							class="form-grid"
+							enctype="multipart/form-data"
+							method="post"
+							action={href("/api/finance/uploads")}
+							data-finance-upload="true"
+						>
+							<label>
+								File
+								<input
+									type="file"
+									name="file"
+									accept="application/pdf,application/zip,.pdf,.zip"
+									required
+								/>
+							</label>
+							<label>
+								Mode
+								<select name="mode">
+									<option value="auto" selected>
+										Auto
+									</option>
+									<option value="direct_llm">Direct LLM</option>
+									<option value="voyage_gate">Voyage gate</option>
+								</select>
+							</label>
+							<label>
+								Source
+								<select name="sourceKindHint">
+									<option value="">PDF</option>
+									<option value="statement">Statement</option>
+								</select>
+							</label>
+							<div class="actions">
+								<button type="submit">Upload</button>
+							</div>
+						</form>
+						<h2>Upload runs</h2>
+						<table>
+							<thead>
+								<tr>
+									<th>File</th>
+									<th>Status</th>
+									<th>Files</th>
+									<th>Selected pages</th>
+									<th>Mode</th>
+									<th>Bytes</th>
+									<th>Artifact/import</th>
+									<th>Updated</th>
+									<th>Error</th>
+									<th>Details</th>
+								</tr>
+							</thead>
+							<tbody>
+								{data.uploadRuns.map((row) => (
+									<tr key={row.id}>
+										<td>{row.originalFilename}</td>
+										<td>{row.status}</td>
+										<td>{String(row.fileCount)}</td>
+										<td>{String(row.selectedPageCount)}</td>
+										<td>{row.mode}</td>
+										<td>{String(row.totalBytes)}</td>
+										<td>
+											{row.artifactSha256?.slice(0, 12) ?? "n/a"}
+											{row.importRunId
+												? ` / ${row.importRunId.slice(0, 8)}`
+												: ""}
+										</td>
+										<td>{row.updatedAt}</td>
+										<td>
+											{row.status === "failed" || row.status === "needs_review"
+												? String(row.error?.reason ?? row.error?.message ?? "")
+												: ""}
+										</td>
+										<td>
+											<details
+												class="drawer"
+												data-zmail-state-key={`finance-upload:${row.id}`}
+											>
+												<summary>Open</summary>
+												<JsonBlock value={row} />
+											</details>
+										</td>
+									</tr>
+								))}
+								{data.uploadRuns.length === 0 ? (
+									<tr>
+										<td colspan={10}>No upload runs.</td>
+									</tr>
+								) : null}
+							</tbody>
+						</table>
 						<h2>Imported documents</h2>
 						<table>
 							<thead>
@@ -2594,7 +2717,10 @@ export function renderFinanceIslandMap(
 										</td>
 										<td>{String(row.taxYear ?? "n/a")}</td>
 										<td>
-											<details class="drawer">
+											<details
+												class="drawer"
+												data-zmail-state-key={`finance-import-document:${row.id}`}
+											>
 												<summary>Open</summary>
 												<JsonBlock value={row} />
 											</details>
@@ -2627,7 +2753,10 @@ export function renderFinanceIslandMap(
 										<td>{row.counterparty ?? row.description ?? "n/a"}</td>
 										<td>{row.amountValue ?? "n/a"}</td>
 										<td>
-											<details class="drawer">
+											<details
+												class="drawer"
+												data-zmail-state-key={`finance-import-transaction:${row.id}`}
+											>
 												<summary>Open</summary>
 												<JsonBlock value={row} />
 											</details>
@@ -2646,6 +2775,104 @@ export function renderFinanceIslandMap(
 
 				{activeTab === "mappings" ? (
 					<>
+						<h2>Mapping candidates</h2>
+						<table>
+							<thead>
+								<tr>
+									<th>Confidence</th>
+									<th>Impact</th>
+									<th>Posting</th>
+									<th>Status</th>
+									<th>Evidence</th>
+									<th>Action</th>
+								</tr>
+							</thead>
+							<tbody>
+								{mappingSuggestions.map((row) => {
+									const suggestion = row.suggestion as unknown as Record<
+										string,
+										unknown
+									>;
+									const impact = isRecord(suggestion.impact)
+										? suggestion.impact
+										: {};
+									const mapping = isRecord(suggestion.mapping)
+										? suggestion.mapping
+										: {};
+									const evidence = isRecord(suggestion.evidence)
+										? suggestion.evidence
+										: {};
+									const sampleMessageIds = Array.isArray(
+										evidence.sampleMessageIds,
+									)
+										? evidence.sampleMessageIds.map(String).slice(0, 4)
+										: [];
+									const autoApplyEligible =
+										suggestion.autoApplyEligible === true;
+									return (
+										<tr key={row.id}>
+											<td>{percent(row.confidence)}</td>
+											<td>
+												{String(impact.rowCount ?? 0)} rows,{" "}
+												{String(impact.readyUnlockEstimate ?? 0)} ready unlock
+											</td>
+											<td>
+												<div class="stack">
+													<span>{String(mapping.debitAccount ?? "n/a")}</span>
+													<span>{String(mapping.creditAccount ?? "n/a")}</span>
+												</div>
+											</td>
+											<td>
+												{row.status}
+												{autoApplyEligible ? " / auto" : " / review"}
+											</td>
+											<td>
+												<div class="stack">
+													<span>
+														{Array.isArray(evidence.senderDomains)
+															? evidence.senderDomains.map(String).join(", ")
+															: "no domain"}
+													</span>
+													<span>
+														{sampleMessageIds.map((messageId, index) => (
+															<>
+																{index > 0 ? ", " : ""}
+																<a href={href(`/messages/${messageId}`)}>
+																	{messageId}
+																</a>
+															</>
+														))}
+													</span>
+													<details
+														class="drawer"
+														data-zmail-state-key={`mapping-candidate:${row.id}`}
+													>
+														<summary>Details</summary>
+														<JsonBlock value={row} />
+													</details>
+												</div>
+											</td>
+											<td>
+												{row.status === "pending" ? (
+													<Button
+														label="Apply"
+														action={`/rpc/finance/mappings/suggestions/${row.id}/apply`}
+														variant="secondary"
+													/>
+												) : (
+													<span class="muted">n/a</span>
+												)}
+											</td>
+										</tr>
+									);
+								})}
+								{mappingSuggestions.length === 0 ? (
+									<tr>
+										<td colspan={6}>No mapping candidates.</td>
+									</tr>
+								) : null}
+							</tbody>
+						</table>
 						<h2>YAML-backed mapping editor</h2>
 						<form
 							class="stack"
@@ -2712,22 +2939,32 @@ export function renderFinanceIslandMap(
 									<th>Severity</th>
 									<th>Action</th>
 									<th>Reason</th>
+									<th>Details</th>
 								</tr>
 							</thead>
 							<tbody>
 								{data.reviewFindings.map((row) => (
-									<tr key={`${row.targetKind}:${row.targetId}`}>
+									<tr key={`${row.targetKind}:${row.targetId}:${row.action}`}>
 										<td>
 											{row.targetKind}:{row.targetId}
 										</td>
 										<td>{row.severity}</td>
 										<td>{row.action}</td>
 										<td>{row.reason}</td>
+										<td>
+											<details
+												class="drawer"
+												data-zmail-state-key={`review-finding:${row.targetKind}:${row.targetId}:${row.action}`}
+											>
+												<summary>Open</summary>
+												<JsonBlock value={row} />
+											</details>
+										</td>
 									</tr>
 								))}
 								{data.reviewFindings.length === 0 ? (
 									<tr>
-										<td colspan={4}>No review classifier findings.</td>
+										<td colspan={5}>No review classifier findings.</td>
 									</tr>
 								) : null}
 							</tbody>
@@ -2780,7 +3017,10 @@ export function renderFinanceIslandMap(
 										{data.exportHealth.latestExport.outDir}
 									</code>
 								</p>
-								<details class="drawer">
+								<details
+									class="drawer"
+									data-zmail-state-key={`finance-export-run:${data.exportHealth.latestExport.id}:manifest`}
+								>
 									<summary>Manifest</summary>
 									<JsonBlock value={data.exportRuns[0]?.package ?? null} />
 								</details>
@@ -2855,7 +3095,7 @@ export function renderFinanceIslandMap(
 							<tbody>
 								{data.taxReportRuns.map((row) => (
 									<tr key={row.id}>
-										<td>{row.status}</td>
+										<td>{taxRunStatusLabel(row.status)}</td>
 										<td>{row.reportKind}</td>
 										<td>
 											{String(row.year)}
@@ -2863,17 +3103,29 @@ export function renderFinanceIslandMap(
 										</td>
 										<td>{row.outDir || "pending"}</td>
 										<td>
-											{row.validation &&
-											typeof row.validation === "object" &&
-											"acceptedTotalsUseReadyOnly" in row.validation
-												? String(
-														(row.validation as Record<string, unknown>)
-															.acceptedTotalsUseReadyOnly,
-													)
-												: "pending"}
+											<div class="stack">
+												<span>
+													readiness blockers:{" "}
+													{String(readinessBlockerCount(row.manifest))}
+												</span>
+												<span>
+													ready totals:{" "}
+													{row.validation &&
+													typeof row.validation === "object" &&
+													"acceptedTotalsUseReadyOnly" in row.validation
+														? String(
+																(row.validation as Record<string, unknown>)
+																	.acceptedTotalsUseReadyOnly,
+															)
+														: "pending"}
+												</span>
+											</div>
 										</td>
 										<td>
-											<details class="drawer">
+											<details
+												class="drawer"
+												data-zmail-state-key={`tax-report-run:${row.id}`}
+											>
 												<summary>Open</summary>
 												<JsonBlock value={row} />
 											</details>
@@ -2976,7 +3228,10 @@ export function renderFinanceIslandMap(
 												: "pending"}
 										</td>
 										<td>
-											<details class="drawer">
+											<details
+												class="drawer"
+												data-zmail-state-key={`finance-export-run:${row.id}`}
+											>
 												<summary>Open</summary>
 												<JsonBlock value={row} />
 											</details>

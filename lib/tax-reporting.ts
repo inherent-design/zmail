@@ -186,6 +186,55 @@ function summarizeRows(rows: LedgerRow[]) {
 	};
 }
 
+function maxIsoValue(values: Array<string | null>) {
+	return values.reduce<string | null>((current, value) => {
+		if (!value) {
+			return current;
+		}
+		if (!current || value > current) {
+			return value;
+		}
+		return current;
+	}, null);
+}
+
+function rowMetadata(row: LedgerRow) {
+	return safeJsonParse<{
+		categoryPrimary?: string | null;
+		categorySecondary?: string | null;
+	}>(row.ledger_metadata_json, {});
+}
+
+function rowCategory(row: LedgerRow) {
+	return rowMetadata(row).categoryPrimary ?? "uncategorized";
+}
+
+function rowSubcategory(row: LedgerRow) {
+	return rowMetadata(row).categorySecondary ?? null;
+}
+
+function businessAmountMinor(row: LedgerRow) {
+	const amount = Math.abs(amountMinor(row));
+	if (row.book === "business") {
+		return amount;
+	}
+	if (row.book === "mixed" && row.business_use_percent !== null) {
+		return Math.round((amount * row.business_use_percent) / 100);
+	}
+	return 0;
+}
+
+function personalAmountMinor(row: LedgerRow) {
+	const amount = Math.abs(amountMinor(row));
+	if (row.book === "personal") {
+		return amount;
+	}
+	if (row.book === "mixed" && row.business_use_percent !== null) {
+		return Math.round((amount * (100 - row.business_use_percent)) / 100);
+	}
+	return 0;
+}
+
 function isAcceptedReportRow(row: LedgerRow) {
 	return (
 		row.status === "ready" &&
@@ -202,6 +251,256 @@ function isAcceptedReportRow(row: LedgerRow) {
 	);
 }
 
+function lineValue(
+	rows: LedgerRow[],
+	predicate: (row: LedgerRow) => boolean,
+	amountForRow: (row: LedgerRow) => number,
+) {
+	const selected = rows.filter(predicate);
+	return {
+		amountMinor: selected.reduce((sum, row) => sum + amountForRow(row), 0),
+		ledgerEntryIds: selected.map((row) => row.id),
+	};
+}
+
+function openJobSummary(rows: Array<{ kind: string; status: string }>) {
+	const counts = new Map<string, { queued: number; running: number }>();
+	for (const row of rows) {
+		const current = counts.get(row.kind) ?? { queued: 0, running: 0 };
+		if (row.status === "queued") {
+			current.queued += 1;
+		}
+		if (row.status === "running") {
+			current.running += 1;
+		}
+		counts.set(row.kind, current);
+	}
+	return [...counts.entries()].map(([kind, count]) => ({ kind, ...count }));
+}
+
+function readinessForPackage(input: {
+	periodRows: LedgerRow[];
+	accountMappingCount: number;
+	openJobs: Array<{ kind: string; status: string }>;
+}) {
+	const rows = input.periodRows.filter((row) => row.status !== "duplicate");
+	const missing = {
+		amount: rows.filter((row) => amountMinor(row) === 0 && !row.amount_value)
+			.length,
+		date: rows.filter((row) => ledgerDate(row) === "").length,
+		counterparty: rows.filter((row) => !row.counterparty).length,
+		mapping: rows.filter((row) => !row.account_mapping_key).length,
+		mixedAllocation: rows.filter(
+			(row) => row.book === "mixed" && row.business_use_percent === null,
+		).length,
+		nonCountableDirection: rows.filter(
+			(row) => !isCountableDirection(row.direction),
+		).length,
+	};
+	const statusCounts = {
+		ready: rows.filter((row) => row.status === "ready").length,
+		review: rows.filter((row) => row.status === "review").length,
+		blocked: rows.filter((row) => row.status === "blocked").length,
+		duplicate: input.periodRows.filter((row) => row.status === "duplicate")
+			.length,
+	};
+	const openJobsThatMayChangeTotals = openJobSummary(input.openJobs);
+	const blockers = [
+		...(missing.mapping > 0
+			? [`${missing.mapping} rows missing mappings`]
+			: []),
+		...(missing.amount > 0 ? [`${missing.amount} rows missing amount`] : []),
+		...(missing.date > 0 ? [`${missing.date} rows missing date`] : []),
+		...(missing.counterparty > 0
+			? [`${missing.counterparty} rows missing counterparty`]
+			: []),
+		...(missing.mixedAllocation > 0
+			? [`${missing.mixedAllocation} mixed rows missing allocation`]
+			: []),
+		...(missing.nonCountableDirection > 0
+			? [`${missing.nonCountableDirection} rows have non-countable direction`]
+			: []),
+		...(openJobsThatMayChangeTotals.length > 0
+			? ["open jobs may change finance results"]
+			: []),
+	];
+	return {
+		status: blockers.length > 0 ? "audit_only" : "ready",
+		statusCounts,
+		accountMappingCount: input.accountMappingCount,
+		missing,
+		openJobsThatMayChangeTotals,
+		blockers,
+	};
+}
+
+function isCountableDirection(direction: string) {
+	return direction === "income" || direction === "expense";
+}
+
+function buildScheduleC(rows: LedgerRow[]) {
+	const businessRows = rows.filter(
+		(row) => row.book === "business" || row.book === "mixed",
+	);
+	const isTaxesAndLicenses = (row: LedgerRow) =>
+		rowCategory(row) === "taxes" && rowSubcategory(row) !== "estimated_tax";
+	const expenseLine = (categories: string[], subcategories: string[] = []) =>
+		lineValue(
+			businessRows,
+			(row) =>
+				row.direction === "expense" &&
+				categories.includes(rowCategory(row)) &&
+				(subcategories.length === 0 ||
+					subcategories.includes(rowSubcategory(row) ?? "")),
+			businessAmountMinor,
+		);
+	const otherCategories = [
+		"software_services",
+		"subscriptions",
+		"banking_fees",
+		"education",
+	];
+	return {
+		lines: {
+			grossReceipts: lineValue(
+				businessRows,
+				(row) => row.direction === "income",
+				businessAmountMinor,
+			),
+			contractLabor: expenseLine(["payroll_contractors"], ["contractor"]),
+			wages: expenseLine(["payroll_contractors"], ["payroll"]),
+			insurance: expenseLine(["insurance"]),
+			taxesAndLicenses: lineValue(
+				businessRows,
+				(row) => row.direction === "expense" && isTaxesAndLicenses(row),
+				businessAmountMinor,
+			),
+			travel: expenseLine(["travel"]),
+			meals: expenseLine(["meals"]),
+			utilities: expenseLine(["utilities"]),
+			officeSupplies: lineValue(
+				businessRows,
+				(row) =>
+					row.direction === "expense" &&
+					(rowCategory(row) === "office_business" ||
+						(rowCategory(row) === "shopping" &&
+							rowSubcategory(row) === "supplies")),
+				businessAmountMinor,
+			),
+			otherExpenses: lineValue(
+				businessRows,
+				(row) =>
+					row.direction === "expense" &&
+					otherCategories.includes(rowCategory(row)),
+				businessAmountMinor,
+			),
+		},
+		otherExpenseDetails: otherCategories.map((category) => ({
+			category,
+			...lineValue(
+				businessRows,
+				(row) => row.direction === "expense" && rowCategory(row) === category,
+				businessAmountMinor,
+			),
+		})),
+	};
+}
+
+function buildScheduleA(rows: LedgerRow[]) {
+	const personalRows = rows.filter(
+		(row) => row.book === "personal" || row.book === "mixed",
+	);
+	return {
+		candidates: {
+			taxes: lineValue(
+				personalRows,
+				(row) => row.direction === "expense" && rowCategory(row) === "taxes",
+				personalAmountMinor,
+			),
+			donations: lineValue(
+				personalRows,
+				(row) =>
+					row.direction === "expense" && rowCategory(row) === "donations",
+				personalAmountMinor,
+			),
+			healthcare: lineValue(
+				personalRows,
+				(row) =>
+					row.direction === "expense" && rowCategory(row) === "healthcare",
+				personalAmountMinor,
+			),
+		},
+	};
+}
+
+function investmentDispositionRows(rows: LedgerRow[]) {
+	return rows.filter((row) => rowCategory(row) === "investments");
+}
+
+function buildFormValues(input: {
+	taxYear: number;
+	generatedAt: string;
+	readiness: ReturnType<typeof readinessForPackage>;
+	acceptedRows: LedgerRow[];
+	periodRows: LedgerRow[];
+}) {
+	const scheduleC = buildScheduleC(input.acceptedRows);
+	const scheduleCIncome = scheduleC.lines.grossReceipts.amountMinor;
+	const scheduleCExpenses = [
+		scheduleC.lines.contractLabor,
+		scheduleC.lines.wages,
+		scheduleC.lines.insurance,
+		scheduleC.lines.taxesAndLicenses,
+		scheduleC.lines.travel,
+		scheduleC.lines.meals,
+		scheduleC.lines.utilities,
+		scheduleC.lines.officeSupplies,
+		scheduleC.lines.otherExpenses,
+	].reduce((sum, line) => sum + line.amountMinor, 0);
+	const form8949Rows = investmentDispositionRows(input.periodRows);
+	return {
+		schemaVersion: "tax-form-values.v1",
+		taxYear: input.taxYear,
+		generatedAt: input.generatedAt,
+		readiness: input.readiness,
+		forms: {
+			scheduleC: {
+				lines: scheduleC.lines,
+				otherExpenseDetails: scheduleC.otherExpenseDetails,
+				netProfitMinor: scheduleCIncome - scheduleCExpenses,
+			},
+			scheduleSE: {
+				handoff: {
+					scheduleCNetProfitMinor: scheduleCIncome - scheduleCExpenses,
+					requiresOperatorReview: true,
+				},
+			},
+			scheduleA: buildScheduleA(input.acceptedRows),
+			form8949: {
+				candidates: form8949Rows.map((row) => ({
+					ledgerEntryId: row.id,
+					date: ledgerDate(row),
+					counterparty: row.counterparty,
+					amountMinor: amountMinor(row),
+					status: row.status,
+				})),
+			},
+		},
+		sourceLedgerEntryIds: input.acceptedRows.map((row) => row.id),
+		manualInputsRequired: [
+			"Confirm filing posture, entity treatment, accounting method, business code, and EIN needs.",
+			"Provide W-2, 1099, brokerage, payroll, and source statement coverage not already imported.",
+			"Review pending and blocked ledger rows before using accepted totals.",
+			"Provide home office, mileage, depreciation, inventory, and asset purchase inputs when applicable.",
+			...(form8949Rows.length > 0
+				? [
+						"Provide cost basis and holding periods for investment dispositions.",
+					]
+				: []),
+		],
+	};
+}
+
 function renderWorkpaper(input: {
 	title: string;
 	reportKind: TaxReportKind;
@@ -209,6 +508,7 @@ function renderWorkpaper(input: {
 	quarter?: number | null;
 	acceptedSummary: ReturnType<typeof summarizeRows>;
 	reviewRows: LedgerRow[];
+	readiness?: ReturnType<typeof readinessForPackage>;
 }) {
 	return [
 		`# ${input.title}`,
@@ -234,6 +534,121 @@ function renderWorkpaper(input: {
 			? "No ready rows exist for this package. Use review.csv and evidence.csv as the audit work queue."
 			: "Review rows are excluded from accepted totals.",
 		"",
+		...(input.readiness
+			? [
+					"## Readiness Gates",
+					"",
+					`- account mappings: ${input.readiness.accountMappingCount}`,
+					`- ready/review/blocked: ${input.readiness.statusCounts.ready}/${input.readiness.statusCounts.review}/${input.readiness.statusCounts.blocked}`,
+					`- missing mappings: ${input.readiness.missing.mapping}`,
+					`- missing amount/date/counterparty: ${input.readiness.missing.amount}/${input.readiness.missing.date}/${input.readiness.missing.counterparty}`,
+					`- non-countable directions: ${input.readiness.missing.nonCountableDirection}`,
+					"",
+					"## Manual Inputs",
+					"",
+					"- Confirm final filing posture and entity treatment.",
+					"- Reconcile source statements, 1099s, W-2s, brokerage forms, payroll, and payment processor records.",
+					"- Review pending mappings and blocked rows before relying on accepted totals.",
+					"",
+				]
+			: []),
+	].join("\n");
+}
+
+function renderLine(
+	label: string,
+	line: { amountMinor: number; ledgerEntryIds: string[] },
+) {
+	return `| ${label} | ${money(line.amountMinor)} | ${line.ledgerEntryIds.length} |`;
+}
+
+function renderScheduleCWorkpaper(
+	formValues: ReturnType<typeof buildFormValues>,
+) {
+	const lines = formValues.forms.scheduleC.lines;
+	return [
+		"# Schedule C Workpaper",
+		"",
+		"Candidate values use only `ready` business or mixed ledger rows.",
+		"",
+		"| Candidate line | Amount | Rows |",
+		"| --- | ---: | ---: |",
+		renderLine("Gross receipts", lines.grossReceipts),
+		renderLine("Contract labor", lines.contractLabor),
+		renderLine("Wages", lines.wages),
+		renderLine("Insurance", lines.insurance),
+		renderLine("Taxes and licenses", lines.taxesAndLicenses),
+		renderLine("Travel", lines.travel),
+		renderLine("Meals", lines.meals),
+		renderLine("Utilities", lines.utilities),
+		renderLine("Office and supplies", lines.officeSupplies),
+		renderLine("Other expenses", lines.otherExpenses),
+		"",
+		`Net candidate profit: ${money(formValues.forms.scheduleC.netProfitMinor)}`,
+		"",
+		"## Other Expense Detail",
+		"",
+		"| Category | Amount | Rows |",
+		"| --- | ---: | ---: |",
+		...formValues.forms.scheduleC.otherExpenseDetails.map((detail) =>
+			renderLine(detail.category, detail),
+		),
+		"",
+	].join("\n");
+}
+
+function renderScheduleSEWorkpaper(
+	formValues: ReturnType<typeof buildFormValues>,
+) {
+	return [
+		"# Schedule SE Workpaper",
+		"",
+		"Schedule SE values are handoff candidates from Schedule C workpaper output.",
+		"",
+		`Schedule C net profit candidate: ${money(
+			formValues.forms.scheduleSE.handoff.scheduleCNetProfitMinor,
+		)}`,
+		"",
+		"Manual review is required before filing use.",
+		"",
+	].join("\n");
+}
+
+function renderScheduleAWorkpaper(
+	formValues: ReturnType<typeof buildFormValues>,
+) {
+	const candidates = formValues.forms.scheduleA.candidates;
+	return [
+		"# Schedule A Workpaper",
+		"",
+		"Candidate values use only `ready` personal or mixed ledger rows.",
+		"",
+		"| Candidate bucket | Amount | Rows |",
+		"| --- | ---: | ---: |",
+		renderLine("Taxes", candidates.taxes),
+		renderLine("Donations", candidates.donations),
+		renderLine("Healthcare", candidates.healthcare),
+		"",
+	].join("\n");
+}
+
+function renderForm8949Workpaper(
+	formValues: ReturnType<typeof buildFormValues>,
+) {
+	return [
+		"# Form 8949 Workpaper",
+		"",
+		"Investment disposition candidates require cost basis and holding period review.",
+		"",
+		"| Ledger entry | Date | Counterparty | Amount | Status |",
+		"| --- | --- | --- | ---: | --- |",
+		...formValues.forms.form8949.candidates.map(
+			(row) =>
+				`| ${row.ledgerEntryId} | ${row.date ?? ""} | ${row.counterparty ?? ""} | ${money(
+					row.amountMinor ?? 0,
+				)} | ${row.status} |`,
+		),
+		"",
 	].join("\n");
 }
 
@@ -250,16 +665,42 @@ export async function generateTaxReportPackage(input: GenerateTaxPackageInput) {
 		outDir: input.outDir,
 	});
 	const db = getDb();
-	const ledgerRows = (
-		await db
-			.selectFrom("finance_ledger_entries")
-			.selectAll()
-			.orderBy("occurred_at", "asc")
-			.orderBy("posted_at", "asc")
-			.execute()
-	).filter((row) => belongsToReport(row, input));
+	const allLedgerRows = await db
+		.selectFrom("finance_ledger_entries")
+		.selectAll()
+		.orderBy("occurred_at", "asc")
+		.orderBy("posted_at", "asc")
+		.execute();
+	const periodRows = allLedgerRows.filter((row) =>
+		inSelectedPeriod(row, input),
+	);
+	const ledgerRows = periodRows.filter((row) => belongsToReport(row, input));
 	const acceptedRows = ledgerRows.filter(isAcceptedReportRow);
 	const reviewRows = ledgerRows.filter((row) => !isAcceptedReportRow(row));
+	const acceptedFormRows = periodRows.filter(isAcceptedReportRow);
+	const [accountMappingCount, openJobs] = await Promise.all([
+		db
+			.selectFrom("finance_account_mappings")
+			.select((eb) => eb.fn.countAll<number>().as("count"))
+			.executeTakeFirstOrThrow(),
+		db
+			.selectFrom("jobs")
+			.select(["kind", "status"])
+			.where("status", "in", ["queued", "running"])
+			.where("kind", "in", [
+				"classify_account_backlog",
+				"classify_root_messages",
+				"classify_finance_backlog",
+				"classify_finance_messages",
+				"classify_review_backlog",
+				"generate_finance_mapping_candidates",
+				"reconcile_registry_suggestions",
+				"import_operator_registry",
+				"rebuild_finance_knowledge",
+				"rebuild_finance_rollups",
+			])
+			.execute(),
+	]);
 	const sourceRows =
 		ledgerRows.length === 0
 			? []
@@ -284,13 +725,39 @@ export async function generateTaxReportPackage(input: GenerateTaxPackageInput) {
 
 	const acceptedSummary = summarizeRows(acceptedRows);
 	const reviewSummary = summarizeRows(reviewRows);
-	const status = acceptedRows.length === 0 ? "audit_only" : "complete";
+	const readiness = readinessForPackage({
+		periodRows,
+		accountMappingCount: Number(accountMappingCount.count),
+		openJobs,
+	});
+	const status =
+		readiness.blockers.length > 0 || acceptedRows.length === 0
+			? "audit_only"
+			: "complete";
+	const formValues = buildFormValues({
+		taxYear: input.year,
+		generatedAt,
+		readiness,
+		acceptedRows: acceptedFormRows,
+		periodRows,
+	});
+	const hasForm8949 = formValues.forms.form8949.candidates.length > 0;
 	const validation = {
 		acceptedTotalsUseReadyOnly: true,
 		noReadyRows: acceptedRows.length === 0,
 		reviewRowsExcludedFromAcceptedTotals: true,
 		rawRfc822Included: false,
 		fullAccountNumbersIncluded: false,
+	};
+	const snapshot = {
+		ledgerRowCount: allLedgerRows.length,
+		periodLedgerRowCount: periodRows.length,
+		acceptedLedgerRowCount: acceptedRows.length,
+		reviewLedgerRowCount: reviewRows.length,
+		ledgerUpdatedAtMax: maxIsoValue(
+			allLedgerRows.map((row) => row.updated_at ?? null),
+		),
+		openJobsAtGeneration: readiness.openJobsThatMayChangeTotals,
 	};
 	const manifest = {
 		schemaVersion: "tax-report-package.v1",
@@ -310,9 +777,16 @@ export async function generateTaxReportPackage(input: GenerateTaxPackageInput) {
 			evidenceCsv: "evidence.csv",
 			personalWorkpaper: "forms/personal-tax-workpaper.md",
 			businessWorkpaper: "forms/quarterly-business-workpaper.md",
+			formValues: "forms/form-values.json",
+			scheduleCWorkpaper: "forms/schedule-c-workpaper.md",
+			scheduleSEWorkpaper: "forms/schedule-se-workpaper.md",
+			scheduleAWorkpaper: "forms/schedule-a-workpaper.md",
+			form8949Workpaper: hasForm8949 ? "forms/form-8949-workpaper.md" : null,
 		},
 		acceptedSummary,
 		reviewSummary,
+		readiness,
+		snapshot,
 		validation,
 	};
 
@@ -329,6 +803,7 @@ export async function generateTaxReportPackage(input: GenerateTaxPackageInput) {
 			quarter: input.quarter,
 			acceptedSummary,
 			reviewRows,
+			readiness,
 		}),
 		"utf8",
 	);
@@ -413,6 +888,33 @@ export async function generateTaxReportPackage(input: GenerateTaxPackageInput) {
 		}),
 		"utf8",
 	);
+	writeFileSync(
+		resolve(outDir, "forms", "form-values.json"),
+		`${JSON.stringify(formValues, null, 2)}\n`,
+		"utf8",
+	);
+	writeFileSync(
+		resolve(outDir, "forms", "schedule-c-workpaper.md"),
+		renderScheduleCWorkpaper(formValues),
+		"utf8",
+	);
+	writeFileSync(
+		resolve(outDir, "forms", "schedule-se-workpaper.md"),
+		renderScheduleSEWorkpaper(formValues),
+		"utf8",
+	);
+	writeFileSync(
+		resolve(outDir, "forms", "schedule-a-workpaper.md"),
+		renderScheduleAWorkpaper(formValues),
+		"utf8",
+	);
+	if (hasForm8949) {
+		writeFileSync(
+			resolve(outDir, "forms", "form-8949-workpaper.md"),
+			renderForm8949Workpaper(formValues),
+			"utf8",
+		);
+	}
 
 	await db
 		.insertInto("tax_report_runs")

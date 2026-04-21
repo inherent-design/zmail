@@ -47,7 +47,7 @@ The finance page owns these islands:
 | ------ | ------- |
 | `finance.command-bar` | Actions, rebuild controls, and pipeline warnings. |
 | `finance.filters` | Committed URL filters for year, account, institution, owner identity, and source kind. |
-| `finance.lanes` | Finance-relevant lane state for finance LLM, review LLM, materialization, and export/report work. |
+| `finance.lanes` | Finance-relevant lane state for finance LLM, review LLM, materialization, export/report, and overseer work. |
 | `finance.summary` | KPI strip for inflow, outflow, net, transaction count, ready count, and review count. |
 | `finance.cashflow` | Monthly inflow, outflow, and net chart. |
 | `finance.categories` | Category inflow, outflow, net, and count chart plus table. |
@@ -56,7 +56,7 @@ The finance page owns these islands:
 | `finance.readiness` | Active readiness workbench tab. |
 | `finance.ledger` | Active ledger drilldown tab. |
 | `finance.imports` | Active imports tab for documents and imported transactions. |
-| `finance.mappings` | Active mapping editor tab. |
+| `finance.mappings` | Active mapping candidate table and YAML-backed mapping editor tab. |
 | `finance.review` | Active review classifier and ledger review tab. |
 | `finance.tax` | Active tax and business package tab. |
 | `finance.export-health` | Export runs, tax/report runs, validation status, and Beancount/Fava readiness. |
@@ -93,8 +93,11 @@ is disabled.
 - `exportHealth`: latest export status and ready, review, and blocked counts
 - `readiness`: status counts, missing-field counts, mapping coverage, open jobs,
   and classifier freshness
+- `registrySuggestions`: pending and applied registry suggestions, including
+  finance mapping candidates
 - `reviewFindings`: current review classifier heads for finance targets
-- `taxReportRuns`: package run status and manifest/validation data
+- `taxReportRuns`: package run status, readiness blocker counts through the
+  manifest, and manifest/validation data
 
 Cashflow buckets must preserve direction semantics:
 

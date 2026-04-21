@@ -5,6 +5,7 @@ const FINANCE_JOB_LANES = new Set([
 	"review_llm",
 	"materialize",
 	"export_report",
+	"overseer",
 ]);
 
 const STATUS_ISLANDS = ["finance.command-bar", "finance.lanes"];
@@ -107,6 +108,12 @@ export function actionRefreshIslands(target, tab = currentFinanceTab()) {
 	const rpc =
 		target.dataset.rpc ?? target.closest("form[data-rpc]")?.dataset.rpc ?? "";
 	if (rpc.includes("/finance/mappings/upsert")) {
+		return ["finance.mappings", "finance.readiness", "finance.lanes"];
+	}
+	if (
+		rpc.includes("/finance/mappings/generate") ||
+		rpc.includes("/finance/mappings/suggestions/")
+	) {
 		return ["finance.mappings", "finance.readiness", "finance.lanes"];
 	}
 	if (rpc.includes("/finance/tax/")) {
@@ -307,7 +314,10 @@ export function init(app) {
 		}
 		button.disabled = true;
 		try {
-			await app.postJson(button.dataset.rpc, {});
+			const payload = button.dataset.payload
+				? JSON.parse(button.dataset.payload)
+				: {};
+			await app.postJson(button.dataset.rpc, payload);
 			await app.refresh({ islands: actionRefreshIslands(button) });
 		} catch (error) {
 			window.alert(error instanceof Error ? error.message : String(error));
@@ -316,6 +326,43 @@ export function init(app) {
 	};
 	root.addEventListener("click", onClick);
 	const onSubmit = async (event) => {
+		const uploadForm = event.target.closest("form[data-finance-upload]");
+		if (uploadForm && root.contains(uploadForm)) {
+			event.preventDefault();
+			const submit = uploadForm.querySelector('button[type="submit"]');
+			if (submit) {
+				submit.disabled = true;
+			}
+			try {
+				const response = await fetch(uploadForm.action, {
+					method: uploadForm.method || "POST",
+					body: new FormData(uploadForm),
+				});
+				if (!response.ok) {
+					const payload = await response.json().catch(() => null);
+					throw new Error(
+						payload?.message ||
+							payload?.error ||
+							`Upload failed (${response.status})`,
+					);
+				}
+				uploadForm.reset();
+				await app.refresh({
+					islands: unique([
+						"finance.imports",
+						"finance.lanes",
+						"finance.command-bar",
+					]),
+				});
+			} catch (error) {
+				window.alert(error instanceof Error ? error.message : String(error));
+			} finally {
+				if (submit) {
+					submit.disabled = false;
+				}
+			}
+			return;
+		}
 		const form = event.target.closest("form[data-rpc]");
 		if (!form || !root.contains(form)) {
 			return;

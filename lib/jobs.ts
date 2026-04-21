@@ -11,11 +11,13 @@ import {
 
 export type JobKind =
 	| "rebuild_overseer"
+	| "generate_finance_mapping_candidates"
 	| "rebuild_finance_knowledge"
 	| "rebuild_finance_rollups"
 	| "import_operator_registry"
 	| "reconcile_registry_suggestions"
 	| "import_finance_artifact"
+	| "process_finance_upload"
 	| "export_finance_beancount"
 	| "generate_tax_personal_package"
 	| "generate_tax_business_quarter_package"
@@ -38,6 +40,16 @@ export type JobLane =
 	| "materialize"
 	| "export_report"
 	| "overseer";
+
+const ALL_JOB_LANES = [
+	"sync",
+	"root_llm",
+	"finance_llm",
+	"review_llm",
+	"materialize",
+	"export_report",
+	"overseer",
+] as const satisfies readonly JobLane[];
 
 export interface JobRecord {
 	id: string;
@@ -76,6 +88,7 @@ export function laneForJobKind(kind: JobKind): JobLane {
 			return "root_llm";
 		case "classify_finance_backlog":
 		case "classify_finance_messages":
+		case "process_finance_upload":
 			return "finance_llm";
 		case "classify_review_backlog":
 			return "review_llm";
@@ -83,6 +96,7 @@ export function laneForJobKind(kind: JobKind): JobLane {
 		case "generate_tax_personal_package":
 		case "generate_tax_business_quarter_package":
 			return "export_report";
+		case "generate_finance_mapping_candidates":
 		case "rebuild_overseer":
 			return "overseer";
 		case "rebuild_finance_knowledge":
@@ -114,6 +128,8 @@ function resourceLocksForJob(job: {
 		case "classify_finance_backlog":
 		case "classify_finance_messages":
 			return [`finance:${job.scope_id}`];
+		case "process_finance_upload":
+			return [`finance_upload:${job.scope_id}`];
 		case "classify_review_backlog":
 			return [`review:${job.scope_id}`];
 		case "rebuild_finance_knowledge":
@@ -126,6 +142,8 @@ function resourceLocksForJob(job: {
 		case "generate_tax_personal_package":
 		case "generate_tax_business_quarter_package":
 			return ["finance:export-report"];
+		case "generate_finance_mapping_candidates":
+			return ["finance:mapping-candidates"];
 		case "rebuild_overseer":
 			return [`overseer:${job.scope_id}`];
 		case "rebuild_category_assignments":
@@ -453,18 +471,26 @@ export function claimNextJob(input?: { claimOwner?: string }) {
 			return null;
 		}
 
-		const queued = sqlite
-			.prepare(
-				`
+		const queued = ALL_JOB_LANES.flatMap(
+			(lane) =>
+				sqlite
+					.prepare(
+						`
         SELECT *
         FROM jobs
         WHERE status = 'queued'
+          AND lane = ?
           AND (run_after_at IS NULL OR run_after_at <= ?)
         ORDER BY priority ASC, created_at ASC
-        LIMIT 100
+        LIMIT 25
         `,
-			)
-			.all(now.toISOString()) as JobRecord[];
+					)
+					.all(lane, now.toISOString()) as JobRecord[],
+		).sort(
+			(left, right) =>
+				left.priority - right.priority ||
+				left.created_at.localeCompare(right.created_at),
+		);
 
 		const row = queued.find((candidate) =>
 			isJobCompatibleWithRunning(candidate, running),

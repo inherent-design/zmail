@@ -232,6 +232,68 @@ describe("POST /api/finance/imports", () => {
 		});
 	});
 
+	it("accepts a PDF multipart upload and queues processing", async () => {
+		vi.doUnmock("#/server/actions");
+		vi.doUnmock("#/server/machine-auth");
+		process.env.ZMAIL_TEST_AUTH_ROLE = "org_operator";
+		const { app } = await import("#/server/index");
+		const form = new FormData();
+		form.set(
+			"file",
+			new File([Buffer.from("%PDF-1.4\n")], "statement.pdf", {
+				type: "application/pdf",
+			}),
+		);
+		form.set("mode", "auto");
+		form.set("sourceKindHint", "statement");
+
+		const response = await app.fetch(
+			new Request("http://localhost/api/finance/uploads", {
+				method: "POST",
+				body: form,
+			}),
+		);
+		const payload = (await response.json()) as {
+			ok: boolean;
+			status: string;
+			uploadId: string;
+			jobId: string;
+		};
+
+		expect(response.status).toBe(202);
+		expect(payload).toMatchObject({
+			ok: true,
+			status: "queued",
+			uploadId: expect.stringMatching(/^finup_/),
+			jobId: expect.any(String),
+		});
+
+		const { getDb } = await import("#/lib/db");
+		const db = getDb("org-test");
+		await expect(
+			db
+				.selectFrom("finance_import_uploads")
+				.select(["id", "status", "mode", "source_kind_hint"])
+				.where("id", "=", payload.uploadId)
+				.executeTakeFirstOrThrow(),
+		).resolves.toMatchObject({
+			status: "queued",
+			mode: "auto",
+			source_kind_hint: "statement",
+		});
+		await expect(
+			db
+				.selectFrom("jobs")
+				.select(["kind", "scope_id", "lane"])
+				.where("id", "=", payload.jobId)
+				.executeTakeFirstOrThrow(),
+		).resolves.toEqual({
+			kind: "process_finance_upload",
+			scope_id: payload.uploadId,
+			lane: "finance_llm",
+		});
+	});
+
 	it("serves the finance import api under the configured base path", async () => {
 		process.env.ZMAIL_BASE_PATH = "/zmail";
 		const queueImportFinanceArtifactCommand = vi.fn(async () => "job-import-2");

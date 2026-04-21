@@ -154,6 +154,24 @@ entity hints:
 - confidence is capped below auto-apply threshold at `0.8`
 - inserting any hint queues `reconcile_registry_suggestions`
 
+Finance mapping candidate generation uses:
+
+- `source_kind = "finance_mapping_candidates"`
+- `entity_kind = "finance_account_mapping"` for posting mappings
+- payload schema `finance-account-mapping-suggestion.v1`
+- candidate impact fields for affected ledger row ids, stable ledger canonical
+  keys, ready unlock estimate, and totals by direction
+- evidence fields for sender domains, counterparties, books, categories,
+  account evidence, and sample message ids
+- dedupe fields for cluster key, duplicate canonical keys, and confidence
+  reasons
+
+High-confidence finance account mapping suggestions at `confidence >= 0.95`
+write through `operator/registry/finance-account-mappings.yaml`, then queue
+operator registry import, finance backlog reclassification, finance knowledge
+rebuild, and finance rollup rebuild. Lower-confidence mapping suggestions stay
+pending until the operator applies or rejects them.
+
 Suggestion statuses:
 
 - `pending`

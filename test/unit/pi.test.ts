@@ -171,6 +171,44 @@ describe("pi", () => {
 		expect(streamSimple).toHaveBeenCalled();
 	});
 
+	it("sends multimodal user parts through piJsonParts", async () => {
+		const runtime = await createTestRuntime();
+		process.env.OPENAI_API_KEY = "api-key";
+
+		const pi = await runtime.importFresh<typeof import("#/lib/pi")>("#/lib/pi");
+		const result = await pi.piJsonParts({
+			schema: (await import("zod")).z.object({
+				value: (await import("zod")).z.string(),
+			}),
+			modelId: "gpt-5-mini",
+			systemPrompt: "system",
+			userParts: [
+				{ type: "text", text: "read image" },
+				{
+					type: "image",
+					data: Buffer.from("image").toString("base64"),
+					mimeType: "image/png",
+				},
+			],
+		});
+
+		expect(result.parsed).toEqual({ value: "ok" });
+		expect(streamSimple).toHaveBeenCalledWith(
+			expect.objectContaining({ id: "gpt-5-mini" }),
+			expect.objectContaining({
+				messages: [
+					expect.objectContaining({
+						content: [
+							{ type: "text", text: "read image" },
+							expect.objectContaining({ type: "image", mimeType: "image/png" }),
+						],
+					}),
+				],
+			}),
+			expect.any(Object),
+		);
+	});
+
 	it("resolves explicit backend preferences and reads stored subscriptions", async () => {
 		const runtime = await createTestRuntime();
 		const config =

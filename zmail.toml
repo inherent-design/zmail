@@ -13,14 +13,14 @@ force_org_layout = false
 enabled = true
 poll_ms = 1000
 live_heartbeat_ms = 30000
-max_job_concurrency = 4
+max_job_concurrency = 8
 
 [worker.lane_caps]
-sync = 1
-root_llm = 1
-finance_llm = 1
+sync = 2
+root_llm = 2
+finance_llm = 2
 review_llm = 1
-materialize = 1
+materialize = 2
 export_report = 1
 overseer = 1
 

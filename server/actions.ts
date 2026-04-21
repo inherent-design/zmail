@@ -1203,6 +1203,7 @@ export async function loadFinanceData(
 				mappingRows,
 				reviewFindingRows,
 				taxReportRows,
+				uploadRows,
 				laneProgress,
 			] = await Promise.all([
 				loadRegistryState(db, safeJsonParse),
@@ -1213,6 +1214,8 @@ export async function loadFinanceData(
 					"classify_review_backlog",
 					"rebuild_finance_knowledge",
 					"rebuild_finance_rollups",
+					"generate_finance_mapping_candidates",
+					"process_finance_upload",
 					"export_finance_beancount",
 					"generate_tax_personal_package",
 					"generate_tax_business_quarter_package",
@@ -1335,6 +1338,12 @@ export async function loadFinanceData(
 					.orderBy("created_at", "desc")
 					.limit(50)
 					.execute(),
+				db
+					.selectFrom("finance_import_uploads")
+					.selectAll()
+					.orderBy("updated_at", "desc")
+					.limit(50)
+					.execute(),
 				import("#/lib/job-lane-progress").then((module) =>
 					module.loadFinanceLaneProgress(),
 				),
@@ -1362,6 +1371,42 @@ export async function loadFinanceData(
 							.orderBy("primary_category", "asc")
 							.orderBy("secondary_category", "asc")
 							.execute();
+			const uploadIds = uploadRows.map((row) => row.id);
+			const [uploadFileRows, uploadSelectedPageRows] =
+				uploadIds.length > 0
+					? await Promise.all([
+							db
+								.selectFrom("finance_import_upload_files")
+								.select(["upload_id"])
+								.where("upload_id", "in", uploadIds)
+								.execute(),
+							db
+								.selectFrom("finance_import_upload_files")
+								.innerJoin(
+									"finance_import_upload_pages",
+									"finance_import_upload_pages.upload_file_id",
+									"finance_import_upload_files.id",
+								)
+								.select(["finance_import_upload_files.upload_id as upload_id"])
+								.where("finance_import_upload_files.upload_id", "in", uploadIds)
+								.where("finance_import_upload_pages.selected_for_llm", "=", 1)
+								.execute(),
+						])
+					: [[], []];
+			const uploadFileCounts = new Map<string, number>();
+			for (const row of uploadFileRows) {
+				uploadFileCounts.set(
+					row.upload_id,
+					(uploadFileCounts.get(row.upload_id) ?? 0) + 1,
+				);
+			}
+			const uploadSelectedPageCounts = new Map<string, number>();
+			for (const row of uploadSelectedPageRows) {
+				uploadSelectedPageCounts.set(
+					row.upload_id,
+					(uploadSelectedPageCounts.get(row.upload_id) ?? 0) + 1,
+				);
+			}
 
 			const availableYears = Array.from(
 				new Set([
@@ -1888,6 +1933,22 @@ export async function loadFinanceData(
 					createdAt: row.created_at,
 					completedAt: row.completed_at,
 				})),
+				uploadRuns: uploadRows.map((row) => ({
+					id: row.id,
+					status: row.status,
+					mode: row.mode,
+					sourceKindHint: row.source_kind_hint,
+					uploadSha256: row.upload_sha256,
+					originalFilename: row.original_filename,
+					totalBytes: row.total_bytes,
+					fileCount: uploadFileCounts.get(row.id) ?? 0,
+					selectedPageCount: uploadSelectedPageCounts.get(row.id) ?? 0,
+					artifactSha256: row.artifact_sha256,
+					importRunId: row.import_run_id,
+					error: safeJsonParse<Record<string, unknown>>(row.error_json, {}),
+					createdAt: row.created_at,
+					updatedAt: row.updated_at,
+				})),
 				registrySuggestions: filteredSuggestionRows.map((row) => ({
 					id: row.id,
 					entityKind: row.entity_kind,
@@ -1908,6 +1969,7 @@ export async function loadFinanceData(
 			ledger_entries: result.ledgerPreview.length,
 			review_rows: result.reviewRows.length,
 			exports: result.exportRuns.length,
+			uploads: result.uploadRuns.length,
 			finance_heads: result.coverage.totalHeads,
 			rollups: result.rollups.length,
 			lanes: result.laneProgress.length,
@@ -2989,6 +3051,51 @@ export async function upsertFinanceMappingCommand(input: { mapping: unknown }) {
 	});
 }
 
+export async function queueGenerateFinanceMappingCandidatesCommand(
+	input: { year?: number | null } = {},
+) {
+	return runLoggedAction({
+		operation: "queueGenerateFinanceMappingCandidatesCommand",
+		kind: "command",
+		run: async () => {
+			await bootServer();
+			const { queueJobIdempotent } = await import("#/lib/jobs");
+			return queueJobIdempotent({
+				kind: "generate_finance_mapping_candidates",
+				scopeType: "system",
+				scopeId: "finance_mapping_candidates",
+				model: APP_CONFIG.fallbackModel,
+				promptVersion: "finance-mapping-overseer-v1",
+				meta: {
+					year: input.year ?? null,
+				},
+			});
+		},
+		summarize: (result) => ({
+			job_id: result ?? undefined,
+		}),
+	});
+}
+
+export async function applyFinanceMappingSuggestionCommand(input: {
+	suggestionId: string;
+}) {
+	return runLoggedAction({
+		operation: "applyFinanceMappingSuggestionCommand",
+		kind: "command",
+		run: async () => {
+			await bootServer();
+			const { applyFinanceAccountMappingSuggestion } = await import(
+				"#/lib/registry"
+			);
+			return applyFinanceAccountMappingSuggestion(input.suggestionId);
+		},
+		summarize: (result) => ({
+			mapping_key: result.mappingKey,
+		}),
+	});
+}
+
 export async function queueTaxPersonalPackageCommand(input: {
 	year: number;
 	outDir?: string | null;
@@ -3133,6 +3240,7 @@ export async function queueReconcileRegistrySuggestionsCommand() {
 
 export async function queueImportFinanceArtifactCommand(input: {
 	artifact: unknown;
+	uploadId?: string | null;
 }) {
 	return runLoggedAction({
 		operation: "queueImportFinanceArtifactCommand",
@@ -3148,11 +3256,31 @@ export async function queueImportFinanceArtifactCommand(input: {
 				kind: "import_finance_artifact",
 				scopeType: "system",
 				scopeId: artifactSha256,
-				meta: { artifact },
+				meta: { artifact, uploadId: input.uploadId ?? null },
 			});
 		},
 		summarize: (result) => ({
 			job_id: result,
+		}),
+	});
+}
+
+export async function queueProcessFinanceUploadCommand(input: {
+	uploadId: string;
+}) {
+	return runLoggedAction({
+		operation: "queueProcessFinanceUploadCommand",
+		kind: "command",
+		run: async () => {
+			await bootServer();
+			const { queueProcessFinanceUpload } = await import(
+				"#/lib/finance-upload"
+			);
+			return queueProcessFinanceUpload(input.uploadId);
+		},
+		summarize: (result) => ({
+			job_id: result,
+			upload_id: input.uploadId,
 		}),
 	});
 }

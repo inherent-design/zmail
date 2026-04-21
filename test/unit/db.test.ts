@@ -14,6 +14,7 @@ const ACTIVE_MIGRATIONS = [
 	{ name: "005_finance_v3_target.sql" },
 	{ name: "006_finance_v3_clean.sql" },
 	{ name: "007_review_lanes_tax_reports.sql" },
+	{ name: "008_finance_import_uploads.sql" },
 ];
 
 describe("db", () => {
@@ -51,6 +52,10 @@ describe("db", () => {
 		expect(tableNames).toContain("finance_event_candidates");
 		expect(tableNames).toContain("finance_document_candidates");
 		expect(tableNames).toContain("finance_event_evidence");
+		expect(tableNames).toContain("finance_import_uploads");
+		expect(tableNames).toContain("finance_import_upload_files");
+		expect(tableNames).toContain("finance_import_upload_pages");
+		expect(tableNames).toContain("finance_import_upload_extractions");
 
 		const messageColumns = dbModule
 			.getSqlite()

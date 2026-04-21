@@ -33,6 +33,34 @@ function financeLabel() {
 	});
 }
 
+function financeLedgerRow(input: { id: string; status: string }) {
+	return {
+		id: input.id,
+		canonical_key: `canonical:${input.id}`,
+		status: input.status,
+		source_authority: "email",
+		occurred_at: "2025-03-01",
+		posted_at: null,
+		cleared_at: null,
+		description: "GitHub monthly subscription",
+		counterparty: "GitHub",
+		direction: "expense",
+		amount_value: "10.00",
+		amount_minor: 1000,
+		currency: "USD",
+		book: "business",
+		business_use_percent: null,
+		debit_account: null,
+		credit_account: null,
+		account_mapping_key: null,
+		field_confidence_json: "{}",
+		ledger_metadata_json: "{}",
+		raw_payload_json: "{}",
+		created_at: "2025-03-01T00:00:00.000Z",
+		updated_at: "2025-03-01T00:00:00.000Z",
+	};
+}
+
 describe("worker finance jobs", () => {
 	it("imports the operator registry and queues finance backlogs per account", async () => {
 		const runtime = await createTestRuntime();
@@ -142,6 +170,146 @@ describe("worker finance jobs", () => {
 			events: 2,
 			documents: 1,
 			evidence: 3,
+		});
+	});
+
+	it("queues mapping generation after a finance knowledge snapshot with review rows", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		await db
+			.insertInto("finance_ledger_entries")
+			.values(financeLedgerRow({ id: "ledger-review-map", status: "review" }))
+			.execute();
+
+		vi.doMock("#/lib/finance-knowledge", () => ({
+			rebuildFinanceKnowledge: vi.fn(async () => ({
+				events: 1,
+				documents: 0,
+				evidence: 0,
+			})),
+		}));
+
+		const jobs =
+			await runtime.importFresh<typeof import("#/lib/jobs")>("#/lib/jobs");
+		const worker =
+			await runtime.importFresh<typeof import("#/lib/worker")>("#/lib/worker");
+		await jobs.queueJobIdempotent({
+			kind: "rebuild_finance_knowledge",
+			scopeType: "system",
+			scopeId: "finance",
+		});
+
+		expect(await worker.runWorkerIteration({ waitOnIdle: false })).toBe(true);
+
+		const mappingJob = await db
+			.selectFrom("jobs")
+			.select(["kind", "scope_type", "scope_id", "status", "meta_json"])
+			.where("kind", "=", "generate_finance_mapping_candidates")
+			.executeTakeFirstOrThrow();
+		expect(mappingJob).toMatchObject({
+			kind: "generate_finance_mapping_candidates",
+			scope_type: "system",
+			scope_id: "finance_mapping_candidates",
+			status: "queued",
+		});
+		expect(JSON.parse(mappingJob.meta_json ?? "{}")).toMatchObject({
+			year: null,
+			source: "finance_knowledge_snapshot",
+		});
+	});
+
+	it("does not queue mapping generation after a ready-only finance knowledge snapshot", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		await db
+			.insertInto("finance_ledger_entries")
+			.values(financeLedgerRow({ id: "ledger-ready-map", status: "ready" }))
+			.execute();
+
+		vi.doMock("#/lib/finance-knowledge", () => ({
+			rebuildFinanceKnowledge: vi.fn(async () => ({
+				events: 1,
+				documents: 0,
+				evidence: 0,
+			})),
+		}));
+
+		const jobs =
+			await runtime.importFresh<typeof import("#/lib/jobs")>("#/lib/jobs");
+		const worker =
+			await runtime.importFresh<typeof import("#/lib/worker")>("#/lib/worker");
+		await jobs.queueJobIdempotent({
+			kind: "rebuild_finance_knowledge",
+			scopeType: "system",
+			scopeId: "finance",
+		});
+
+		expect(await worker.runWorkerIteration({ waitOnIdle: false })).toBe(true);
+
+		const mappingJobs = await db
+			.selectFrom("jobs")
+			.select((eb) => eb.fn.countAll<number>().as("count"))
+			.where("kind", "=", "generate_finance_mapping_candidates")
+			.executeTakeFirstOrThrow();
+		expect(Number(mappingJobs.count)).toBe(0);
+	});
+
+	it("queues a trailing mapping generation when input watermark changes during the run", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		const loadFinanceMappingCandidateInputWatermark = vi
+			.fn()
+			.mockResolvedValueOnce("2025-03-01T00:00:00.000Z")
+			.mockResolvedValueOnce("2025-03-01T00:00:01.000Z");
+		vi.doMock("#/lib/finance-mapping-candidates", () => ({
+			loadFinanceMappingCandidateInputWatermark,
+			generateFinanceMappingCandidates: vi.fn(async () => ({
+				sourceRefId: "mapping-candidates:test",
+				ledgerRows: 1,
+				clusters: 1,
+				suggestions: 0,
+				mappingSuggestions: 0,
+				skippedLowConfidence: 0,
+				skippedDuplicates: 0,
+			})),
+		}));
+
+		const jobs =
+			await runtime.importFresh<typeof import("#/lib/jobs")>("#/lib/jobs");
+		const worker =
+			await runtime.importFresh<typeof import("#/lib/worker")>("#/lib/worker");
+		const jobId = await jobs.queueJobIdempotent({
+			kind: "generate_finance_mapping_candidates",
+			scopeType: "system",
+			scopeId: "finance_mapping_candidates",
+			meta: { year: null, source: "finance_knowledge_snapshot" },
+		});
+
+		expect(await worker.runWorkerIteration({ waitOnIdle: false })).toBe(true);
+
+		const finishedJob = await db
+			.selectFrom("jobs")
+			.select(["status", "meta_json"])
+			.where("id", "=", jobId)
+			.executeTakeFirstOrThrow();
+		const trailingJob = await db
+			.selectFrom("jobs")
+			.select(["status", "meta_json"])
+			.where("kind", "=", "generate_finance_mapping_candidates")
+			.where("status", "=", "queued")
+			.executeTakeFirstOrThrow();
+		expect(finishedJob.status).toBe("complete");
+		expect(JSON.parse(finishedJob.meta_json ?? "{}")).toMatchObject({
+			inputWatermark: "2025-03-01T00:00:00.000Z",
+			outputWatermark: "2025-03-01T00:00:01.000Z",
+			requeuedForChangedInputs: true,
+			source: "finance_knowledge_snapshot",
+		});
+		expect(JSON.parse(trailingJob.meta_json ?? "{}")).toMatchObject({
+			year: null,
+			source: "mapping_inputs_changed",
+			inputWatermark: "2025-03-01T00:00:00.000Z",
+			outputWatermark: "2025-03-01T00:00:01.000Z",
 		});
 	});
 

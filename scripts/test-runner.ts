@@ -126,6 +126,8 @@ export const UNIT_BUCKETS: UnitBucket[] = [
 		name: "domain-finance",
 		tests: [
 			"test/unit/beancount-export.test.ts",
+			"test/unit/finance-upload.test.ts",
+			"test/unit/finance-mapping-candidates.test.ts",
 			"test/unit/finance-intel.test.ts",
 			"test/unit/finance-knowledge.test.ts",
 			"test/unit/finance-v3-scripts.test.ts",
@@ -133,6 +135,8 @@ export const UNIT_BUCKETS: UnitBucket[] = [
 		],
 		coverageInclude: [
 			"lib/beancount-export.ts",
+			"lib/finance-upload.ts",
+			"lib/finance-mapping-candidates.ts",
 			"lib/finance-intel.ts",
 			"lib/finance-knowledge.ts",
 			"lib/tax-reporting.ts",

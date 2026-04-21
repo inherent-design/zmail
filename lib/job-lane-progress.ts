@@ -66,6 +66,7 @@ export const FINANCE_JOB_LANES = [
 	"review_llm",
 	"materialize",
 	"export_report",
+	"overseer",
 ] as const satisfies readonly JobLane[];
 
 const LANE_LABELS = {

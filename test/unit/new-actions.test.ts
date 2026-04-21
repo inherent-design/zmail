@@ -235,12 +235,21 @@ describe("new server actions", () => {
 		const importRegistry = await actions.queueImportOperatorRegistryCommand();
 		const rebuildKnowledge =
 			await actions.queueRebuildFinanceKnowledgeCommand();
+		const mappingCandidates =
+			await actions.queueGenerateFinanceMappingCandidatesCommand({
+				year: 2025,
+			});
 
 		const jobs = await dbModule
 			.getDb()
 			.selectFrom("jobs")
 			.select(["id", "kind", "scope_type", "scope_id"])
-			.where("id", "in", [financeBacklog, importRegistry, rebuildKnowledge])
+			.where("id", "in", [
+				financeBacklog,
+				importRegistry,
+				rebuildKnowledge,
+				mappingCandidates,
+			])
 			.orderBy("kind")
 			.execute();
 
@@ -250,6 +259,12 @@ describe("new server actions", () => {
 				kind: "classify_finance_backlog",
 				scope_type: "account",
 				scope_id: "acct-1",
+			},
+			{
+				id: mappingCandidates,
+				kind: "generate_finance_mapping_candidates",
+				scope_type: "system",
+				scope_id: "finance_mapping_candidates",
 			},
 			{
 				id: importRegistry,

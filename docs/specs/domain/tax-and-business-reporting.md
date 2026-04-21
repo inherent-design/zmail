@@ -103,12 +103,21 @@ ledger.csv
 review.csv
 evidence.csv
 forms/
-  ...
+  form-values.json
+  personal-tax-workpaper.md
+  quarterly-business-workpaper.md
+  schedule-c-workpaper.md
+  schedule-se-workpaper.md
+  schedule-a-workpaper.md
+  form-8949-workpaper.md
 ```
 
 `summary.md` is the human review entrypoint.
 
 `summary.json` is the machine-readable report manifest and aggregate payload.
+The manifest includes `readiness` gates and a `snapshot` object with total
+ledger row count, selected-period ledger row count, accepted row count, review
+row count, max ledger `updated_at`, and open finance jobs at generation.
 
 `ledger.csv` contains accepted `ready` rows only.
 
@@ -117,10 +126,15 @@ forms/
 `evidence.csv` links accepted and review rows back to zmail provenance without
 embedding raw message bodies or secret material.
 
-`forms/*.md` contains form-like schedule summaries. The personal annual package
-uses `forms/personal-tax-workpaper.md`. The inherent.design quarterly package
-uses `forms/quarterly-business-workpaper.md`. These summaries are workpapers
-for human review and must not claim to be filing-ready tax forms.
+`forms/form-values.json` contains candidate form values with schema
+`tax-form-values.v1`, readiness gates, source ledger entry ids, and manual
+inputs required. `forms/*.md` contains form-like schedule summaries. The
+personal annual package uses `forms/personal-tax-workpaper.md`. The
+inherent.design quarterly package uses
+`forms/quarterly-business-workpaper.md`. Annual packages also write Schedule C,
+Schedule SE, and Schedule A workpapers. Form 8949 workpapers are written only
+when investment disposition evidence exists. These summaries are workpapers for
+human review and must not claim to be filing-ready tax forms.
 
 ## Annual Personal Package
 
@@ -156,6 +170,7 @@ Accepted totals include:
 - business expenses by finance category
 - business software and service costs
 - payroll and contractor payments
+- taxes and licenses, excluding rows categorized as `estimated_tax`
 - transfers only when mapping and direction make them countable
 - mixed-use rows only by their explicit business allocation
 
@@ -248,6 +263,7 @@ Job records:
 
 Report run status lives in `tax_report_runs` with:
 
+- status `complete` or `audit_only`
 - selected year
 - selected quarter when applicable
 - business slug when applicable
@@ -263,7 +279,8 @@ same job kinds or call the same package generator used by worker jobs.
 
 - no `ready` rows: write only audit/review package output, not accepted totals
 - missing mappings: route rows to `review.csv` or blocker summaries
-- active jobs: mark package stale or refuse accepted total generation
+- active jobs: write the package as an `audit_only` snapshot with readiness
+  blockers
 - duplicate rows: retain suppressed provenance and keep duplicates out of
   accepted totals
 - unsafe evidence: omit unsafe fields and record redacted provenance
