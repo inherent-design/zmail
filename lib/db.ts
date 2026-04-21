@@ -502,6 +502,66 @@ interface FinanceImportTransactionsTable {
 	created_at: string;
 }
 
+interface FinanceImportUploadsTable {
+	id: string;
+	org_id: string;
+	status: string;
+	mode: string;
+	source_kind_hint: string | null;
+	upload_sha256: string;
+	original_filename: string;
+	stored_path: string;
+	total_bytes: number;
+	artifact_sha256: string | null;
+	import_run_id: string | null;
+	error_json: string;
+	created_at: string;
+	updated_at: string;
+}
+
+interface FinanceImportUploadFilesTable {
+	id: string;
+	upload_id: string;
+	logical_path: string;
+	stored_path: string;
+	mime_type: string;
+	sha256: string;
+	size_bytes: number;
+	page_count: number | null;
+	status: string;
+	created_at: string;
+}
+
+interface FinanceImportUploadPagesTable {
+	id: string;
+	upload_file_id: string;
+	page_number: number;
+	image_path: string | null;
+	image_sha256: string | null;
+	width: number | null;
+	height: number | null;
+	text_probe_chars: number;
+	voyage_model: string | null;
+	embedding_dimension: number | null;
+	embedding_sha256: string | null;
+	candidate_score: number | null;
+	candidate_reasons_json: string;
+	selected_for_llm: number;
+	created_at: string;
+}
+
+interface FinanceImportUploadExtractionsTable {
+	id: string;
+	upload_id: string;
+	model: string;
+	prompt_version: string;
+	input_page_refs_json: string;
+	output_artifact_sha256: string | null;
+	usage_json: string | null;
+	error_json: string | null;
+	created_at: string;
+}
+
 interface RegistrySuggestionsTable {
 	id: string;
 	entity_kind: string;
@@ -723,6 +783,10 @@ export interface DB {
 	finance_import_runs: FinanceImportRunsTable;
 	finance_import_documents: FinanceImportDocumentsTable;
 	finance_import_transactions: FinanceImportTransactionsTable;
+	finance_import_uploads: FinanceImportUploadsTable;
+	finance_import_upload_files: FinanceImportUploadFilesTable;
+	finance_import_upload_pages: FinanceImportUploadPagesTable;
+	finance_import_upload_extractions: FinanceImportUploadExtractionsTable;
 	registry_suggestions: RegistrySuggestionsTable;
 	finance_yearly_rollups: FinanceYearlyRollupsTable;
 	finance_yearly_subcategory_rollups: FinanceYearlySubcategoryRollupsTable;
@@ -770,6 +834,10 @@ const REQUIRED_BASELINE_TABLES = [
 	"finance_import_runs",
 	"finance_import_documents",
 	"finance_import_transactions",
+	"finance_import_uploads",
+	"finance_import_upload_files",
+	"finance_import_upload_pages",
+	"finance_import_upload_extractions",
 	"registry_suggestions",
 	"finance_yearly_rollups",
 	"finance_yearly_subcategory_rollups",

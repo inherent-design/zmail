@@ -217,6 +217,14 @@ export async function getPiStatus() {
 	};
 }
 
+export type PiUserPart =
+	| { type: "text"; text: string }
+	| {
+			type: "image";
+			data: string;
+			mimeType: "image/png" | "image/jpeg" | "image/webp";
+	  };
+
 export async function piJson<T>(input: {
 	schema: z.ZodType<T>;
 	modelId?: string;
@@ -258,6 +266,162 @@ export async function piJson<T>(input: {
 									{
 										role: "user",
 										content: input.userPrompt,
+										timestamp: Date.now(),
+									},
+								],
+							},
+							{
+								apiKey: runtime.apiKey,
+								transport: "sse",
+							},
+						);
+
+						let streamedText = "";
+						for await (const event of stream) {
+							if (event.type === "text_delta") {
+								streamedText += event.delta;
+								continue;
+							}
+							if (event.type === "text_end" && streamedText.length === 0) {
+								streamedText += event.content;
+							}
+						}
+
+						const message = await stream.result();
+						const candidates = Array.from(
+							new Set(
+								[streamedText, extractAssistantText(message)]
+									.map((value) => value.trim())
+									.filter((value) => value.length > 0),
+							),
+						);
+
+						if (candidates.length === 0) {
+							trace.info("pi.empty_response", {
+								outcome: "empty_response",
+								backend: runtime.backend,
+								model: model.id,
+								attempt: attempt + 1,
+								streamed_length: streamedText.length,
+							});
+							throw new Error("Empty assistant response");
+						}
+
+						let parsed: T | null = null;
+						let assistantText = "";
+						let parseError: unknown = null;
+						for (const candidate of candidates) {
+							try {
+								parsed = input.schema.parse(
+									JSON.parse(normalizeJsonText(candidate)),
+								);
+								assistantText = candidate;
+								parseError = null;
+								break;
+							} catch (error) {
+								trace.info("pi.parse_failure", {
+									outcome: "parse_failure",
+									backend: runtime.backend,
+									model: model.id,
+									attempt: attempt + 1,
+									candidate_length: candidate.length,
+									error_message:
+										error instanceof Error ? error.message : String(error),
+								});
+								parseError = error;
+							}
+						}
+
+						if (!parsed) {
+							throw parseError instanceof Error
+								? parseError
+								: new Error(String(parseError));
+						}
+
+						trace.complete("pi.request.complete", {
+							backend: runtime.backend,
+							model: message.model,
+						});
+						return {
+							backend: runtime.backend,
+							modelId: message.model,
+							parsed,
+							rawText: assistantText,
+							usage: message.usage ?? null,
+						};
+					} catch (error) {
+						lastError = error;
+						trace.info("pi.retry", {
+							outcome: "retry",
+							backend: runtime.backend,
+							model: model.id,
+							attempt: attempt + 1,
+							error_message:
+								error instanceof Error ? error.message : String(error),
+						});
+						if (attempt < 4) {
+							await new Promise((resolveDelay) => {
+								setTimeout(resolveDelay, 250);
+							});
+						}
+					}
+				}
+			}
+		} catch (error) {
+			lastError = error;
+		}
+	}
+
+	const finalError =
+		lastError instanceof Error ? lastError : new Error(String(lastError));
+	trace.fail("pi.request.failed", finalError);
+	throw finalError;
+}
+
+export async function piJsonParts<T>(input: {
+	schema: z.ZodType<T>;
+	modelId?: string;
+	systemPrompt: string;
+	userParts: PiUserPart[];
+}) {
+	const trace = startTrace({
+		kind: "pi",
+		operation: "pi_json_parts",
+		requested_model: input.modelId ?? APP_CONFIG.classifierModel,
+	});
+	trace.info("pi.request.start", {
+		part_count: input.userParts.length,
+		image_count: input.userParts.filter((part) => part.type === "image").length,
+	});
+	let lastError: unknown = null;
+	for (const backend of backendOrder()) {
+		try {
+			const runtime = await resolveRuntimeForBackend(
+				backend,
+				trace.child({
+					kind: "pi",
+					operation: "resolve_backend",
+					backend,
+				}),
+			);
+			trace.info("pi.request.backend_selected", {
+				backend: runtime.backend,
+				provider_backend: runtime.providerBackend,
+			});
+			for (const model of modelCandidates(
+				runtime.providerBackend,
+				input.modelId ?? APP_CONFIG.classifierModel,
+			)) {
+				for (let attempt = 0; attempt < 5; attempt += 1) {
+					try {
+						const stream = streamSimple(
+							model,
+							{
+								systemPrompt: input.systemPrompt,
+								messages: [
+									{
+										role: "user",
+										content: input.userParts,
 										timestamp: Date.now(),
 									},
 								],

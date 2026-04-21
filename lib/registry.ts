@@ -13,6 +13,7 @@ import {
 	type FinanceIntelV3,
 	financeAccountMappingFileSchema,
 	financeAccountMappingSchema,
+	financeAccountMappingSuggestionSchema,
 	parseCurrentMessageLabel,
 	type RegistryFinancialAccount,
 	type RegistryIdentity,
@@ -990,6 +991,7 @@ export async function reconcileRegistrySuggestions() {
 		.execute();
 
 	let applied = 0;
+	let appliedFinanceAccountMappings = 0;
 	let pending = 0;
 	let superseded = 0;
 
@@ -1145,6 +1147,17 @@ export async function reconcileRegistrySuggestions() {
 						})
 						.execute();
 					break;
+				case "finance_account_mapping": {
+					const parsed =
+						financeAccountMappingSuggestionSchema.safeParse(payload);
+					if (!parsed.success) {
+						break;
+					}
+					const result = upsertFinanceAccountMappingYaml(parsed.data.mapping);
+					appliedRegistryId = result.mappingKey;
+					appliedFinanceAccountMappings += 1;
+					break;
+				}
 				default:
 					break;
 			}
@@ -1167,9 +1180,87 @@ export async function reconcileRegistrySuggestions() {
 		}
 	});
 
+	if (appliedFinanceAccountMappings > 0) {
+		await queueFinanceRegistryRefresh({
+			source: "registry_suggestion_reconcile",
+			appliedFinanceAccountMappings,
+		});
+	}
+
 	return {
 		applied,
+		appliedFinanceAccountMappings,
 		pending,
 		superseded,
 	};
+}
+
+async function queueFinanceRegistryRefresh(meta: Record<string, unknown>) {
+	await queueJobIdempotent({
+		kind: "import_operator_registry",
+		scopeType: "system",
+		scopeId: "operator_registry",
+		meta,
+	});
+	const db = getDb();
+	const accounts = await db.selectFrom("accounts").select(["id"]).execute();
+	for (const account of accounts) {
+		await queueJobIdempotent({
+			kind: "classify_finance_backlog",
+			scopeType: "account",
+			scopeId: account.id,
+			meta,
+		});
+	}
+	await queueJobIdempotent({
+		kind: "rebuild_finance_knowledge",
+		scopeType: "system",
+		scopeId: "finance",
+		meta,
+	});
+	await queueJobIdempotent({
+		kind: "rebuild_finance_rollups",
+		scopeType: "system",
+		scopeId: "finance_rollups",
+		meta,
+	});
+}
+
+export async function applyFinanceAccountMappingSuggestion(
+	suggestionId: string,
+) {
+	const db = getDb();
+	const suggestion = await db
+		.selectFrom("registry_suggestions")
+		.selectAll()
+		.where("id", "=", suggestionId)
+		.executeTakeFirst();
+	if (!suggestion) {
+		throw new Error("Finance account mapping suggestion not found.");
+	}
+	if (suggestion.entity_kind !== "finance_account_mapping") {
+		throw new Error("Suggestion is not a finance account mapping.");
+	}
+	if (suggestion.status !== "pending") {
+		throw new Error("Finance account mapping suggestion is not pending.");
+	}
+	const payload = financeAccountMappingSuggestionSchema.parse(
+		safeJsonParse(suggestion.suggestion_json, null),
+	);
+	const result = upsertFinanceAccountMappingYaml(payload.mapping);
+	await db
+		.updateTable("registry_suggestions")
+		.set({
+			status: "applied",
+			applied_registry_id: result.mappingKey,
+			updated_at: nowIso(),
+		})
+		.where("id", "=", suggestionId)
+		.execute();
+	await queueFinanceRegistryRefresh({
+		source: "manual_finance_mapping_suggestion_apply",
+		suggestionId,
+		mappingKey: result.mappingKey,
+	});
+	return result;
 }

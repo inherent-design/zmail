@@ -57,6 +57,7 @@ Active job kinds:
 - `export_finance_beancount`
 - `generate_tax_personal_package`
 - `generate_tax_business_quarter_package`
+- `generate_finance_mapping_candidates`
 - `rebuild_overseer`
 - `import_operator_registry`
 
@@ -78,12 +79,13 @@ Lane mapping:
 - `materialize`: registry import, registry suggestion reconcile, category
   assignments, finance knowledge, and finance rollups
 - `export_report`: Beancount export and tax/business package generation
-- `overseer`: overseer profile rebuild
+- `overseer`: overseer profile rebuild and finance mapping candidate generation
 
 Default worker config:
 
-- `worker.max_job_concurrency = 4`
-- each lane cap defaults to `1`
+- `worker.max_job_concurrency = 8`
+- default lane caps: sync `2`, root LLM `2`, finance LLM `2`, review LLM
+  `1`, materialize `2`, export/report `1`, overseer `1`
 - total cap is enforced per org worker
 - SQLite remains one DB per org with WAL and short write transactions
 
@@ -91,6 +93,9 @@ Default worker config:
 
 - workers claim queued jobs inside one SQLite transaction
 - candidate order is `priority asc, created_at asc`
+- claim selection must fetch bounded candidates per lane before sorting
+  compatible candidates, so a saturated root backlog cannot hide materialize,
+  export/report, or overseer work
 - claimed jobs receive a lease expiration time
 - long-running jobs renew their lease heartbeat
 - expired running jobs are requeued on org-worker startup
@@ -107,6 +112,7 @@ Static resource locks:
 - review LLM jobs: `review:<accountId>`
 - finance materialization: `finance:materialize`
 - export/report jobs: `finance:export-report`
+- finance mapping candidates: `finance:mapping-candidates`
 - overseer rebuilds: `overseer:<accountId>`
 
 Materialization may run while LLM jobs run. It must record an input watermark at
@@ -135,6 +141,15 @@ Examples:
 - finance export: `(kind=export_finance_beancount, scope_type=system, scope_id=exportRunId)`
 - tax/report package:
   `(kind=generate_tax_*_package, scope_type=system, scope_id=taxReportRunId)`
+- finance mapping candidates:
+  `(kind=generate_finance_mapping_candidates, scope_type=system, scope_id=finance_mapping_candidates)`
+
+Completed finance knowledge rebuilds queue finance mapping candidate generation
+when the materialized ledger snapshot has `review` or `blocked` rows. The
+mapping job records `meta.inputWatermark`, `meta.outputWatermark`,
+`meta.requeuedForChangedInputs`, and `meta.source`. If mapping inputs change
+during generation, the worker queues one trailing idempotent mapping job with
+the same system scope.
 
 The finance import queue scope must match the artifact dedup key:
 

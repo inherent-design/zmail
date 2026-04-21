@@ -324,14 +324,73 @@ describe("jobs", () => {
 			scopeType: "account",
 			scopeId: "acct-1",
 		});
-		await jobs.queueJob({
+		const secondId = await jobs.queueJob({
 			kind: "classify_root_messages",
 			scopeType: "account",
 			scopeId: "acct-2",
 		});
+		await jobs.queueJob({
+			kind: "classify_root_messages",
+			scopeType: "account",
+			scopeId: "acct-3",
+		});
 
 		expect(jobs.claimNextJob()?.id).toBe(firstId);
+		expect(jobs.claimNextJob()?.id).toBe(secondId);
 		expect(jobs.claimNextJob()).toBeNull();
+	});
+
+	it("claims non-root lane jobs when root backlog fills the queue window", async () => {
+		const runtime = await createTestRuntime();
+		await bootDb();
+		const jobs =
+			await runtime.importFresh<typeof import("#/lib/jobs")>("#/lib/jobs");
+
+		const runningRootId = await jobs.queueJob({
+			kind: "classify_account_backlog",
+			scopeType: "account",
+			scopeId: "acct-root-running",
+			priority: 1,
+		});
+		const secondRunningRootId = await jobs.queueJob({
+			kind: "classify_root_messages",
+			scopeType: "account",
+			scopeId: "acct-root-running-2",
+			priority: 1,
+		});
+		expect(jobs.claimNextJob()?.id).toBe(runningRootId);
+		expect(jobs.claimNextJob()?.id).toBe(secondRunningRootId);
+
+		for (let index = 0; index < 150; index += 1) {
+			await jobs.queueJob({
+				kind: "classify_root_messages",
+				scopeType: "account",
+				scopeId: `acct-root-${index}`,
+				priority: 1,
+			});
+		}
+		const materializeId = await jobs.queueJob({
+			kind: "rebuild_finance_knowledge",
+			scopeType: "system",
+			scopeId: "finance",
+			priority: 50,
+		});
+		const exportId = await jobs.queueJob({
+			kind: "export_finance_beancount",
+			scopeType: "system",
+			scopeId: "export-fairness",
+			priority: 60,
+		});
+		const overseerId = await jobs.queueJob({
+			kind: "generate_finance_mapping_candidates",
+			scopeType: "system",
+			scopeId: "finance_mapping_candidates",
+			priority: 70,
+		});
+
+		expect(jobs.claimNextJob()?.id).toBe(materializeId);
+		expect(jobs.claimNextJob()?.id).toBe(exportId);
+		expect(jobs.claimNextJob()?.id).toBe(overseerId);
 	});
 
 	it("treats non-Error values as non-duplicate job errors", async () => {

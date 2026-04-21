@@ -201,6 +201,58 @@ describe("island registry", () => {
 		expect(dom.window.document.activeElement).toBe(restoredTextarea);
 	});
 
+	it("restores finance details state by stable row keys across swaps", () => {
+		const dom = new JSDOM(
+			`<!DOCTYPE html>
+			<html>
+				<body>
+					<section data-zmail-island="finance.imports">
+						<details data-zmail-state-key="finance-import-document:doc-1"><summary>Doc 1</summary></details>
+						<details data-zmail-state-key="finance-import-transaction:tx-1"><summary>Tx 1</summary></details>
+					</section>
+				</body>
+			</html>`,
+			{ url: "http://localhost/finance?tab=imports" },
+		);
+		vi.stubGlobal("document", dom.window.document);
+		vi.stubGlobal("HTMLElement", dom.window.HTMLElement);
+		const root = dom.window.document.querySelector("[data-zmail-island]");
+		if (!root) {
+			throw new Error("root missing");
+		}
+		const transaction = root.querySelector(
+			'[data-zmail-state-key="finance-import-transaction:tx-1"]',
+		);
+		if (!(transaction instanceof dom.window.HTMLDetailsElement)) {
+			throw new Error("transaction details missing");
+		}
+		transaction.open = true;
+
+		const state = captureGenericState(root);
+		root.innerHTML = `
+			<details data-zmail-state-key="finance-import-transaction:tx-1"><summary>Tx 1</summary></details>
+			<details data-zmail-state-key="finance-import-document:doc-1"><summary>Doc 1</summary></details>
+		`;
+		restoreGenericState(root, state);
+
+		const restoredTransaction = root.querySelector(
+			'[data-zmail-state-key="finance-import-transaction:tx-1"]',
+		);
+		const restoredDocument = root.querySelector(
+			'[data-zmail-state-key="finance-import-document:doc-1"]',
+		);
+		expect(
+			restoredTransaction instanceof dom.window.HTMLDetailsElement
+				? restoredTransaction.open
+				: false,
+		).toBe(true);
+		expect(
+			restoredDocument instanceof dom.window.HTMLDetailsElement
+				? restoredDocument.open
+				: true,
+		).toBe(false);
+	});
+
 	it("maps account job events to account detail islands", async () => {
 		const { accountDetailIslandHints } = await import(
 			"#/public/client/pages/account-detail.js"

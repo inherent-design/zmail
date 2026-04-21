@@ -139,6 +139,8 @@ org data, runtime DB files, or operator artifacts.
 - `POST /rpc/reviews/:reviewId/resolve`
 - `POST /rpc/finance/registry/import`
 - `POST /rpc/finance/mappings/upsert`
+- `POST /rpc/finance/mappings/generate`
+- `POST /rpc/finance/mappings/suggestions/:suggestionId/apply`
 - `POST /rpc/finance/suggestions/reconcile`
 - `POST /rpc/finance/knowledge/rebuild`
 - `POST /rpc/finance/rollups/rebuild`
@@ -164,6 +166,11 @@ Finance repair/report RPC behavior:
 - `POST /rpc/finance/mappings/upsert` validates one mapping, writes it to
   `operator/registry/finance-account-mappings.yaml`, then queues registry import
   and finance rebuild jobs
+- `POST /rpc/finance/mappings/generate` queues
+  `generate_finance_mapping_candidates`; it does not patch ledger rows inline
+- `POST /rpc/finance/mappings/suggestions/:suggestionId/apply` applies one
+  pending mapping suggestion through YAML and then queues registry import and
+  finance rebuild jobs
 - tax/business package RPC routes create `tax_report_runs` rows and queue worker
   jobs; they do not generate packages inline
 

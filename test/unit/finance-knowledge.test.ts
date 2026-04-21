@@ -233,6 +233,94 @@ describe("finance knowledge", () => {
 		]);
 	});
 
+	it("links imported statement rows to matching email evidence without external ids", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		await seedMapping(db);
+		await seedFinanceMessage(db, {
+			messageId: "message-statement-email-match",
+			result: buildFinanceIntelV3(),
+		});
+		await db
+			.insertInto("finance_import_runs")
+			.values({
+				id: "import-run-statement-match",
+				source_kind: "statement",
+				source_file_path: "/tmp/statement.pdf",
+				source_file_sha256: "statement-sha",
+				filename: "statement.pdf",
+				artifact_sha256: "artifact-statement-sha",
+				extractor_runner: "test",
+				extractor_model: "fixture",
+				extractor_prompt_version: "finance-source-import.v2",
+				extracted_text_hash: null,
+				status: "imported",
+				raw_artifact_json: "{}",
+				imported_at: "2026-01-03T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("finance_import_transactions")
+			.values({
+				id: "import-tx-statement-match",
+				import_run_id: "import-run-statement-match",
+				source_document_ref: "stmt-1",
+				occurred_at: "2026-01-01",
+				posted_at: "2026-01-02",
+				amount_value: "42.00",
+				amount_minor: 4200,
+				currency: "USD",
+				direction: "expense",
+				description: "Billing import",
+				merchant_or_counterparty: "billing@example.com",
+				balance_value: null,
+				owner_identity_hint: "owner:business",
+				financial_account_hint: "acct:checking",
+				institution_hint: "inst:bank",
+				category_primary: "software_services",
+				category_secondary: "saas",
+				evidence_text: "Statement row.",
+				payload_json: "{}",
+				external_transaction_id: null,
+				cleared_at: null,
+				statement_row_id: "stmt-row-1",
+				row_index: 0,
+				account_mapping_key: "bank:checking",
+				book_hint: "business",
+				business_use_percent: null,
+				extraction_confidence: 0.99,
+				raw_row_payload_json: "{}",
+				row_provenance_json: "{}",
+				raw_payload_json: "{}",
+				created_at: "2026-01-03T00:00:00.000Z",
+			})
+			.execute();
+
+		const financeKnowledge = await runtime.importFresh<
+			typeof import("#/lib/finance-knowledge")
+		>("#/lib/finance-knowledge");
+		const result = await financeKnowledge.rebuildFinanceKnowledge();
+		const entry = await db
+			.selectFrom("finance_ledger_entries")
+			.select(["source_authority", "canonical_key"])
+			.executeTakeFirstOrThrow();
+		const sources = await db
+			.selectFrom("finance_ledger_entry_sources")
+			.select(["source_kind"])
+			.orderBy("source_kind", "asc")
+			.execute();
+
+		expect(result.entries).toBe(1);
+		expect(entry.source_authority).toBe("statement");
+		expect(entry.canonical_key).toBe(
+			"composite:business|acct:checking|2026-01-01|42-00|USD|billing-example-com",
+		);
+		expect(sources.map((source) => source.source_kind)).toEqual([
+			"email",
+			"statement",
+		]);
+	});
+
 	it("blocks mixed rows without an allocation percent", async () => {
 		const runtime = await createTestRuntime();
 		const { db } = await bootDb({ seedDefaultAccount: true });

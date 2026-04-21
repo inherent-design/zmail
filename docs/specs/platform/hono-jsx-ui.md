@@ -160,6 +160,8 @@ DOM contract:
   `<script type="application/json" data-zmail-island-props="finance.cashflow">...</script>`
 - optional document state scope:
   `data-zmail-state-scope="<opaque-org-runtime-scope>"`
+- optional stable row state key:
+  `data-zmail-state-key="mapping-candidate:<id>"`
 
 State policy:
 
@@ -287,6 +289,8 @@ interface ScheduledRefreshOptions {
 - focused inputs, textareas, selects, contenteditable regions, and active forms
   defer scheduled refresh for their owning island until blur, focusout, or
   submit
+- non-collapsed browser text selection inside an island defers SSE refresh for
+  that island until selection collapse; other requested islands still refresh
 - unrelated scheduled islands may refresh while the active island is deferred
 - SSE-triggered island refreshes must not replace `#app-main`
 - route changes drop pending scheduled or deferred island refreshes

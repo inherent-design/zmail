@@ -681,4 +681,92 @@ describe("shell nav", () => {
 			vi.useRealTimers();
 		}
 	});
+
+	it("defers selected SSE island refresh while refreshing other requested islands", async () => {
+		vi.useFakeTimers();
+		try {
+			const dom = createFinanceDom();
+			vi.stubGlobal("DOMParser", dom.window.DOMParser);
+			const summary = dom.window.document.querySelector(
+				'[data-zmail-island="finance.summary"]',
+			);
+			if (!summary?.firstChild) {
+				throw new Error("summary island text missing");
+			}
+			const range = dom.window.document.createRange();
+			range.selectNodeContents(summary.firstChild);
+			const selection = dom.window.getSelection();
+			selection?.removeAllRanges();
+			selection?.addRange(range);
+
+			const fetchImpl = vi.fn(async (_url, init) => {
+				const headers =
+					((init as RequestInit | undefined)?.headers as
+						| Record<string, string>
+						| undefined) ?? {};
+				const islands = String(headers["X-Zmail-Islands"] ?? "");
+				if (islands === "finance.cashflow") {
+					return islandResponse({
+						page: "finance",
+						cursor: 15,
+						islands: ["finance.cashflow"],
+						body: '<section data-zmail-island="finance.cashflow">New chart</section>',
+					});
+				}
+				if (islands === "finance.summary") {
+					return islandResponse({
+						page: "finance",
+						cursor: 16,
+						islands: ["finance.summary"],
+						body: '<section data-zmail-island="finance.summary">New summary</section>',
+					});
+				}
+				throw new Error(`unexpected islands: ${islands}`);
+			});
+			const shellNav = createShellNav({
+				documentRef: dom.window.document,
+				windowRef: dom.window as unknown as Window,
+				fetchImpl: fetchImpl as typeof fetch,
+			});
+
+			await shellNav.scheduleRefresh({
+				islands: ["finance.summary", "finance.cashflow"],
+				immediate: true,
+				fallback: "none",
+				source: "sse",
+			});
+			await vi.advanceTimersByTimeAsync(0);
+
+			expect(fetchImpl).toHaveBeenCalledTimes(1);
+			expect(fetchImpl).toHaveBeenCalledWith(
+				"/finance",
+				expect.objectContaining({
+					headers: expect.objectContaining({
+						"X-Zmail-Islands": "finance.cashflow",
+					}),
+				}),
+			);
+			expect(dom.window.document.body.textContent).toContain("Old summary");
+			expect(dom.window.document.body.textContent).toContain("New chart");
+
+			selection?.removeAllRanges();
+			dom.window.document.dispatchEvent(
+				new dom.window.Event("selectionchange"),
+			);
+			await vi.advanceTimersByTimeAsync(0);
+
+			expect(fetchImpl).toHaveBeenCalledTimes(2);
+			expect(fetchImpl).toHaveBeenLastCalledWith(
+				"/finance",
+				expect.objectContaining({
+					headers: expect.objectContaining({
+						"X-Zmail-Islands": "finance.summary",
+					}),
+				}),
+			);
+			expect(dom.window.document.body.textContent).toContain("New summary");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });

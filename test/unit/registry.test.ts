@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -170,6 +170,255 @@ describe("registry", () => {
 			senderRules: 0,
 			accountMappings: 0,
 		});
+	});
+
+	it("auto-applies high-confidence finance mapping suggestions through YAML", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		const configModule =
+			await runtime.importFresh<typeof import("#/lib/config")>("#/lib/config");
+		const registryDir = configModule.registryDir();
+		await mkdir(registryDir, { recursive: true });
+		const payload = {
+			schemaVersion: "finance-account-mapping-suggestion.v1",
+			mapping: {
+				mappingKey: "business:expense:github",
+				book: "business",
+				match: { senderDomain: ["github.com"], book: ["business"] },
+				debitAccount: "Expenses:Business:SoftwareServices",
+				creditAccount: "Assets:Business:Checking",
+				currency: "USD",
+				confidence: 0.97,
+				notes: "Generated mapping.",
+			},
+			impact: {
+				ledgerEntryIds: ["ledger-map-1"],
+				rowCount: 1,
+				readyUnlockEstimate: 1,
+				totalMinorByDirection: {
+					expense: 1000,
+					income: 0,
+					both: 0,
+					neither: 0,
+					unknown: 0,
+				},
+			},
+			evidence: {
+				senderDomains: ["github.com"],
+				counterparties: ["GitHub"],
+				books: ["business"],
+				categories: ["software_services"],
+				accounts: [],
+				sampleMessageIds: [],
+			},
+			dedupe: {
+				clusterKey: "business:expense:software_services:github.com",
+				duplicateCanonicalKeys: [],
+				confidenceReasons: ["test"],
+			},
+			autoApplyEligible: true,
+		};
+		await db
+			.insertInto("registry_suggestions")
+			.values({
+				id: "suggestion-finance-mapping",
+				entity_kind: "finance_account_mapping",
+				canonical_key: "finance-mapping:github",
+				suggestion_json: JSON.stringify(payload),
+				source_kind: "test",
+				source_ref_id: "test",
+				confidence: 0.97,
+				status: "pending",
+				applied_registry_id: null,
+				created_at: "2025-03-01T00:00:00.000Z",
+				updated_at: "2025-03-01T00:00:00.000Z",
+			})
+			.execute();
+
+		const registry =
+			await runtime.importFresh<typeof import("#/lib/registry")>(
+				"#/lib/registry",
+			);
+		const result = await registry.reconcileRegistrySuggestions();
+		const suggestion = await db
+			.selectFrom("registry_suggestions")
+			.select(["status", "applied_registry_id"])
+			.where("id", "=", "suggestion-finance-mapping")
+			.executeTakeFirstOrThrow();
+		const yaml = await readFile(
+			join(registryDir, "finance-account-mappings.yaml"),
+			"utf8",
+		);
+		const jobs = await db
+			.selectFrom("jobs")
+			.select(["kind", "scope_id"])
+			.orderBy("kind", "asc")
+			.execute();
+
+		expect(result).toMatchObject({
+			applied: 1,
+			appliedFinanceAccountMappings: 1,
+		});
+		expect(suggestion).toEqual({
+			status: "applied",
+			applied_registry_id: "business:expense:github",
+		});
+		expect(yaml).toContain("mappingKey: business:expense:github");
+		expect(jobs.map((row) => row.kind)).toEqual(
+			expect.arrayContaining([
+				"import_operator_registry",
+				"classify_finance_backlog",
+				"rebuild_finance_knowledge",
+				"rebuild_finance_rollups",
+			]),
+		);
+	});
+
+	it("leaves low-confidence finance mapping suggestions pending", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		await db
+			.insertInto("registry_suggestions")
+			.values({
+				id: "suggestion-finance-mapping-low",
+				entity_kind: "finance_account_mapping",
+				canonical_key: "finance-mapping:low",
+				suggestion_json: JSON.stringify({
+					schemaVersion: "finance-account-mapping-suggestion.v1",
+					mapping: {
+						mappingKey: "business:expense:low",
+						book: "business",
+						match: { senderDomain: ["low.example"] },
+						debitAccount: "Expenses:Business:Uncategorized",
+						creditAccount: "Assets:Business:Checking",
+						currency: "USD",
+						confidence: 0.8,
+					},
+					impact: {
+						ledgerEntryIds: [],
+						rowCount: 1,
+						readyUnlockEstimate: 0,
+						totalMinorByDirection: {
+							expense: 0,
+							income: 0,
+							both: 0,
+							neither: 0,
+							unknown: 0,
+						},
+					},
+					evidence: {
+						senderDomains: [],
+						counterparties: [],
+						books: ["business"],
+						categories: [],
+						accounts: [],
+						sampleMessageIds: [],
+					},
+					dedupe: {
+						clusterKey: "low",
+						duplicateCanonicalKeys: [],
+						confidenceReasons: [],
+					},
+					autoApplyEligible: false,
+				}),
+				source_kind: "test",
+				source_ref_id: "test",
+				confidence: 0.8,
+				status: "pending",
+				applied_registry_id: null,
+				created_at: "2025-03-01T00:00:00.000Z",
+				updated_at: "2025-03-01T00:00:00.000Z",
+			})
+			.execute();
+
+		const registry =
+			await runtime.importFresh<typeof import("#/lib/registry")>(
+				"#/lib/registry",
+			);
+		const result = await registry.reconcileRegistrySuggestions();
+		const suggestion = await db
+			.selectFrom("registry_suggestions")
+			.select(["status", "applied_registry_id"])
+			.where("id", "=", "suggestion-finance-mapping-low")
+			.executeTakeFirstOrThrow();
+
+		expect(result).toMatchObject({
+			applied: 0,
+			pending: 1,
+		});
+		expect(suggestion).toEqual({
+			status: "pending",
+			applied_registry_id: null,
+		});
+	});
+
+	it("does not apply non-pending finance mapping suggestions manually", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		await db
+			.insertInto("registry_suggestions")
+			.values({
+				id: "suggestion-finance-mapping-applied",
+				entity_kind: "finance_account_mapping",
+				canonical_key: "finance-mapping:applied",
+				suggestion_json: JSON.stringify({
+					schemaVersion: "finance-account-mapping-suggestion.v1",
+					mapping: {
+						mappingKey: "business:expense:applied",
+						book: "business",
+						match: { senderDomain: ["applied.example"] },
+						debitAccount: "Expenses:Business:SoftwareServices",
+						creditAccount: "Assets:Business:Checking",
+						currency: "USD",
+						confidence: 0.97,
+					},
+					impact: {
+						ledgerEntryIds: [],
+						rowCount: 1,
+						readyUnlockEstimate: 0,
+						totalMinorByDirection: {
+							expense: 0,
+							income: 0,
+							both: 0,
+							neither: 0,
+							unknown: 0,
+						},
+					},
+					evidence: {
+						senderDomains: [],
+						counterparties: [],
+						books: ["business"],
+						categories: [],
+						accounts: [],
+						sampleMessageIds: [],
+					},
+					dedupe: {
+						clusterKey: "applied",
+						duplicateCanonicalKeys: [],
+						confidenceReasons: [],
+					},
+					autoApplyEligible: true,
+				}),
+				source_kind: "test",
+				source_ref_id: "test",
+				confidence: 0.97,
+				status: "applied",
+				applied_registry_id: "business:expense:applied",
+				created_at: "2025-03-01T00:00:00.000Z",
+				updated_at: "2025-03-01T00:00:00.000Z",
+			})
+			.execute();
+
+		const registry =
+			await runtime.importFresh<typeof import("#/lib/registry")>(
+				"#/lib/registry",
+			);
+
+		await expect(
+			registry.applyFinanceAccountMappingSuggestion(
+				"suggestion-finance-mapping-applied",
+			),
+		).rejects.toThrow("not pending");
 	});
 
 	it("imports registry yaml rows with optional last4 and domain omitted", async () => {

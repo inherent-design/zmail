@@ -35,6 +35,7 @@ import {
 	taxPersonalPackageInputSchema,
 } from "#/lib/schemas";
 import {
+	applyFinanceMappingSuggestionCommand,
 	beginGoogleConnectCommand,
 	beginGoogleReconnectCommand,
 	classifyOneNowCommand,
@@ -61,6 +62,7 @@ import {
 	queueAccountFullSyncCommand,
 	queueAccountReconcileCommand,
 	queueFinanceExportCommand,
+	queueGenerateFinanceMappingCandidatesCommand,
 	queueImportFinanceArtifactCommand,
 	queueImportOperatorRegistryCommand,
 	queueRebuildFinanceKnowledgeCommand,
@@ -160,6 +162,10 @@ const financeExportRequestSchema = z.object({
 		.optional(),
 	strict: z.boolean().optional(),
 	force: z.boolean().optional(),
+});
+
+const financeMappingGenerateInputSchema = z.object({
+	year: z.number().int().min(1900).max(2500).nullable().optional(),
 });
 
 function renderPage(
@@ -1313,6 +1319,34 @@ webApp.post(
 );
 
 webApp.post(
+	"/rpc/finance/mappings/generate",
+	browserSessionMiddleware,
+	activeBrowserOrgMiddleware,
+	requireOrgRole("org_operator"),
+	zValidator("json", financeMappingGenerateInputSchema),
+	async (c) => {
+		const body = c.req.valid("json");
+		const result = await queueGenerateFinanceMappingCandidatesCommand({
+			year: body.year ?? null,
+		});
+		return c.json(okJson("queued", { jobId: result }));
+	},
+);
+
+webApp.post(
+	"/rpc/finance/mappings/suggestions/:suggestionId/apply",
+	browserSessionMiddleware,
+	activeBrowserOrgMiddleware,
+	requireOrgRole("org_operator"),
+	async (c) => {
+		const result = await applyFinanceMappingSuggestionCommand({
+			suggestionId: c.req.param("suggestionId"),
+		});
+		return c.json(okJson("applied", result));
+	},
+);
+
+webApp.post(
 	"/rpc/finance/export",
 	browserSessionMiddleware,
 	activeBrowserOrgMiddleware,
@@ -1363,6 +1397,56 @@ webApp.post(
 		return c.json(okJson("queued", result));
 	},
 );
+
+webApp.post("/api/finance/uploads", financeImportAuth, async (c) => {
+	runMigrations();
+	let form: FormData;
+	try {
+		form = await c.req.formData();
+	} catch {
+		return c.json(errorJson("invalid_multipart"), 400);
+	}
+	const file = form.get("file");
+	if (
+		!file ||
+		typeof file !== "object" ||
+		!("arrayBuffer" in file) ||
+		!("name" in file)
+	) {
+		return c.json(errorJson("missing_file"), 422);
+	}
+	try {
+		const { createFinanceUpload } = await import("#/lib/finance-upload");
+		const result = await createFinanceUpload({
+			file: file as File,
+			mode:
+				typeof form.get("mode") === "string" ? String(form.get("mode")) : null,
+			sourceKindHint:
+				typeof form.get("sourceKindHint") === "string"
+					? String(form.get("sourceKindHint"))
+					: null,
+			retention:
+				typeof form.get("retention") === "string"
+					? String(form.get("retention"))
+					: null,
+		});
+		return c.json(
+			okJson(result.status, {
+				uploadId: result.uploadId,
+				jobId: result.jobId,
+			}),
+			result.status === "already_imported" ? 200 : 202,
+		);
+	} catch (error) {
+		return c.json(
+			errorJson(
+				"invalid_upload",
+				error instanceof Error ? error.message : String(error),
+			),
+			422,
+		);
+	}
+});
 
 webApp.post("/api/finance/imports", financeImportAuth, async (c) => {
 	runMigrations();

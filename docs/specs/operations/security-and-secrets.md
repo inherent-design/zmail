@@ -58,6 +58,7 @@ Allowed in encrypted repo-managed secret storage:
   development
 - WorkOS M2M client bootstrap credentials when finance import automation is
   enabled
+- Voyage API key for shared local finance upload page selection
 
 Canonical encrypted bootstrap source:
 
@@ -86,6 +87,10 @@ Canonical shared local WorkOS bootstrap keys are:
 - `WORKOS_COOKIE_PASSWORD`
 - optional `WORKOS_M2M_CLIENT_ID`
 - optional `WORKOS_M2M_CLIENT_SECRET`
+
+Canonical shared local finance upload key:
+
+- `VOYAGE_API_KEY`
 
 Not part of the current shared local runtime contract:
 

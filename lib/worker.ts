@@ -382,6 +382,14 @@ async function rebuildFinanceKnowledgeJob(job: JobRecord, trace: LogTrace) {
 		},
 	});
 	await queueFinanceRollupsRebuild();
+	if (await hasUnresolvedFinanceLedgerRows()) {
+		await queueFinanceMappingCandidatesGeneration({
+			year: null,
+			source: "finance_knowledge_snapshot",
+			inputWatermark,
+			outputWatermark,
+		});
+	}
 }
 
 async function rebuildFinanceRollupsJob(job: JobRecord, trace: LogTrace) {
@@ -630,6 +638,62 @@ async function reconcileRegistrySuggestionsJob(
 	}
 }
 
+async function generateFinanceMappingCandidatesJob(
+	job: JobRecord,
+	trace: LogTrace,
+) {
+	const jobTrace = trace.child({
+		kind: "worker",
+		operation: "generate_finance_mapping_candidates",
+		job_id: job.id,
+		job_kind: job.kind,
+	});
+	const meta = parseJobMeta<{
+		year?: number | null;
+		source?: string | null;
+	}>(job, {});
+	const {
+		generateFinanceMappingCandidates,
+		loadFinanceMappingCandidateInputWatermark,
+	} = await import("#/lib/finance-mapping-candidates");
+	const inputWatermark = await loadFinanceMappingCandidateInputWatermark();
+	const result = await generateFinanceMappingCandidates({
+		year: meta.year ?? null,
+	});
+	const outputWatermark = await loadFinanceMappingCandidateInputWatermark();
+	const requeuedForChangedInputs = Boolean(
+		outputWatermark && (!inputWatermark || outputWatermark > inputWatermark),
+	);
+	await completeJob({
+		id: job.id,
+		successCount: result.suggestions,
+		errorCount: 0,
+		meta: {
+			mode: "live",
+			processed: result.ledgerRows,
+			total: result.ledgerRows,
+			...result,
+			inputWatermark,
+			outputWatermark,
+			requeuedForChangedInputs,
+			source: meta.source ?? null,
+		},
+	});
+	jobTrace.complete("worker.generate_finance_mapping_candidates.complete", {
+		ledger_rows: result.ledgerRows,
+		clusters: result.clusters,
+		suggestions: result.suggestions,
+	});
+	if (requeuedForChangedInputs) {
+		await queueFinanceMappingCandidatesGeneration({
+			year: meta.year ?? null,
+			source: "mapping_inputs_changed",
+			inputWatermark,
+			outputWatermark,
+		});
+	}
+}
+
 async function rebuildCategoryAssignmentsJob(job: JobRecord, trace: LogTrace) {
 	const jobTrace = trace.child({
 		kind: "worker",
@@ -674,9 +738,20 @@ async function importFinanceArtifactJob(job: JobRecord, trace: LogTrace) {
 		job_id: job.id,
 		job_kind: job.kind,
 	});
-	const meta = parseJobMeta(job, { artifact: null as unknown });
+	const meta = parseJobMeta(job, {
+		artifact: null as unknown,
+		uploadId: null as string | null,
+	});
 	const { importFinanceArtifact } = await import("#/lib/finance-imports");
 	const result = await importFinanceArtifact(meta.artifact);
+	if (meta.uploadId) {
+		const { markFinanceUploadImported } = await import("#/lib/finance-upload");
+		await markFinanceUploadImported({
+			uploadId: meta.uploadId,
+			artifactSha256: result.artifactSha256,
+			importRunId: result.importRunId,
+		});
+	}
 	await completeJob({
 		id: job.id,
 		successCount: result.documents + result.transactions,
@@ -696,7 +771,30 @@ async function importFinanceArtifactJob(job: JobRecord, trace: LogTrace) {
 		registry_suggestions: result.registrySuggestions,
 	});
 	await queueRegistrySuggestionReconcile();
-	await queueFinanceRollupsRebuild();
+	await queueFinanceKnowledgeRebuild();
+}
+
+async function processFinanceUploadJob(job: JobRecord, trace: LogTrace) {
+	const jobTrace = trace.child({
+		kind: "worker",
+		operation: "process_finance_upload",
+		job_id: job.id,
+		job_kind: job.kind,
+	});
+	const meta = parseJobMeta<{ uploadId?: string }>(job, {});
+	const uploadId = meta.uploadId ?? job.scope_id;
+	const { processFinanceUpload } = await import("#/lib/finance-upload");
+	const result = await processFinanceUpload({ uploadId });
+	await completeJob({
+		id: job.id,
+		successCount: result.status === "extracted" ? 1 : 0,
+		errorCount: result.status === "needs_review" ? 1 : 0,
+		meta: {
+			mode: "live",
+			...result,
+		},
+	});
+	jobTrace.complete("worker.process_finance_upload.complete", result);
 }
 
 async function classifyReviewBacklogJob(job: JobRecord, trace: LogTrace) {
@@ -783,6 +881,27 @@ async function queueFinanceRollupsRebuild() {
 		scopeId: "finance_rollups",
 		model: APP_CONFIG.fallbackModel,
 		promptVersion: FINANCE_KNOWLEDGE_PROMPT_VERSION,
+	});
+}
+
+async function queueFinanceMappingCandidatesGeneration(meta: {
+	year?: number | null;
+	source?: string | null;
+	inputWatermark?: string | null;
+	outputWatermark?: string | null;
+}) {
+	await queueJobIdempotent({
+		kind: "generate_finance_mapping_candidates",
+		scopeType: "system",
+		scopeId: "finance_mapping_candidates",
+		model: APP_CONFIG.fallbackModel,
+		promptVersion: "finance-mapping-overseer-v1",
+		meta: {
+			year: meta.year ?? null,
+			source: meta.source ?? null,
+			inputWatermark: meta.inputWatermark ?? null,
+			outputWatermark: meta.outputWatermark ?? null,
+		},
 	});
 }
 
@@ -917,6 +1036,16 @@ async function hasReadyFinanceHeads() {
 		.where("status", "in", ["ready", "review"])
 		.executeTakeFirstOrThrow();
 	return Number(row.count) > 0;
+}
+
+async function hasUnresolvedFinanceLedgerRows() {
+	const row = await getDb()
+		.selectFrom("finance_ledger_entries")
+		.select(["id"])
+		.where("status", "in", ["review", "blocked"])
+		.limit(1)
+		.executeTakeFirst();
+	return Boolean(row);
 }
 
 function targetMessageIdsForJob(job: JobRecord) {
@@ -2002,6 +2131,9 @@ async function processJob(job: JobRecord, trace: LogTrace) {
 		case "rebuild_overseer":
 			await rebuildOverseerJob(job, trace);
 			return;
+		case "generate_finance_mapping_candidates":
+			await generateFinanceMappingCandidatesJob(job, trace);
+			return;
 		case "rebuild_finance_knowledge":
 			await rebuildFinanceKnowledgeJob(job, trace);
 			return;
@@ -2016,6 +2148,9 @@ async function processJob(job: JobRecord, trace: LogTrace) {
 			return;
 		case "import_finance_artifact":
 			await importFinanceArtifactJob(job, trace);
+			return;
+		case "process_finance_upload":
+			await processFinanceUploadJob(job, trace);
 			return;
 		case "export_finance_beancount":
 			await exportFinanceBeancountJob(job, trace);

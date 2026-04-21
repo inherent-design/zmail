@@ -109,11 +109,15 @@ function canonicalKey(input: {
 		}`;
 	}
 	if (input.composite.replace(/\|/g, "").length > 0) {
-		return `composite:${input.composite}`;
+		return compositeCanonicalKey(input.composite);
 	}
 	return `email:${input.messageId ?? "unknown"}:${
 		input.messageEvidenceKey ?? "unknown"
 	}`;
+}
+
+function compositeCanonicalKey(composite: string) {
+	return `composite:${composite}`;
 }
 
 function accountFromMapping(
@@ -434,6 +438,11 @@ export async function rebuildFinanceKnowledge() {
 			rowIndex: row.row_index,
 			composite,
 		});
+		const compositeKey = compositeCanonicalKey(composite);
+		const canonical_key =
+			!row.external_transaction_id && entries.has(compositeKey)
+				? compositeKey
+				: key;
 		const status = statusForDraft({
 			sourceConfidence: row.extraction_confidence,
 			ledgerStatus: null,
@@ -448,7 +457,7 @@ export async function rebuildFinanceKnowledge() {
 		});
 		const entry: LedgerEntryDraft = {
 			id: randomUUID(),
-			canonical_key: key,
+			canonical_key,
 			status,
 			source_authority: row.import_source_kind,
 			occurred_at: row.occurred_at,

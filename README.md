@@ -22,6 +22,40 @@ Read these first:
 - [Observability](./docs/specs/operations/observability.md)
 - [Migrations, cleanups, and scripts](./docs/specs/operations/migrations-cleanups-and-one-off-scripts.md)
 
+## Requirements
+
+zmail intentionally does not pin every system CLI in local `mise.toml`.
+Project-local `mise` tasks are the canonical command surface, but some binaries
+remain machine-level dependencies.
+
+Required for local development:
+
+- Node 24+
+- pnpm
+- sops + age for `secrets.enc.yaml`
+
+Required for finance PDF/ZIP upload processing:
+
+- Poppler command-line tools:
+  - `pdfinfo`
+  - `pdftotext`
+  - `pdftoppm`
+- `VOYAGE_API_KEY` when uploads use `voyage_gate` or `auto` routes scanned or
+  layout-heavy PDFs through Voyage multimodal embeddings
+
+Required for full finance export/Fava workflows:
+
+- Beancount CLI:
+  - `bean-check`
+- Fava CLI:
+  - `fava`
+- uv, used as a fallback launcher for Fava when `fava` is not already on PATH
+
+Optional local observability:
+
+- Docker CLI
+- Docker Compose
+
 ## vNext Architecture
 
 The target runtime is:
@@ -73,8 +107,10 @@ The services stack supplies this bootstrap env set:
   - `WORKOS_M2M_CLIENT_SECRET`
   - only needed when machine-token finance import automation is enabled
 
-This pass does not move inference credentials into the hosted bootstrap
-contract. `OPENAI_API_KEY` and `data/openai-subscription.json` remain separate.
+`VOYAGE_API_KEY` is required in the runtime environment when hosted finance
+uploads use Voyage multimodal page selection. Other inference credentials such
+as `OPENAI_API_KEY` and `data/openai-subscription.json` remain separate from
+the hosted bootstrap contract.
 
 The repo now includes a Node 24 container build in [`Dockerfile`](./Dockerfile)
 and keeps the runtime entrypoint equivalent to:

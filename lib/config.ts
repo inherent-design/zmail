@@ -159,3 +159,11 @@ export function requireOpenAiApiKey() {
 	}
 	return apiKey;
 }
+
+export function requireVoyageApiKey() {
+	const apiKey = process.env.VOYAGE_API_KEY;
+	if (!apiKey) {
+		throw new Error("VOYAGE_API_KEY is required for Voyage embeddings");
+	}
+	return apiKey;
+}

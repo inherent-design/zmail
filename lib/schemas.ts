@@ -142,6 +142,7 @@ export const financeOwnerSchema = z.enum([
 	"unknown",
 ]);
 export const financeBookScopeSchema = financeOwnerSchema;
+export type FinanceBookScope = z.infer<typeof financeBookScopeSchema>;
 
 export const rootPrimaryBucketSchema = z.enum([
 	"finance",
@@ -775,6 +776,41 @@ export const financeAccountMappingSchema = z.object({
 	notes: z.string().min(1).max(1000).nullable().default(null),
 });
 export type FinanceAccountMapping = z.infer<typeof financeAccountMappingSchema>;
+
+export const financeAccountMappingSuggestionSchema = z.object({
+	schemaVersion: z.literal("finance-account-mapping-suggestion.v1"),
+	mapping: financeAccountMappingSchema,
+	impact: z.object({
+		ledgerEntryIds: z.array(z.string().min(1)).default([]),
+		ledgerCanonicalKeys: z.array(z.string().min(1)).default([]),
+		rowCount: z.number().int().nonnegative(),
+		readyUnlockEstimate: z.number().int().nonnegative(),
+		totalMinorByDirection: z.object({
+			expense: z.number().int().default(0),
+			income: z.number().int().default(0),
+			both: z.number().int().default(0),
+			neither: z.number().int().default(0),
+			unknown: z.number().int().default(0),
+		}),
+	}),
+	evidence: z.object({
+		senderDomains: z.array(z.string().min(1)).default([]),
+		counterparties: z.array(z.string().min(1)).default([]),
+		books: z.array(financeBookScopeSchema).default([]),
+		categories: z.array(z.string().min(1)).default([]),
+		accounts: z.array(z.string().min(1)).default([]),
+		sampleMessageIds: z.array(z.string().min(1)).default([]),
+	}),
+	dedupe: z.object({
+		clusterKey: z.string().min(1).max(500),
+		duplicateCanonicalKeys: z.array(z.string().min(1)).default([]),
+		confidenceReasons: z.array(z.string().min(1)).default([]),
+	}),
+	autoApplyEligible: z.boolean(),
+});
+export type FinanceAccountMappingSuggestion = z.infer<
+	typeof financeAccountMappingSuggestionSchema
+>;
 
 export const registryIdentityFileSchema = z.array(registryIdentitySchema);
 export const registryInstitutionFileSchema = z.array(registryInstitutionSchema);

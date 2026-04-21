@@ -33,6 +33,7 @@ const ACTIVE_MIGRATIONS = [
 	{ name: "005_finance_v3_target.sql" },
 	{ name: "006_finance_v3_clean.sql" },
 	{ name: "007_review_lanes_tax_reports.sql" },
+	{ name: "008_finance_import_uploads.sql" },
 ];
 
 const loginOpenAICodex = vi.fn(async () => ({
