@@ -60,9 +60,364 @@ export type IslandDefinition = {
 	fragmentUrl: string;
 	topics: string[];
 	statePolicy: IslandStatePolicy;
+	fallback: "none" | "main";
 };
 
 export type IslandRenderMap = Record<string, unknown>;
+
+const DEFAULT_STATE_POLICY = {
+	semanticUrlKeys: [],
+	sessionKeys: ["scroll", "details"],
+	ephemeralKeys: ["hover", "brush", "crosshair", "pendingRpc"],
+	restoreOnSwap: true,
+	shareable: "none",
+} satisfies IslandStatePolicy;
+
+const FORM_STATE_POLICY = {
+	semanticUrlKeys: [],
+	sessionKeys: ["focus", "formValues", "selection", "scroll", "details"],
+	ephemeralKeys: ["hover", "pendingRpc"],
+	restoreOnSwap: true,
+	shareable: "none",
+} satisfies IslandStatePolicy;
+
+const CHART_STATE_POLICY = {
+	semanticUrlKeys: [
+		"year",
+		"accountId",
+		"institutionId",
+		"ownerIdentityId",
+		"sourceKind",
+	],
+	sessionKeys: ["chartZoom", "hiddenSeries", "scroll", "details"],
+	ephemeralKeys: ["hover", "brush", "crosshair", "pendingRpc"],
+	restoreOnSwap: true,
+	shareable: "committed",
+} satisfies IslandStatePolicy;
+
+const FINANCE_TAB_STATE_POLICY = {
+	semanticUrlKeys: [
+		"tab",
+		"year",
+		"accountId",
+		"institutionId",
+		"ownerIdentityId",
+		"sourceKind",
+		"status",
+		"book",
+		"category",
+		"mappingState",
+		"drilldown",
+	],
+	sessionKeys: ["tableSort", "expandedRow", "selectedRow", "scroll", "details"],
+	ephemeralKeys: ["hover", "pendingRpc"],
+	restoreOnSwap: true,
+	shareable: "committed",
+} satisfies IslandStatePolicy;
+
+const island = (
+	definition: Omit<IslandDefinition, "mode" | "statePolicy" | "fallback"> & {
+		mode?: IslandDefinition["mode"];
+		statePolicy?: IslandStatePolicy;
+		fallback?: IslandDefinition["fallback"];
+	},
+) =>
+	({
+		...definition,
+		mode: definition.mode ?? "server",
+		statePolicy: definition.statePolicy ?? DEFAULT_STATE_POLICY,
+		fallback: definition.fallback ?? "none",
+	}) satisfies IslandDefinition;
+
+export const ISLAND_DEFINITIONS = {
+	"home.hero": island({
+		id: "home.hero",
+		page: "home",
+		fragmentUrl: "/",
+		topics: [],
+	}),
+	"home.stats": island({
+		id: "home.stats",
+		page: "home",
+		fragmentUrl: "/",
+		topics: ["accounts", "jobs", "reviews"],
+	}),
+	"home.lanes": island({
+		id: "home.lanes",
+		page: "home",
+		fragmentUrl: "/",
+		topics: ["jobs"],
+	}),
+	"home.actions": island({
+		id: "home.actions",
+		page: "home",
+		fragmentUrl: "/",
+		topics: [],
+	}),
+	"accounts.summary": island({
+		id: "accounts.summary",
+		page: "accounts",
+		fragmentUrl: "/accounts",
+		topics: ["accounts", "jobs"],
+	}),
+	"accounts.list": island({
+		id: "accounts.list",
+		page: "accounts",
+		fragmentUrl: "/accounts",
+		topics: ["accounts", "jobs"],
+		statePolicy: FORM_STATE_POLICY,
+	}),
+	"accounts.actions": island({
+		id: "accounts.actions",
+		page: "accounts",
+		fragmentUrl: "/accounts",
+		topics: [],
+	}),
+	"account.header": island({
+		id: "account.header",
+		page: "account-detail",
+		fragmentUrl: "/accounts/:accountId",
+		topics: ["account:{accountId}"],
+	}),
+	"account.actions": island({
+		id: "account.actions",
+		page: "account-detail",
+		fragmentUrl: "/accounts/:accountId",
+		topics: ["account:{accountId}"],
+	}),
+	"account.mailbox-sync": island({
+		id: "account.mailbox-sync",
+		page: "account-detail",
+		fragmentUrl: "/accounts/:accountId",
+		topics: ["account:{accountId}"],
+	}),
+	"account.lanes": island({
+		id: "account.lanes",
+		page: "account-detail",
+		fragmentUrl: "/accounts/:accountId",
+		topics: ["account:{accountId}"],
+	}),
+	"account.stats": island({
+		id: "account.stats",
+		page: "account-detail",
+		fragmentUrl: "/accounts/:accountId",
+		topics: ["account:{accountId}"],
+	}),
+	"account.recent-jobs": island({
+		id: "account.recent-jobs",
+		page: "account-detail",
+		fragmentUrl: "/accounts/:accountId",
+		topics: ["account:{accountId}"],
+	}),
+	"message.header": island({
+		id: "message.header",
+		page: "message-detail",
+		fragmentUrl: "/messages/:messageId",
+		topics: ["message:{messageId}", "reviews"],
+	}),
+	"message.body": island({
+		id: "message.body",
+		page: "message-detail",
+		fragmentUrl: "/messages/:messageId",
+		topics: ["message:{messageId}"],
+		statePolicy: FORM_STATE_POLICY,
+	}),
+	"message.labels": island({
+		id: "message.labels",
+		page: "message-detail",
+		fragmentUrl: "/messages/:messageId",
+		topics: ["message:{messageId}", "reviews"],
+	}),
+	"message.finance": island({
+		id: "message.finance",
+		page: "message-detail",
+		fragmentUrl: "/messages/:messageId",
+		topics: ["message:{messageId}", "finance"],
+	}),
+	"message.reviews": island({
+		id: "message.reviews",
+		page: "message-detail",
+		fragmentUrl: "/messages/:messageId",
+		topics: ["message:{messageId}", "reviews"],
+	}),
+	"message.actions": island({
+		id: "message.actions",
+		page: "message-detail",
+		fragmentUrl: "/messages/:messageId",
+		topics: ["message:{messageId}", "reviews"],
+	}),
+	"review.queue": island({
+		id: "review.queue",
+		page: "review",
+		fragmentUrl: "/review",
+		topics: ["reviews"],
+		statePolicy: FORM_STATE_POLICY,
+	}),
+	"review.stats": island({
+		id: "review.stats",
+		page: "review",
+		fragmentUrl: "/review",
+		topics: ["reviews"],
+	}),
+	"review.actions": island({
+		id: "review.actions",
+		page: "review",
+		fragmentUrl: "/review",
+		topics: ["reviews"],
+	}),
+	"finance.command-bar": island({
+		id: "finance.command-bar",
+		page: "finance",
+		fragmentUrl: "/finance",
+		topics: ["finance", "jobs"],
+		statePolicy: FINANCE_TAB_STATE_POLICY,
+	}),
+	"finance.filters": island({
+		id: "finance.filters",
+		page: "finance",
+		fragmentUrl: "/finance",
+		topics: ["finance"],
+		statePolicy: FINANCE_TAB_STATE_POLICY,
+	}),
+	"finance.lanes": island({
+		id: "finance.lanes",
+		page: "finance",
+		fragmentUrl: "/finance",
+		topics: ["jobs"],
+	}),
+	"finance.summary": island({
+		id: "finance.summary",
+		page: "finance",
+		fragmentUrl: "/finance",
+		topics: ["finance"],
+		statePolicy: FINANCE_TAB_STATE_POLICY,
+	}),
+	"finance.cashflow": island({
+		id: "finance.cashflow",
+		page: "finance",
+		fragmentUrl: "/finance",
+		topics: ["finance"],
+		statePolicy: CHART_STATE_POLICY,
+	}),
+	"finance.categories": island({
+		id: "finance.categories",
+		page: "finance",
+		fragmentUrl: "/finance",
+		topics: ["finance"],
+		statePolicy: CHART_STATE_POLICY,
+	}),
+	"finance.subscriptions": island({
+		id: "finance.subscriptions",
+		page: "finance",
+		fragmentUrl: "/finance",
+		topics: ["finance"],
+		statePolicy: FINANCE_TAB_STATE_POLICY,
+	}),
+	"finance.overview.rollups": island({
+		id: "finance.overview.rollups",
+		page: "finance",
+		fragmentUrl: "/finance",
+		topics: ["finance", "jobs"],
+		statePolicy: FINANCE_TAB_STATE_POLICY,
+	}),
+	"finance.readiness": island({
+		id: "finance.readiness",
+		page: "finance",
+		fragmentUrl: "/finance",
+		topics: ["finance", "jobs", "reviews"],
+		statePolicy: FINANCE_TAB_STATE_POLICY,
+	}),
+	"finance.ledger": island({
+		id: "finance.ledger",
+		page: "finance",
+		fragmentUrl: "/finance",
+		topics: ["finance", "jobs"],
+		statePolicy: FINANCE_TAB_STATE_POLICY,
+	}),
+	"finance.imports": island({
+		id: "finance.imports",
+		page: "finance",
+		fragmentUrl: "/finance",
+		topics: ["finance", "jobs"],
+		statePolicy: FINANCE_TAB_STATE_POLICY,
+	}),
+	"finance.mappings": island({
+		id: "finance.mappings",
+		page: "finance",
+		fragmentUrl: "/finance",
+		topics: ["finance", "jobs"],
+		statePolicy: FORM_STATE_POLICY,
+	}),
+	"finance.review": island({
+		id: "finance.review",
+		page: "finance",
+		fragmentUrl: "/finance",
+		topics: ["finance", "reviews", "jobs"],
+		statePolicy: FINANCE_TAB_STATE_POLICY,
+	}),
+	"finance.tax": island({
+		id: "finance.tax",
+		page: "finance",
+		fragmentUrl: "/finance",
+		topics: ["finance", "jobs"],
+		statePolicy: FORM_STATE_POLICY,
+	}),
+	"finance.export-health": island({
+		id: "finance.export-health",
+		page: "finance",
+		fragmentUrl: "/finance",
+		topics: ["finance", "jobs"],
+		statePolicy: FORM_STATE_POLICY,
+	}),
+	"profiles.header": island({
+		id: "profiles.header",
+		page: "profiles",
+		fragmentUrl: "/profiles/:accountId",
+		topics: ["account:{accountId}", "finance", "jobs"],
+	}),
+	"profiles.summary": island({
+		id: "profiles.summary",
+		page: "profiles",
+		fragmentUrl: "/profiles/:accountId",
+		topics: ["account:{accountId}", "finance", "jobs"],
+	}),
+	"profiles.findings": island({
+		id: "profiles.findings",
+		page: "profiles",
+		fragmentUrl: "/profiles/:accountId",
+		topics: ["account:{accountId}", "finance", "jobs"],
+		statePolicy: DEFAULT_STATE_POLICY,
+	}),
+	"profiles.actions": island({
+		id: "profiles.actions",
+		page: "profiles",
+		fragmentUrl: "/profiles/:accountId",
+		topics: ["account:{accountId}", "finance", "jobs"],
+	}),
+	"runs.lanes": island({
+		id: "runs.lanes",
+		page: "runs",
+		fragmentUrl: "/runs",
+		topics: ["jobs"],
+	}),
+	"runs.jobs": island({
+		id: "runs.jobs",
+		page: "runs",
+		fragmentUrl: "/runs",
+		topics: ["jobs"],
+		statePolicy: DEFAULT_STATE_POLICY,
+	}),
+} satisfies Record<string, IslandDefinition>;
+
+function islandDefinition(id: string) {
+	const definition = (ISLAND_DEFINITIONS as Record<string, IslandDefinition>)[
+		id
+	];
+	if (!definition) {
+		throw new Error(`Missing island definition for ${id}`);
+	}
+	return definition;
+}
 
 function json(value: unknown) {
 	return JSON.stringify(value, null, 2);
@@ -166,11 +521,16 @@ export function IslandFrame(input: {
 	class?: string;
 	children: unknown;
 }) {
+	const definition = islandDefinition(input.id);
 	return (
 		<section
 			class={input.class ?? "card stack"}
 			data-zmail-island={input.id}
-			data-zmail-island-mode={input.mode ?? "server"}
+			data-zmail-island-mode={input.mode ?? definition.mode}
+			data-zmail-state-policy={jsonScript(definition.statePolicy)}
+			data-zmail-refresh-topics={
+				definition.topics.length ? definition.topics.join(",") : undefined
+			}
 		>
 			{input.children}
 		</section>
@@ -280,6 +640,31 @@ function renderLaneProgressCards(lanes: LaneProgressSnapshot[]) {
 						{lane.lastError ? <span>error: {lane.lastError}</span> : null}
 					</div>
 				</div>
+			))}
+		</div>
+	);
+}
+
+function activeLanes(lanes: LaneProgressSnapshot[]) {
+	return lanes.filter(
+		(lane) => lane.state === "running" || lane.state === "queued",
+	);
+}
+
+function renderAccountWorkStatus(lanes: LaneProgressSnapshot[]) {
+	const active = activeLanes(lanes);
+	if (active.length === 0) {
+		return <span class="muted">idle</span>;
+	}
+	return (
+		<div class="stack account-work">
+			{active.map((lane) => (
+				<span key={lane.lane}>
+					{lane.label}: {lane.state} ({String(lane.queuedCount)}/
+					{String(lane.runningCount)}) |{" "}
+					{formatProgress(lane.processed, lane.total)} | ETA{" "}
+					{formatEta(lane.etaSeconds)}
+				</span>
 			))}
 		</div>
 	);
@@ -497,9 +882,36 @@ export function renderAccountsPage(
 		canManageLifecycle?: (ownerPrincipalEmail: string | null) => boolean;
 	},
 ) {
-	return (
-		<>
-			<section class="card stack">
+	const islands = renderAccountsIslandMap(data, options);
+	return <>{ACCOUNTS_ISLAND_IDS.map((id) => islands[id])}</>;
+}
+
+export function renderAccountsIslandMap(
+	data: AccountsPageData,
+	options?: {
+		canConnect?: boolean;
+		canManageLifecycle?: (ownerPrincipalEmail: string | null) => boolean;
+	},
+) {
+	const connectedCount = data.accounts.filter(
+		(account) => account.connection_state === "connected",
+	).length;
+	const syncEnabledCount = data.accounts.filter(
+		(account) => account.sync_enabled,
+	).length;
+	const attentionCount = data.accounts.filter(
+		(account) =>
+			account.connection_state === "config_error" ||
+			account.connection_state === "needs_reconnect" ||
+			account.connection_state === "disconnected" ||
+			Boolean(account.last_error),
+	).length;
+	const activeWorkCount = data.accounts.filter(
+		(account) => activeLanes(account.lane_progress).length > 0,
+	).length;
+	return {
+		"accounts.summary": (
+			<IslandFrame id="accounts.summary" class="card stack">
 				<div class="row">
 					<h1>Accounts</h1>
 					{options?.canConnect === false ? null : (
@@ -509,8 +921,32 @@ export function renderAccountsPage(
 					)}
 				</div>
 				<p class="muted">Connected email accounts and their sync status.</p>
-			</section>
-			<section class="card table-wrap">
+				<div class="stats compact">
+					<div class="stat">
+						<span class="muted">Accounts</span>
+						<strong>{String(data.accounts.length)}</strong>
+					</div>
+					<div class="stat">
+						<span class="muted">Connected</span>
+						<strong>{String(connectedCount)}</strong>
+					</div>
+					<div class="stat">
+						<span class="muted">Sync enabled</span>
+						<strong>{String(syncEnabledCount)}</strong>
+					</div>
+					<div class="stat">
+						<span class="muted">Needs attention</span>
+						<strong>{String(attentionCount)}</strong>
+					</div>
+					<div class="stat">
+						<span class="muted">Active work</span>
+						<strong>{String(activeWorkCount)}</strong>
+					</div>
+				</div>
+			</IslandFrame>
+		),
+		"accounts.list": (
+			<IslandFrame id="accounts.list" class="card table-wrap">
 				<table>
 					<thead>
 						<tr>
@@ -519,7 +955,8 @@ export function renderAccountsPage(
 							<th>Provider</th>
 							<th>Connection</th>
 							<th>Sync</th>
-							<th>Status</th>
+							<th>Mailbox</th>
+							<th>Work</th>
 							<th>Last synced</th>
 							<th>Messages</th>
 							<th>Last error</th>
@@ -543,7 +980,8 @@ export function renderAccountsPage(
 									<td>{account.provider_kind}</td>
 									<td>{prettyConnectionState(account.connection_state)}</td>
 									<td>{account.sync_enabled ? "enabled" : "disabled"}</td>
-									<td>{account.sync_status}</td>
+									<td>{mailboxStateLabel(account.sync_status)}</td>
+									<td>{renderAccountWorkStatus(account.lane_progress)}</td>
 									<td>{account.last_synced_at ?? "never"}</td>
 									<td>{String(account.message_count)}</td>
 									<td>{account.last_error ?? "none"}</td>
@@ -568,10 +1006,34 @@ export function renderAccountsPage(
 						})}
 					</tbody>
 				</table>
-			</section>
-		</>
-	);
+			</IslandFrame>
+		),
+		"accounts.actions": (
+			<IslandFrame id="accounts.actions" class="card stack">
+				<h2>Account actions</h2>
+				<div class="actions">
+					{options?.canConnect === false ? null : (
+						<a class="button" href={href("/accounts/new")}>
+							Connect Gmail
+						</a>
+					)}
+					<a class="button secondary" href={href("/messages")}>
+						Browse messages
+					</a>
+					<a class="button secondary" href={href("/runs")}>
+						Open runs
+					</a>
+				</div>
+			</IslandFrame>
+		),
+	} satisfies IslandRenderMap;
 }
+
+export const ACCOUNTS_ISLAND_IDS = [
+	"accounts.summary",
+	"accounts.list",
+	"accounts.actions",
+] as const;
 
 export function renderAccountDetailIslandMap(
 	data: AccountDetailPageData,
@@ -1249,90 +1711,153 @@ export function renderMessagesPage(rows: MessagesPageData) {
 	);
 }
 
-export function renderMessageDetailPage(data: MessageDetailPageData) {
-	return (
-		<>
-			<section class="card stack" data-page-actions="message-detail">
+export function renderMessageDetailIslandMap(data: MessageDetailPageData) {
+	return {
+		"message.header": (
+			<IslandFrame id="message.header" class="card stack">
 				<div class="row">
 					<h1>{data.message.subject ?? "(no subject)"}</h1>
-					<Button
-						label="Classify now"
-						action={`/rpc/messages/${data.message.id}/classify`}
-					/>
 				</div>
 				<div class="row muted">
 					<span>{data.message.account_label}</span>
 					<span>{data.message.received_at ?? "unknown date"}</span>
 					<span>{data.message.sender_address ?? "unknown sender"}</span>
 				</div>
-			</section>
-			<section class="two-up">
+			</IslandFrame>
+		),
+		"message.actions": (
+			<IslandFrame id="message.actions" class="card stack">
+				<div class="actions" data-page-actions="message-detail">
+					<Button
+						label="Classify now"
+						action={`/rpc/messages/${data.message.id}/classify`}
+					/>
+				</div>
+			</IslandFrame>
+		),
+		"message.body": (
+			<IslandFrame id="message.body" class="card stack">
+				<h2>Message body</h2>
 				<div class="stack">
-					<div class="card stack">
-						<h2>Primary body</h2>
+					<div class="stack">
+						<h3>Primary body</h3>
 						<pre class="json-block">
 							{data.message.body_text_primary || "(empty)"}
 						</pre>
 					</div>
 					{data.message.body_text_forwarded ? (
-						<div class="card stack">
-							<h2>Forwarded body</h2>
+						<div class="stack">
+							<h3>Forwarded body</h3>
 							<pre class="json-block">{data.message.body_text_forwarded}</pre>
 						</div>
 					) : null}
-					<div class="card stack">
-						<h2>Classifier/search body</h2>
+					<div class="stack">
+						<h3>Classifier/search body</h3>
 						<pre class="json-block">
 							{data.message.body_text_normalized || "(empty)"}
 						</pre>
 					</div>
-					<div class="card stack">
-						<h2>Current label</h2>
+				</div>
+			</IslandFrame>
+		),
+		"message.labels": (
+			<IslandFrame id="message.labels" class="card stack">
+				<h2>Labels and classifications</h2>
+				<div class="stack">
+					<div>
+						<h3>Current label</h3>
 						<JsonBlock value={data.currentLabel?.label ?? null} />
 					</div>
-					<div class="card stack">
-						<h2>Finance intel</h2>
-						<JsonBlock value={data.financeIntel} />
+					<div>
+						<h3>Classification history</h3>
+						<JsonBlock value={data.classifications} />
 					</div>
 				</div>
+			</IslandFrame>
+		),
+		"message.finance": (
+			<IslandFrame id="message.finance" class="card stack">
+				<h2>Finance intel</h2>
+				<JsonBlock value={data.financeIntel} />
+			</IslandFrame>
+		),
+		"message.reviews": (
+			<IslandFrame id="message.reviews" class="card stack">
+				<h2>Related context</h2>
 				<div class="stack">
-					<div class="card stack">
-						<h2>Metadata</h2>
+					<details class="drawer">
+						<summary>Metadata</summary>
 						<JsonBlock value={data.message} />
-					</div>
-					<div class="card stack">
-						<h2>Attachments</h2>
+					</details>
+					<details class="drawer">
+						<summary>Attachments</summary>
 						<JsonBlock value={data.attachments} />
-					</div>
-					<div class="card stack">
-						<h2>Moderation</h2>
+					</details>
+					<details class="drawer">
+						<summary>Moderation</summary>
 						<JsonBlock value={data.moderation} />
-					</div>
-					<div class="card stack">
-						<h2>Latest overseer profile</h2>
+					</details>
+					<details class="drawer">
+						<summary>Latest overseer profile</summary>
 						<JsonBlock value={data.latestProfile} />
-					</div>
+					</details>
 				</div>
+			</IslandFrame>
+		),
+	} satisfies IslandRenderMap;
+}
+
+export const MESSAGE_DETAIL_ISLAND_IDS = [
+	"message.header",
+	"message.actions",
+	"message.body",
+	"message.labels",
+	"message.finance",
+	"message.reviews",
+] as const;
+
+export function renderMessageDetailPage(data: MessageDetailPageData) {
+	const islands = renderMessageDetailIslandMap(data);
+	return (
+		<>
+			{islands["message.header"]}
+			{islands["message.actions"]}
+			<section class="two-up">
+				<div class="stack">
+					{islands["message.body"]}
+					{islands["message.labels"]}
+					{islands["message.finance"]}
+				</div>
+				<div class="stack">{islands["message.reviews"]}</div>
 			</section>
 		</>
 	);
 }
 
-export function renderReviewPage(rows: ReviewPageData) {
-	return (
-		<>
-			<section class="card stack">
+export function renderReviewIslandMap(rows: ReviewPageData) {
+	return {
+		"review.stats": (
+			<IslandFrame id="review.stats" class="card stack">
 				<div class="row">
 					<div>
 						<h1>Review</h1>
 						<p class="muted">Root decisions, classifier findings, actions.</p>
 					</div>
-					<div class="actions">
-						<Button label="Classify reviews" action="/rpc/reviews/classify" />
+					<div class="stats compact">
+						<div class="stat">
+							<span class="muted">Open root reviews</span>
+							<strong>{String(rows.rootReviews.length)}</strong>
+						</div>
+						<div class="stat">
+							<span class="muted">Classifier findings</span>
+							<strong>{String(rows.findings.length)}</strong>
+						</div>
+						<div class="stat">
+							<span class="muted">Classifier runs</span>
+							<strong>{String(rows.actionHistory.length)}</strong>
+						</div>
 					</div>
 				</div>
-			</section>
-			<section class="card stack">
 				<h2>Review classifier findings</h2>
 				<table>
 					<thead>
@@ -1363,8 +1888,6 @@ export function renderReviewPage(rows: ReviewPageData) {
 						) : null}
 					</tbody>
 				</table>
-			</section>
-			<section class="card stack">
 				<h2>Action history</h2>
 				<table>
 					<thead>
@@ -1405,45 +1928,68 @@ export function renderReviewPage(rows: ReviewPageData) {
 						) : null}
 					</tbody>
 				</table>
-			</section>
-			{rows.rootReviews.map((row) => (
-				<section key={row.id} class="card stack" data-review-id={row.id}>
-					<div class="row">
-						<strong>{row.subject ?? "(no subject)"}</strong>
-						<Pill>{row.sender_address ?? "unknown sender"}</Pill>
-						<Pill>{row.body_extraction_strategy}</Pill>
-						{row.has_forwarded ? <Pill>Forwarded</Pill> : null}
-						{row.parse_status === "error" ? <Pill>Parse error</Pill> : null}
-					</div>
-					<p>{row.snippet}</p>
-					{row.parse_status === "error" && row.parse_error_reason ? (
-						<p class="muted">Parse issue: {row.parse_error_reason}</p>
-					) : null}
-					<JsonBlock value={row.result} />
-					<label>
-						Override JSON
-						<textarea rows={14} data-override-json>
-							{json(row.result)}
-						</textarea>
-					</label>
-					<p class="muted" data-review-error></p>
-					<div class="actions" data-page-actions="review">
-						<Button
-							label="Accept"
-							action={`/rpc/reviews/${row.id}/resolve`}
-							payload={{ action: "accept" }}
-							variant="secondary"
-						/>
-						<Button
-							label="Override"
-							action={`/rpc/reviews/${row.id}/resolve`}
-							payload={{ action: "override" }}
-						/>
-					</div>
-				</section>
-			))}
-		</>
-	);
+			</IslandFrame>
+		),
+		"review.actions": (
+			<IslandFrame id="review.actions" class="card stack">
+				<h2>Review actions</h2>
+				<div class="actions" data-page-actions="review-global">
+					<Button label="Classify reviews" action="/rpc/reviews/classify" />
+				</div>
+			</IslandFrame>
+		),
+		"review.queue": (
+			<IslandFrame id="review.queue" class="stack">
+				{rows.rootReviews.map((row) => (
+					<section key={row.id} class="card stack" data-review-id={row.id}>
+						<div class="row">
+							<strong>{row.subject ?? "(no subject)"}</strong>
+							<Pill>{row.sender_address ?? "unknown sender"}</Pill>
+							<Pill>{row.body_extraction_strategy}</Pill>
+							{row.has_forwarded ? <Pill>Forwarded</Pill> : null}
+							{row.parse_status === "error" ? <Pill>Parse error</Pill> : null}
+						</div>
+						<p>{row.snippet}</p>
+						{row.parse_status === "error" && row.parse_error_reason ? (
+							<p class="muted">Parse issue: {row.parse_error_reason}</p>
+						) : null}
+						<JsonBlock value={row.result} />
+						<label>
+							Override JSON
+							<textarea rows={14} data-override-json>
+								{json(row.result)}
+							</textarea>
+						</label>
+						<p class="muted" data-review-error></p>
+						<div class="actions" data-page-actions="review">
+							<Button
+								label="Accept"
+								action={`/rpc/reviews/${row.id}/resolve`}
+								payload={{ action: "accept" }}
+								variant="secondary"
+							/>
+							<Button
+								label="Override"
+								action={`/rpc/reviews/${row.id}/resolve`}
+								payload={{ action: "override" }}
+							/>
+						</div>
+					</section>
+				))}
+			</IslandFrame>
+		),
+	} satisfies IslandRenderMap;
+}
+
+export const REVIEW_ISLAND_IDS = [
+	"review.stats",
+	"review.actions",
+	"review.queue",
+] as const;
+
+export function renderReviewPage(rows: ReviewPageData) {
+	const islands = renderReviewIslandMap(rows);
+	return <>{REVIEW_ISLAND_IDS.map((id) => islands[id])}</>;
 }
 
 function money(minor: number) {
@@ -2474,12 +3020,18 @@ export function renderFinancePage(
 	return <>{Array.from(new Set(pageIslandIds)).map((id) => islands[id])}</>;
 }
 
-export function renderProfilePage(data: ProfilePageData) {
-	return (
-		<>
-			<section class="card stack" data-page-actions="profiles">
+export function renderProfileIslandMap(data: ProfilePageData) {
+	return {
+		"profiles.header": (
+			<IslandFrame id="profiles.header" class="card stack">
+				<h1>{data.account.label}</h1>
+				<p class="muted">{data.account.email_address}</p>
+			</IslandFrame>
+		),
+		"profiles.actions": (
+			<IslandFrame id="profiles.actions" class="card stack">
 				<div class="row">
-					<h1>{data.account.label}</h1>
+					<h2>Profile actions</h2>
 					<div class="actions">
 						<Button
 							label="Queue overseer rebuild"
@@ -2490,28 +3042,61 @@ export function renderProfilePage(data: ProfilePageData) {
 						</a>
 					</div>
 				</div>
-				<p class="muted">{data.account.email_address}</p>
-			</section>
-			{data.profiles.length === 0 ? (
-				<section class="card stack">
-					<h2>No overseer profile yet</h2>
-					<p class="muted">
-						Queue a rebuild to generate the first profile for this account.
-					</p>
-				</section>
-			) : (
-				data.profiles.map((profile) => (
-					<section key={profile.id} class="card stack">
-						<div class="row">
-							<Pill>{profile.created_at}</Pill>
-							<Pill>{String(profile.built_from_messages)} messages</Pill>
-						</div>
-						<JsonBlock value={profile.profile} />
+			</IslandFrame>
+		),
+		"profiles.summary": (
+			<IslandFrame id="profiles.summary" class="stats compact">
+				<div class="stat">
+					<span class="muted">Profiles</span>
+					<strong>{String(data.profiles.length)}</strong>
+				</div>
+				<div class="stat">
+					<span class="muted">Root finance relevant</span>
+					<strong>
+						{String(data.financeCoverage.rootFinanceRelevantCount)}
+					</strong>
+				</div>
+				<div class="stat">
+					<span class="muted">Finance heads</span>
+					<strong>{String(data.financeCoverage.totalHeads)}</strong>
+				</div>
+			</IslandFrame>
+		),
+		"profiles.findings": (
+			<IslandFrame id="profiles.findings" class="stack">
+				{data.profiles.length === 0 ? (
+					<section class="card stack">
+						<h2>No overseer profile yet</h2>
+						<p class="muted">
+							Queue a rebuild to generate the first profile for this account.
+						</p>
 					</section>
-				))
-			)}
-		</>
-	);
+				) : (
+					data.profiles.map((profile) => (
+						<section key={profile.id} class="card stack">
+							<div class="row">
+								<Pill>{profile.created_at}</Pill>
+								<Pill>{String(profile.built_from_messages)} messages</Pill>
+							</div>
+							<JsonBlock value={profile.profile} />
+						</section>
+					))
+				)}
+			</IslandFrame>
+		),
+	} satisfies IslandRenderMap;
+}
+
+export const PROFILE_ISLAND_IDS = [
+	"profiles.header",
+	"profiles.summary",
+	"profiles.actions",
+	"profiles.findings",
+] as const;
+
+export function renderProfilePage(data: ProfilePageData) {
+	const islands = renderProfileIslandMap(data);
+	return <>{PROFILE_ISLAND_IDS.map((id) => islands[id])}</>;
 }
 
 function parseRunMeta(metaJson: string | null) {

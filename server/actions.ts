@@ -2104,10 +2104,12 @@ export async function loadAccountsData() {
 		operation: "loadAccountsData",
 		kind: "loader",
 		run: async () => {
-			const [{ getDb }, { readOAuthToken }] = await Promise.all([
-				bootServer(),
-				import("#/lib/google-oauth"),
-			]);
+			const [{ getDb }, { readOAuthToken }, { loadAccountLaneProgress }] =
+				await Promise.all([
+					bootServer(),
+					import("#/lib/google-oauth"),
+					import("#/lib/job-lane-progress"),
+				]);
 			const db = getDb();
 			const [accounts, messageCounts, tombstoneCounts] = await Promise.all([
 				db.selectFrom("accounts").selectAll().orderBy("label").execute(),
@@ -2130,6 +2132,14 @@ export async function loadAccountsData() {
 			const tombstoneCountsByAccount = new Map(
 				tombstoneCounts.map((row) => [row.account_id, Number(row.count)]),
 			);
+			const laneProgressByAccount = new Map(
+				await Promise.all(
+					accounts.map(
+						async (account) =>
+							[account.id, await loadAccountLaneProgress(account.id)] as const,
+					),
+				),
+			);
 
 			return {
 				accounts: accounts.map((account) => {
@@ -2143,6 +2153,7 @@ export async function loadAccountsData() {
 						),
 						message_count: messageCountsByAccount.get(account.id) ?? 0,
 						tombstone_count: tombstoneCountsByAccount.get(account.id) ?? 0,
+						lane_progress: laneProgressByAccount.get(account.id) ?? [],
 					};
 				}),
 			};

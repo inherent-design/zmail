@@ -20,6 +20,7 @@ export function init(app) {
 			islands,
 			immediate: isTerminalJob(event),
 			fallback: "none",
+			source: "sse",
 		});
 	};
 	const unsubscribers = [app.subscribe("jobs", refresh)];

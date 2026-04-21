@@ -14,6 +14,7 @@ export function init(app) {
 			islands: HOME_STATS,
 			immediate: true,
 			fallback: "none",
+			source: "sse",
 		});
 	const onJob = (event) => {
 		if (
@@ -25,6 +26,7 @@ export function init(app) {
 			islands: HOME_JOB_ISLANDS,
 			immediate: isTerminalJob(event),
 			fallback: "none",
+			source: "sse",
 		});
 	};
 	const unsubscribers = [

@@ -364,6 +364,7 @@ export function init(app) {
 			islands: financeIslandHints(event),
 			immediate: true,
 			fallback: "none",
+			source: "sse",
 		});
 	const onJobs = (event) => {
 		if (!isFinanceJob(event)) {
@@ -373,6 +374,7 @@ export function init(app) {
 			islands: financeJobIslands(event),
 			immediate: isTerminalJob(event),
 			fallback: "none",
+			source: "sse",
 		});
 	};
 	const unsubscribers = [

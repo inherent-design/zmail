@@ -244,6 +244,45 @@ describe("Hono web routes", () => {
 			backfillSnapshotUid: 200,
 			backfillNextUid: 50,
 		});
+		const conversationId = await insertConversationRow(db, {
+			id: "conv-islands",
+			accountId: "acct-islands",
+			gmailThreadId: "thread-islands",
+		});
+		const messageId = await insertMessageRow(db, {
+			id: "msg-islands",
+			accountId: "acct-islands",
+			conversationId,
+			subject: "Island message",
+			contentSha256: "content-msg-islands",
+		});
+		await insertMessageSourceRow(db, {
+			messageId,
+			accountId: "acct-islands",
+			remoteMessageId: "remote-msg-islands",
+			remoteThreadId: "remote-thread-islands",
+		});
+		await insertMessageLabelRow(db, {
+			messageId,
+			contentSha256: "content-msg-islands",
+			primaryBucket: "finance",
+		});
+
+		const accounts = await app.request("http://localhost/accounts", {
+			headers: {
+				"X-Zmail-Partial": "islands",
+				"X-Zmail-Islands": "accounts.summary,accounts.list",
+			},
+		});
+		expect(accounts.status).toBe(200);
+		expect(accounts.headers.get("X-Zmail-Islands")).toBe(
+			"accounts.summary,accounts.list",
+		);
+		const accountsHtml = await accounts.text();
+		expect(accountsHtml).toContain('data-zmail-island="accounts.summary"');
+		expect(accountsHtml).toContain('data-zmail-island="accounts.list"');
+		expect(accountsHtml).not.toContain('data-zmail-island="accounts.actions"');
+		expect(accountsHtml).not.toContain('id="app-main"');
 
 		const account = await app.request(
 			"http://localhost/accounts/acct-islands",
@@ -263,6 +302,54 @@ describe("Hono web routes", () => {
 		expect(accountHtml).toContain('data-zmail-island="account.lanes"');
 		expect(accountHtml).not.toContain('data-zmail-island="account.header"');
 		expect(accountHtml).not.toContain('id="app-main"');
+
+		const message = await app.request("http://localhost/messages/msg-islands", {
+			headers: {
+				"X-Zmail-Partial": "islands",
+				"X-Zmail-Islands": "message.header,message.body",
+			},
+		});
+		expect(message.status).toBe(200);
+		expect(message.headers.get("X-Zmail-Islands")).toBe(
+			"message.header,message.body",
+		);
+		const messageHtml = await message.text();
+		expect(messageHtml).toContain('data-zmail-island="message.header"');
+		expect(messageHtml).toContain('data-zmail-island="message.body"');
+		expect(messageHtml).not.toContain('data-zmail-island="message.finance"');
+
+		const review = await app.request("http://localhost/review", {
+			headers: {
+				"X-Zmail-Partial": "islands",
+				"X-Zmail-Islands": "review.stats,review.queue",
+			},
+		});
+		expect(review.status).toBe(200);
+		expect(review.headers.get("X-Zmail-Islands")).toBe(
+			"review.stats,review.queue",
+		);
+		const reviewHtml = await review.text();
+		expect(reviewHtml).toContain('data-zmail-island="review.stats"');
+		expect(reviewHtml).toContain('data-zmail-island="review.queue"');
+		expect(reviewHtml).not.toContain('data-zmail-island="review.actions"');
+
+		const profiles = await app.request(
+			"http://localhost/profiles/acct-islands",
+			{
+				headers: {
+					"X-Zmail-Partial": "islands",
+					"X-Zmail-Islands": "profiles.summary,profiles.findings",
+				},
+			},
+		);
+		expect(profiles.status).toBe(200);
+		expect(profiles.headers.get("X-Zmail-Islands")).toBe(
+			"profiles.summary,profiles.findings",
+		);
+		const profilesHtml = await profiles.text();
+		expect(profilesHtml).toContain('data-zmail-island="profiles.summary"');
+		expect(profilesHtml).toContain('data-zmail-island="profiles.findings"');
+		expect(profilesHtml).not.toContain('data-zmail-island="profiles.actions"');
 
 		const home = await app.request("http://localhost/", {
 			headers: {

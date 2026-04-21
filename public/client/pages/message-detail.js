@@ -1,3 +1,19 @@
+const MESSAGE_ISLANDS = [
+	"message.header",
+	"message.body",
+	"message.labels",
+	"message.finance",
+	"message.reviews",
+	"message.actions",
+];
+
+export function messageDetailIslandHints(event) {
+	if (event.topic === "reviews") {
+		return ["message.labels", "message.reviews", "message.actions"];
+	}
+	return MESSAGE_ISLANDS;
+}
+
 export function init(app) {
 	const root = document.querySelector('[data-page-actions="message-detail"]');
 	const button = root?.querySelector("button[data-rpc]");
@@ -10,7 +26,10 @@ export function init(app) {
 		button.disabled = true;
 		try {
 			await app.postJson(button.dataset.rpc, {});
-			await app.refresh();
+			await app.refresh({
+				islands: MESSAGE_ISLANDS,
+				fallback: "none",
+			});
 		} catch (error) {
 			window.alert(error instanceof Error ? error.message : String(error));
 			button.disabled = false;
@@ -18,7 +37,13 @@ export function init(app) {
 	};
 
 	button?.addEventListener("click", onClick);
-	const refresh = () => void app.refresh();
+	const refresh = (event) =>
+		void app.scheduleRefresh({
+			islands: messageDetailIslandHints(event),
+			immediate: true,
+			fallback: "none",
+			source: "sse",
+		});
 	const unsubscribers = [
 		app.subscribe(`message:${messageId}`, refresh),
 		app.subscribe("reviews", refresh),

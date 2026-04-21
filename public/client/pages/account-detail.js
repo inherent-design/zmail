@@ -113,6 +113,7 @@ export function init(app) {
 				event.eventType === "account.sync_status" ||
 				event.eventType === "account.watcher_status",
 			fallback: "none",
+			source: "sse",
 		});
 	};
 	const unsubscribers = [app.subscribe(`account:${accountId}`, onAccountEvent)];

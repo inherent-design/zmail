@@ -258,6 +258,11 @@ describe("worker edge cases", () => {
 			scopeId: "acct-1",
 		});
 		await worker.runWorkerIteration({ waitOnIdle: false });
+		const backlogJob = await db
+			.selectFrom("jobs")
+			.select(["meta_json"])
+			.where("kind", "=", "classify_account_backlog")
+			.executeTakeFirstOrThrow();
 
 		expect(log.records).toEqual(
 			expect.arrayContaining([
@@ -281,6 +286,13 @@ describe("worker edge cases", () => {
 				}),
 			]),
 		);
+		expect(JSON.parse(backlogJob.meta_json ?? "{}")).toMatchObject({
+			mode: "live",
+			processed: 26,
+			total: 26,
+			etaSeconds: 0,
+			updatedAt: expect.any(String),
+		});
 	});
 
 	it("uses range metadata to compute backfill totals when the bounds are present", async () => {

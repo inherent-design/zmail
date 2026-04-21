@@ -603,6 +603,8 @@ describe("worker finance jobs", () => {
 			mode: "live",
 			processed: 1,
 			total: 1,
+			etaSeconds: 0,
+			updatedAt: expect.any(String),
 			registrySha256: "registry-sha",
 			blockedModelOutputCount: 0,
 		});

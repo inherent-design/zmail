@@ -105,17 +105,21 @@ import {
 	renderAccountDetailIslandMap,
 	renderAccountDetailPage,
 	renderAccountFormPage,
+	renderAccountsIslandMap,
 	renderAccountsPage,
 	renderFinanceIslandMap,
 	renderFinancePage,
 	renderHomeIslandMap,
 	renderHomePage,
+	renderMessageDetailIslandMap,
 	renderMessageDetailPage,
 	renderMessagesPage,
 	renderOrgClaimLegacyPage,
 	renderOrgCreatePage,
 	renderOrgSelectPage,
+	renderProfileIslandMap,
 	renderProfilePage,
+	renderReviewIslandMap,
 	renderReviewPage,
 	renderRunsIslandMap,
 	renderRunsPage,
@@ -705,14 +709,16 @@ webApp.get(
 	async (c) => {
 		const data = await loadAccountsData();
 		const principal = c.get("principal");
+		const accountOptions = {
+			canConnect: true,
+			canManageLifecycle: (ownerPrincipalEmail: string | null) =>
+				canManageAccountLifecycle(principal, ownerPrincipalEmail),
+		};
 		return renderPage(c, {
 			title: "Accounts",
 			page: "accounts",
-			children: renderAccountsPage(data, {
-				canConnect: true,
-				canManageLifecycle: (ownerPrincipalEmail) =>
-					canManageAccountLifecycle(principal, ownerPrincipalEmail),
-			}),
+			children: renderAccountsPage(data, accountOptions),
+			islands: renderAccountsIslandMap(data, accountOptions),
 		});
 	},
 );
@@ -845,6 +851,7 @@ webApp.get(
 			title: data.message.subject ?? "Message",
 			page: "message-detail",
 			children: renderMessageDetailPage(data),
+			islands: renderMessageDetailIslandMap(data),
 		});
 	},
 );
@@ -860,6 +867,7 @@ webApp.get(
 			title: "Review",
 			page: "review",
 			children: renderReviewPage(data),
+			islands: renderReviewIslandMap(data),
 		});
 	},
 );
@@ -914,6 +922,7 @@ webApp.get(
 			title: "Overseer",
 			page: "profiles",
 			children: renderProfilePage(data),
+			islands: renderProfileIslandMap(data),
 		});
 	},
 );

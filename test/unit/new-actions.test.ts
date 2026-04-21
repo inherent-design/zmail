@@ -327,7 +327,7 @@ describe("new server actions", () => {
 
 	it("loadAccountsData defaults grouped counts to zero for accounts without rows", async () => {
 		const runtime = await createTestRuntime();
-		const { db } = await bootDb();
+		const { db, dbModule } = await bootDb();
 		await seedTestAccount(db, {
 			id: "acct-1",
 			label: "Account One",
@@ -360,6 +360,38 @@ describe("new server actions", () => {
 				updated_at: "2026-01-02T00:00:00.000Z",
 			})
 			.execute();
+		await db
+			.insertInto("jobs")
+			.values({
+				id: "job-root-running",
+				kind: "classify_account_backlog",
+				scope_type: "account",
+				scope_id: "acct-1",
+				status: "running",
+				model: null,
+				prompt_version: null,
+				request_count: 10,
+				success_count: 2,
+				error_count: 0,
+				claimed_at: "2026-01-02T00:00:00.000Z",
+				lease_expires_at: null,
+				lane: "root_llm",
+				priority: 100,
+				run_after_at: null,
+				claim_owner: "worker-a",
+				attempts: 1,
+				last_error: null,
+				created_at: "2026-01-02T00:00:00.000Z",
+				started_at: "2026-01-02T00:00:00.000Z",
+				finished_at: null,
+				meta_json: dbModule.jsonText({
+					processed: 2,
+					total: 10,
+					etaSeconds: 60,
+					updatedAt: "2026-01-02T00:00:05.000Z",
+				}),
+			})
+			.execute();
 
 		vi.doMock("#/lib/worker", () => ({
 			ensureWorkerStarted: vi.fn(),
@@ -377,12 +409,27 @@ describe("new server actions", () => {
 				label: "Account One",
 				message_count: 1,
 				tombstone_count: 1,
+				lane_progress: expect.arrayContaining([
+					expect.objectContaining({
+						lane: "root_llm",
+						state: "running",
+						processed: 2,
+						total: 10,
+						etaSeconds: 60,
+					}),
+				]),
 			}),
 			expect.objectContaining({
 				id: "acct-2",
 				label: "Account Two",
 				message_count: 0,
 				tombstone_count: 0,
+				lane_progress: expect.arrayContaining([
+					expect.objectContaining({
+						lane: "root_llm",
+						state: "idle",
+					}),
+				]),
 			}),
 		]);
 	});
