@@ -3,6 +3,13 @@ import { describe, expect, it } from "vitest";
 import { bootDb } from "#/test/helpers/db";
 import { createTestRuntime } from "#/test/helpers/runtime";
 
+function pdfArrayBuffer() {
+	const bytes = Buffer.from("%PDF-1.4\n");
+	const arrayBuffer = new ArrayBuffer(bytes.byteLength);
+	new Uint8Array(arrayBuffer).set(bytes);
+	return arrayBuffer;
+}
+
 describe("finance upload", () => {
 	it("chooses direct text for short text-rich statements in auto mode", async () => {
 		const { decideFinanceUploadRoute } = await import("#/lib/finance-upload");
@@ -151,5 +158,62 @@ describe("finance upload", () => {
 			scope_id: first.uploadId,
 			lane: "finance_llm",
 		});
+	});
+
+	it("handles concurrent duplicate PDF uploads idempotently", async () => {
+		await createTestRuntime();
+		const { db } = await bootDb();
+		const { createFinanceUpload } = await import("#/lib/finance-upload");
+		let arrayBufferCalls = 0;
+		let releaseUploads!: () => void;
+		const uploadGate = new Promise<void>((resolve) => {
+			releaseUploads = resolve;
+		});
+		const file = {
+			name: "statement.pdf",
+			async arrayBuffer() {
+				arrayBufferCalls += 1;
+				if (arrayBufferCalls === 2) {
+					releaseUploads();
+				}
+				await uploadGate;
+				return pdfArrayBuffer();
+			},
+		} as File;
+
+		const [first, second] = await Promise.all([
+			createFinanceUpload({
+				file,
+				mode: "auto",
+				sourceKindHint: "statement",
+			}),
+			createFinanceUpload({
+				file,
+				mode: "auto",
+				sourceKindHint: "statement",
+			}),
+		]);
+
+		expect(first.status).toBe("queued");
+		expect(second.status).toBe("queued");
+		expect(first.uploadId).toBe(second.uploadId);
+
+		const uploads = await db
+			.selectFrom("finance_import_uploads")
+			.select(["id"])
+			.execute();
+		const jobs = await db
+			.selectFrom("jobs")
+			.select(["kind", "scope_id", "lane"])
+			.execute();
+
+		expect(uploads).toHaveLength(1);
+		expect(jobs).toEqual([
+			{
+				kind: "process_finance_upload",
+				scope_id: first.uploadId,
+				lane: "finance_llm",
+			},
+		]);
 	});
 });
