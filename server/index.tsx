@@ -349,6 +349,21 @@ function isStructuredApiPath(c: Context) {
 	);
 }
 
+let financeApiBootOnce: Promise<void> | null = null;
+
+function bootFinanceApi() {
+	if (!financeApiBootOnce) {
+		financeApiBootOnce = (async () => {
+			runMigrations();
+		})().catch((error) => {
+			financeApiBootOnce = null;
+			throw error;
+		});
+	}
+
+	return financeApiBootOnce;
+}
+
 const financeImportAuth: MiddlewareHandler = async (c, next) => {
 	const bearerToken = bearerTokenFromRequest(c);
 	if (bearerToken) {
@@ -1413,7 +1428,7 @@ webApp.post(
 	}),
 	financeImportAuth,
 	async (c) => {
-		runMigrations();
+		await bootFinanceApi();
 		let form: FormData;
 		try {
 			form = await c.req.formData();
@@ -1466,7 +1481,7 @@ webApp.post(
 );
 
 webApp.post("/api/finance/imports", financeImportAuth, async (c) => {
-	runMigrations();
+	await bootFinanceApi();
 	let rawArtifact: unknown;
 	try {
 		rawArtifact = await c.req.json();

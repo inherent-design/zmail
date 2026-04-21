@@ -191,6 +191,21 @@ function sha256Text(value: string) {
 	return createHash("sha256").update(value).digest("hex");
 }
 
+async function financeUploadResultForExisting(existing: {
+	id: string;
+	status: string;
+}) {
+	const jobId =
+		existing.status === "imported"
+			? null
+			: await queueProcessFinanceUpload(existing.id);
+	return {
+		uploadId: existing.id,
+		jobId,
+		status: existing.status === "imported" ? "already_imported" : "queued",
+	};
+}
+
 function parseMode(value?: string | null) {
 	return financeUploadModeSchema.parse(value || undefined);
 }
@@ -324,22 +339,17 @@ export async function createFinanceUpload(input: CreateFinanceUploadInput) {
 	const ext = extensionForUpload(originalFilename, buffer);
 	const uploadSha256 = sha256Buffer(buffer);
 	const db = getDb();
-	const existing = await db
-		.selectFrom("finance_import_uploads")
-		.select(["id", "status"])
-		.where("org_id", "=", currentOrgId())
-		.where("upload_sha256", "=", uploadSha256)
-		.executeTakeFirst();
+	const orgId = currentOrgId();
+	const readUploadBySha256 = () =>
+		db
+			.selectFrom("finance_import_uploads")
+			.select(["id", "status"])
+			.where("org_id", "=", orgId)
+			.where("upload_sha256", "=", uploadSha256)
+			.executeTakeFirst();
+	const existing = await readUploadBySha256();
 	if (existing) {
-		const jobId =
-			existing.status === "imported"
-				? null
-				: await queueProcessFinanceUpload(existing.id);
-		return {
-			uploadId: existing.id,
-			jobId,
-			status: existing.status === "imported" ? "already_imported" : "queued",
-		};
+		return financeUploadResultForExisting(existing);
 	}
 
 	const uploadId = `finup_${randomUUID()}`;
@@ -351,7 +361,7 @@ export async function createFinanceUpload(input: CreateFinanceUploadInput) {
 		.insertInto("finance_import_uploads")
 		.values({
 			id: uploadId,
-			org_id: currentOrgId(),
+			org_id: orgId,
 			status: "queued",
 			mode,
 			source_kind_hint: sourceKindHint,
@@ -365,7 +375,17 @@ export async function createFinanceUpload(input: CreateFinanceUploadInput) {
 			created_at: now,
 			updated_at: now,
 		})
+		.onConflict((oc) => oc.columns(["org_id", "upload_sha256"]).doNothing())
 		.execute();
+
+	const upload = await readUploadBySha256();
+	if (!upload) {
+		throw new Error("Finance upload insert did not persist.");
+	}
+	if (upload.id !== uploadId) {
+		await rm(root, { recursive: true, force: true });
+		return financeUploadResultForExisting(upload);
+	}
 
 	return {
 		uploadId,
@@ -517,6 +537,9 @@ async function materializeZipFiles(upload: UploadRow) {
 			if (!entry) {
 				break;
 			}
+			if (/\/$/.test(entry.fileName)) {
+				continue;
+			}
 			entryCount += 1;
 			if (entryCount > MAX_ZIP_ENTRIES) {
 				throw new FinanceUploadNeedsReviewError("zip_entry_limit_exceeded", {
@@ -524,9 +547,6 @@ async function materializeZipFiles(upload: UploadRow) {
 					entries: entryCount,
 					limit: MAX_ZIP_ENTRIES,
 				});
-			}
-			if (/\/$/.test(entry.fileName)) {
-				continue;
 			}
 			if (isSymlinkEntry(entry)) {
 				throw new Error(`ZIP symlink entry rejected: ${entry.fileName}`);

@@ -169,6 +169,38 @@ describe("POST /api/finance/imports", () => {
 		expect(queueImportFinanceArtifactCommand).not.toHaveBeenCalled();
 	});
 
+	it("runs finance API migrations once per module", async () => {
+		process.env.ZMAIL_TEST_AUTH_ROLE = "org_operator";
+		const queueImportFinanceArtifactCommand = vi.fn(async () => "job-import-1");
+		vi.doMock("#/server/actions", () =>
+			buildActionsServerMock(queueImportFinanceArtifactCommand),
+		);
+		const dbModule = await import("#/lib/db");
+		const runMigrations = vi.spyOn(dbModule, "runMigrations");
+
+		const { app } = await import("#/server/index");
+		const importResponse = await app.fetch(
+			new Request("http://localhost/api/finance/imports", {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+				},
+				body: "{",
+			}),
+		);
+		const uploadForm = new FormData();
+		const uploadResponse = await app.fetch(
+			new Request("http://localhost/api/finance/uploads", {
+				method: "POST",
+				body: uploadForm,
+			}),
+		);
+
+		expect(importResponse.status).toBe(400);
+		expect(uploadResponse.status).toBe(422);
+		expect(runMigrations).toHaveBeenCalledTimes(1);
+	});
+
 	it("accepts a validated machine principal on the finance import route", async () => {
 		const queueImportFinanceArtifactCommand = vi.fn(
 			async () => "job-import-m2m",
