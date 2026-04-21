@@ -489,4 +489,62 @@ describe("finance knowledge", () => {
 			}),
 		]);
 	});
+
+	it("excludes ambiguous ledger directions from rollup totals and counts", () => {
+		const baseEntry = {
+			sourceKind: "email",
+			year: 2026,
+			accountId: "acct-1",
+			primaryCategory: "uncategorized",
+			secondaryCategory: null,
+			amountMinor: 1000,
+			occurredAt: "2026-01-01",
+			ownerIdentityId: null,
+			institutionId: null,
+			financialAccountId: null,
+			description: "Example",
+			counterparty: "Example",
+			status: "ready",
+			canonicalKey: "entry",
+			book: "business",
+			accountMappingKey: "example",
+		};
+
+		const view = buildFinanceRollupView({
+			ledger: [
+				{ ...baseEntry, direction: "income", canonicalKey: "income" },
+				{ ...baseEntry, direction: "expense", canonicalKey: "expense" },
+				{ ...baseEntry, direction: "unknown", canonicalKey: "unknown" },
+				{ ...baseEntry, direction: "both", canonicalKey: "both" },
+				{ ...baseEntry, direction: "neither", canonicalKey: "neither" },
+			],
+			importDocuments: [],
+		});
+
+		expect(view.summary).toMatchObject({
+			inflowMinor: 1000,
+			outflowMinor: 1000,
+			netMinor: 0,
+			extractedTransactionCount: 2,
+			uncategorizedCount: 2,
+		});
+		expect(view.rollups).toEqual([
+			expect.objectContaining({
+				inflowMinor: 1000,
+				outflowMinor: 1000,
+				netMinor: 0,
+				transactionCount: 2,
+				extractedTransactionCount: 2,
+				uncategorizedCount: 2,
+			}),
+		]);
+		expect(view.subcategoryRollups).toEqual([
+			expect.objectContaining({
+				inflowMinor: 1000,
+				outflowMinor: 1000,
+				netMinor: 0,
+				transactionCount: 2,
+			}),
+		]);
+	});
 });

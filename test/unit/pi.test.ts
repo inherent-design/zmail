@@ -144,6 +144,109 @@ describe("pi", () => {
 		expect(resolved.apiKey).toBe("subscription:access-2");
 	});
 
+	it("shares concurrent subscription credential refreshes", async () => {
+		const runtime = await createTestRuntime();
+		const config =
+			await runtime.importFresh<typeof import("#/lib/config")>("#/lib/config");
+		await mkdir(dirname(config.PI_SUBSCRIPTION_PATH), { recursive: true });
+		await writeFile(
+			config.PI_SUBSCRIPTION_PATH,
+			JSON.stringify({
+				version: 1,
+				provider: "openai-subscription",
+				credentials: {
+					refresh: "refresh-1",
+					access: "access-1",
+					expires: Date.now() - 1,
+				},
+				updatedAt: new Date().toISOString(),
+			}),
+		);
+		let finishRefresh = () => {};
+		refreshOpenAICodexToken.mockImplementationOnce(async () => {
+			await new Promise<void>((resolve) => {
+				finishRefresh = resolve;
+			});
+			return {
+				refresh: "refresh-2",
+				access: "access-2",
+				expires: Date.now() + 120_000,
+			};
+		});
+
+		const pi = await runtime.importFresh<typeof import("#/lib/pi")>("#/lib/pi");
+		const first = pi.resolvePiRuntime("openai-subscription");
+		const second = pi.resolvePiRuntime("openai-subscription");
+
+		await vi.waitFor(() =>
+			expect(refreshOpenAICodexToken).toHaveBeenCalledTimes(1),
+		);
+		finishRefresh();
+		const [firstRuntime, secondRuntime] = await Promise.all([first, second]);
+
+		expect(firstRuntime.apiKey).toBe("subscription:access-2");
+		expect(secondRuntime.apiKey).toBe("subscription:access-2");
+		expect(await pi.readSubscriptionRecord()).toMatchObject({
+			credentials: {
+				refresh: "refresh-2",
+				access: "access-2",
+			},
+		});
+	});
+
+	it("clears failed shared subscription refreshes so callers can retry", async () => {
+		const runtime = await createTestRuntime();
+		const config =
+			await runtime.importFresh<typeof import("#/lib/config")>("#/lib/config");
+		await mkdir(dirname(config.PI_SUBSCRIPTION_PATH), { recursive: true });
+		await writeFile(
+			config.PI_SUBSCRIPTION_PATH,
+			JSON.stringify({
+				version: 1,
+				provider: "openai-subscription",
+				credentials: {
+					refresh: "refresh-1",
+					access: "access-1",
+					expires: Date.now() - 1,
+				},
+				updatedAt: new Date().toISOString(),
+			}),
+		);
+		let rejectRefresh = (_error: unknown) => {};
+		refreshOpenAICodexToken.mockImplementationOnce(
+			() =>
+				new Promise<never>((_resolve, reject) => {
+					rejectRefresh = reject;
+				}),
+		);
+
+		const pi = await runtime.importFresh<typeof import("#/lib/pi")>("#/lib/pi");
+		const first = pi.resolvePiRuntime("openai-subscription");
+		const second = pi.resolvePiRuntime("openai-subscription");
+
+		await vi.waitFor(() =>
+			expect(refreshOpenAICodexToken).toHaveBeenCalledTimes(1),
+		);
+		rejectRefresh(new Error("refresh-down"));
+		const results = await Promise.allSettled([first, second]);
+		expect(results).toEqual([
+			expect.objectContaining({ status: "rejected" }),
+			expect.objectContaining({ status: "rejected" }),
+		]);
+
+		refreshOpenAICodexToken.mockImplementationOnce(async () => ({
+			refresh: "refresh-3",
+			access: "access-3",
+			expires: Date.now() + 120_000,
+		}));
+		await expect(
+			pi.resolvePiRuntime("openai-subscription"),
+		).resolves.toMatchObject({
+			apiKey: "subscription:access-3",
+		});
+		expect(refreshOpenAICodexToken).toHaveBeenCalledTimes(2);
+	});
+
 	it("fails clearly when no backend is configured", async () => {
 		const runtime = await createTestRuntime();
 		const pi = await runtime.importFresh<typeof import("#/lib/pi")>("#/lib/pi");

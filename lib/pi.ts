@@ -36,6 +36,8 @@ interface SubscriptionRecord {
 	updatedAt: string;
 }
 
+let pendingSubscriptionRecord: Promise<SubscriptionRecord> | null = null;
+
 function extractAssistantText(message: AssistantMessage) {
 	const content = Array.isArray(message.content) ? message.content : [];
 	return content
@@ -105,6 +107,34 @@ export async function writeSubscriptionRecord(record: SubscriptionRecord) {
 	);
 }
 
+async function resolveSubscriptionRecord(
+	trace?: LogTrace,
+): Promise<SubscriptionRecord> {
+	if (!pendingSubscriptionRecord) {
+		pendingSubscriptionRecord = (async () => {
+			const record = await readSubscriptionRecord();
+			let credentials = record.credentials;
+			if (credentials.expires <= Date.now() + 60_000) {
+				trace?.info("pi.subscription.refreshing", {
+					backend: "openai-subscription",
+				});
+				credentials = await refreshOpenAICodexToken(credentials.refresh);
+				const updated = {
+					...record,
+					credentials,
+					updatedAt: new Date().toISOString(),
+				};
+				await writeSubscriptionRecord(updated);
+				return updated;
+			}
+			return record;
+		})().finally(() => {
+			pendingSubscriptionRecord = null;
+		});
+	}
+	return pendingSubscriptionRecord;
+}
+
 function backendOrder(
 	preference: PiBackendPreference = APP_CONFIG.piBackend as PiBackendPreference,
 ) {
@@ -133,19 +163,8 @@ async function resolveRuntimeForBackend(
 		};
 	}
 
-	const record = await readSubscriptionRecord();
-	let credentials = record.credentials;
-	if (credentials.expires <= Date.now() + 60_000) {
-		trace?.info("pi.subscription.refreshing", {
-			backend,
-		});
-		credentials = await refreshOpenAICodexToken(credentials.refresh);
-		await writeSubscriptionRecord({
-			...record,
-			credentials,
-			updatedAt: new Date().toISOString(),
-		});
-	}
+	const record = await resolveSubscriptionRecord(trace);
+	const credentials = record.credentials;
 
 	trace?.complete("pi.backend.resolved", {
 		backend,

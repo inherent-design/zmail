@@ -6,6 +6,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { zValidator } from "@hono/zod-validator";
 import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { secureHeaders } from "hono/secure-headers";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
@@ -131,6 +132,8 @@ const config = loadResolvedConfig();
 const port = config.server.bindPort;
 const hostname = config.server.bindHost;
 assertWorkOsBootstrapEnv();
+
+const FINANCE_UPLOAD_HTTP_MAX_BYTES = 110 * 1024 * 1024;
 
 const app = new Hono();
 const webApp = config.server.basePath === "/" ? app : new Hono();
@@ -1398,55 +1401,69 @@ webApp.post(
 	},
 );
 
-webApp.post("/api/finance/uploads", financeImportAuth, async (c) => {
-	runMigrations();
-	let form: FormData;
-	try {
-		form = await c.req.formData();
-	} catch {
-		return c.json(errorJson("invalid_multipart"), 400);
-	}
-	const file = form.get("file");
-	if (
-		!file ||
-		typeof file !== "object" ||
-		!("arrayBuffer" in file) ||
-		!("name" in file)
-	) {
-		return c.json(errorJson("missing_file"), 422);
-	}
-	try {
-		const { createFinanceUpload } = await import("#/lib/finance-upload");
-		const result = await createFinanceUpload({
-			file: file as File,
-			mode:
-				typeof form.get("mode") === "string" ? String(form.get("mode")) : null,
-			sourceKindHint:
-				typeof form.get("sourceKindHint") === "string"
-					? String(form.get("sourceKindHint"))
-					: null,
-			retention:
-				typeof form.get("retention") === "string"
-					? String(form.get("retention"))
-					: null,
-		});
-		return c.json(
-			okJson(result.status, {
-				uploadId: result.uploadId,
-				jobId: result.jobId,
-			}),
-			result.status === "already_imported" ? 200 : 202,
-		);
-	} catch (error) {
-		return c.json(
-			errorJson(
-				"invalid_upload",
-				error instanceof Error ? error.message : String(error),
+webApp.post(
+	"/api/finance/uploads",
+	bodyLimit({
+		maxSize: FINANCE_UPLOAD_HTTP_MAX_BYTES,
+		onError: (c) =>
+			c.json(
+				errorJson("payload_too_large", "Upload exceeds 100 MB limit."),
+				413,
 			),
-			422,
-		);
-	}
-});
+	}),
+	financeImportAuth,
+	async (c) => {
+		runMigrations();
+		let form: FormData;
+		try {
+			form = await c.req.formData();
+		} catch {
+			return c.json(errorJson("invalid_multipart"), 400);
+		}
+		const file = form.get("file");
+		if (
+			!file ||
+			typeof file !== "object" ||
+			!("arrayBuffer" in file) ||
+			!("name" in file)
+		) {
+			return c.json(errorJson("missing_file"), 422);
+		}
+		try {
+			const { createFinanceUpload } = await import("#/lib/finance-upload");
+			const result = await createFinanceUpload({
+				file: file as File,
+				mode:
+					typeof form.get("mode") === "string"
+						? String(form.get("mode"))
+						: null,
+				sourceKindHint:
+					typeof form.get("sourceKindHint") === "string"
+						? String(form.get("sourceKindHint"))
+						: null,
+				retention:
+					typeof form.get("retention") === "string"
+						? String(form.get("retention"))
+						: null,
+			});
+			return c.json(
+				okJson(result.status, {
+					uploadId: result.uploadId,
+					jobId: result.jobId,
+				}),
+				result.status === "already_imported" ? 200 : 202,
+			);
+		} catch (error) {
+			return c.json(
+				errorJson(
+					"invalid_upload",
+					error instanceof Error ? error.message : String(error),
+				),
+				422,
+			);
+		}
+	},
+);
 
 webApp.post("/api/finance/imports", financeImportAuth, async (c) => {
 	runMigrations();
