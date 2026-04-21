@@ -73,6 +73,10 @@ function isRollupEligible(entry: FinanceLedgerEntry) {
 	return entry.status === "ready" || entry.status === "review";
 }
 
+function isRollupMoneyDirection(direction: string) {
+	return direction === "income" || direction === "expense";
+}
+
 export async function loadCombinedFinanceLedger() {
 	const db = getDb();
 	const rows = await db
@@ -157,7 +161,7 @@ export function buildFinanceRollupView(input: {
 	const subcategory = new Map<string, FinanceSubcategoryRollup>();
 
 	for (const entry of input.ledger) {
-		if (!isRollupEligible(entry)) {
+		if (!isRollupEligible(entry) || !isRollupMoneyDirection(entry.direction)) {
 			continue;
 		}
 		const yearlyKey = `${entry.year}:${entry.sourceKind}:${entry.primaryCategory}`;
@@ -237,7 +241,10 @@ export function buildFinanceRollupView(input: {
 
 	const summary = input.ledger.reduce<FinanceSummary>(
 		(acc, entry) => {
-			if (!isRollupEligible(entry)) {
+			if (
+				!isRollupEligible(entry) ||
+				!isRollupMoneyDirection(entry.direction)
+			) {
 				return acc;
 			}
 			const amount = Math.abs(entry.amountMinor ?? 0);

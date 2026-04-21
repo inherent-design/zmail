@@ -294,6 +294,30 @@ describe("POST /api/finance/imports", () => {
 		});
 	});
 
+	it("rejects oversized finance uploads before multipart parsing", async () => {
+		vi.doUnmock("#/server/actions");
+		vi.doUnmock("#/server/machine-auth");
+		const { app } = await import("#/server/index");
+
+		const response = await app.fetch(
+			new Request("http://localhost/api/finance/uploads", {
+				method: "POST",
+				headers: {
+					"content-length": String(110 * 1024 * 1024 + 1),
+					"content-type": "multipart/form-data; boundary=zmail-test",
+				},
+				body: "--zmail-test--\r\n",
+			}),
+		);
+
+		expect(response.status).toBe(413);
+		await expect(response.json()).resolves.toEqual({
+			ok: false,
+			error: "payload_too_large",
+			message: "Upload exceeds 100 MB limit.",
+		});
+	});
+
 	it("serves the finance import api under the configured base path", async () => {
 		process.env.ZMAIL_BASE_PATH = "/zmail";
 		const queueImportFinanceArtifactCommand = vi.fn(async () => "job-import-2");

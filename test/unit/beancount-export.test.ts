@@ -111,6 +111,12 @@ describe("beancount export", () => {
 		);
 		expect(generated).toContain("Expenses:Business:Software  42.00 USD");
 		expect(generated).toContain("Assets:Business:Bank:Checking  -42.00 USD");
+		const accounts = readFileSync(join(outDir, "accounts.beancount"), "utf8");
+		expect(accounts).toContain("2026-01-01 open Assets:Business:Bank:Checking");
+		expect(accounts).toContain("2026-01-01 open Expenses:Business:Software");
+		expect(accounts).not.toMatch(/\bopen\b.*\bUSD\b/);
+		const main = readFileSync(join(outDir, "main.beancount"), "utf8");
+		expect(main).toContain('option "operating_currency" "USD"');
 		const unresolved = readFileSync(
 			join(outDir, "review", "unresolved.csv"),
 			"utf8",
@@ -123,6 +129,98 @@ describe("beancount export", () => {
 			manifest.validation.beanCheck,
 		);
 		expect(manifest.items).toHaveLength(2);
+	});
+
+	it("writes multi-currency Beancount exports without USD-only account opens", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		await db
+			.insertInto("finance_ledger_entries")
+			.values([
+				{
+					id: "ledger-ready-eur",
+					canonical_key: "expense:eur",
+					status: "ready",
+					source_authority: "pdf",
+					occurred_at: "2026-02-01",
+					posted_at: null,
+					cleared_at: null,
+					description: "Berlin hotel",
+					counterparty: "Berlin Hotel",
+					direction: "expense",
+					amount_value: "80.00",
+					amount_minor: 8000,
+					currency: "EUR",
+					book: "business",
+					business_use_percent: null,
+					debit_account: "Expenses:Business:Travel",
+					credit_account: "Assets:Business:Bank:Checking",
+					account_mapping_key: "card:travel",
+					field_confidence_json: "{}",
+					ledger_metadata_json: "{}",
+					raw_payload_json: "{}",
+					created_at: "2026-02-01T00:00:00.000Z",
+					updated_at: "2026-02-01T00:00:00.000Z",
+				},
+				{
+					id: "ledger-ready-usd",
+					canonical_key: "income:usd",
+					status: "ready",
+					source_authority: "email",
+					occurred_at: "2026-02-02",
+					posted_at: null,
+					cleared_at: null,
+					description: "Client payment",
+					counterparty: "Client",
+					direction: "income",
+					amount_value: "120.00",
+					amount_minor: 12000,
+					currency: "USD",
+					book: "business",
+					business_use_percent: null,
+					debit_account: "Assets:Business:Bank:Checking",
+					credit_account: "Income:Business:GrossReceipts",
+					account_mapping_key: "client:income",
+					field_confidence_json: "{}",
+					ledger_metadata_json: "{}",
+					raw_payload_json: "{}",
+					created_at: "2026-02-02T00:00:00.000Z",
+					updated_at: "2026-02-02T00:00:00.000Z",
+				},
+			])
+			.execute();
+
+		const { exportFinanceBeancountPackage } = await runtime.importFresh<
+			typeof import("#/lib/beancount-export")
+		>("#/lib/beancount-export");
+		const { currentOrgId } =
+			await runtime.importFresh<typeof import("#/lib/runtime")>(
+				"#/lib/runtime",
+			);
+		const outDir = join(runtime.root, "multi-currency-export");
+		const result = await exportFinanceBeancountPackage({
+			orgId: currentOrgId(),
+			outDir,
+			year: 2026,
+			strict: true,
+		});
+
+		expect(result.exported).toBe(2);
+		const generated = readFileSync(
+			join(outDir, "generated", "2026.beancount"),
+			"utf8",
+		);
+		expect(generated).toContain("Expenses:Business:Travel  80.00 EUR");
+		expect(generated).toContain("Income:Business:GrossReceipts  -120.00 USD");
+		const accounts = readFileSync(join(outDir, "accounts.beancount"), "utf8");
+		expect(accounts).toContain("2026-01-01 open Expenses:Business:Travel");
+		expect(accounts).toContain("2026-01-01 open Income:Business:GrossReceipts");
+		expect(accounts).not.toMatch(/\bopen\b.*\bUSD\b/);
+		expect(accounts).not.toMatch(/\bopen\b.*\bEUR\b/);
+		const main = readFileSync(join(outDir, "main.beancount"), "utf8");
+		expect(main.indexOf('option "operating_currency" "EUR"')).toBeLessThan(
+			main.indexOf('option "operating_currency" "USD"'),
+		);
 	});
 
 	it("refuses to overwrite an existing export target unless forced", async () => {

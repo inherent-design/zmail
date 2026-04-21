@@ -187,23 +187,33 @@ function renderAccounts(entries: LedgerRow[], date: string) {
 	if (accounts.length === 0) {
 		return [
 			"; zmail generated accounts",
-			`${date} open Assets:Personal:Opening-Balances USD`,
-			`${date} open Equity:Opening-Balances USD`,
+			`${date} open Assets:Personal:Opening-Balances`,
+			`${date} open Equity:Opening-Balances`,
 			"",
 		].join("\n");
 	}
 
 	return [
 		"; zmail generated accounts",
-		...accounts.map((account) => `${date} open ${account} USD`),
+		...accounts.map((account) => `${date} open ${account}`),
 		"",
 	].join("\n");
 }
 
-function renderMain(generatedFile: string) {
+function exportableCurrencies(entries: LedgerRow[]) {
+	const currencies = entries
+		.map((entry) => entry.currency?.trim())
+		.filter((currency): currency is string => Boolean(currency));
+	return Array.from(new Set(currencies)).sort();
+}
+
+function renderMain(generatedFile: string, currencies: string[]) {
+	const operatingCurrencies = currencies.length > 0 ? currencies : ["USD"];
 	return [
 		'option "title" "zmail Finance Export"',
-		'option "operating_currency" "USD"',
+		...operatingCurrencies.map(
+			(currency) => `option "operating_currency" ${quote(currency)}`,
+		),
 		'include "accounts.beancount"',
 		`include "${generatedFile}"`,
 		"",
@@ -322,7 +332,7 @@ export async function exportFinanceBeancountPackage(input: ExportInput) {
 			)
 			.join("\n") || "; no exportable zmail finance ledger entries\n";
 	const accountsBody = renderAccounts(exportable, `${year}-01-01`);
-	const mainBody = renderMain(generatedName);
+	const mainBody = renderMain(generatedName, exportableCurrencies(exportable));
 
 	const mainPath = resolve(outDir, "main.beancount");
 	const accountsPath = resolve(outDir, "accounts.beancount");
