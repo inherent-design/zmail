@@ -16,6 +16,7 @@ const ACTIVE_MIGRATIONS = [
 	{ name: "007_review_lanes_tax_reports.sql" },
 	{ name: "008_finance_import_uploads.sql" },
 	{ name: "009_unified_workflows_text_source_overrides.sql" },
+	{ name: "010_finance_ledger_override_indexes.sql" },
 ];
 
 describe("db", () => {
@@ -126,6 +127,16 @@ describe("db", () => {
 			.prepare("PRAGMA index_list(conversations)")
 			.all() as Array<{ unique: number }>;
 		expect(conversationIndexes.some((index) => index.unique === 1)).toBe(true);
+		const financeLedgerOverrideIndexes = dbModule
+			.getSqlite()
+			.prepare("PRAGMA index_list(finance_ledger_entry_overrides)")
+			.all() as Array<{ name: string; partial: number }>;
+		expect(financeLedgerOverrideIndexes).toContainEqual(
+			expect.objectContaining({
+				name: "finance_ledger_entry_overrides_status_updated_idx",
+				partial: 1,
+			}),
+		);
 
 		const jobColumns = dbModule
 			.getSqlite()

@@ -222,6 +222,12 @@ function parseSourceKindHint(value?: string | null) {
 	return financeUploadSourceKindHintSchema.parse(value || null);
 }
 
+export function financeUploadArtifactSourceKind(
+	value?: string | null,
+): FinanceImportSourceKind {
+	return value ? normalizeFinanceImportSourceKind(value) : "pdf";
+}
+
 function parseRetention(value?: string | null) {
 	return financeUploadRetentionSchema.parse(value || undefined);
 }
@@ -1264,8 +1270,9 @@ function buildArtifact(input: {
 				reasons: page.candidateReasons,
 			})),
 	);
-	const sourceKind: FinanceImportSourceKind =
-		input.upload.source_kind_hint === "text" ? "text" : "pdf";
+	const sourceKind = financeUploadArtifactSourceKind(
+		input.upload.source_kind_hint,
+	);
 	const baseArtifact: FinanceSourceImportV2 = {
 		schemaVersion: "finance-source-import.v2",
 		sourceKind,

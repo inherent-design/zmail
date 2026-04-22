@@ -791,6 +791,9 @@ CREATE INDEX IF NOT EXISTS finance_ledger_entry_sources_message_idx
   ON finance_ledger_entry_sources (message_id);
 CREATE INDEX IF NOT EXISTS finance_ledger_entry_overrides_active_idx
   ON finance_ledger_entry_overrides (canonical_key, status, updated_at);
+CREATE INDEX IF NOT EXISTS finance_ledger_entry_overrides_status_updated_idx
+  ON finance_ledger_entry_overrides (status, updated_at)
+  WHERE status = 'active';
 CREATE INDEX IF NOT EXISTS finance_patterns_kind_seen_idx
   ON finance_patterns (pattern_kind, last_seen_at);
 CREATE INDEX IF NOT EXISTS finance_export_runs_created_idx

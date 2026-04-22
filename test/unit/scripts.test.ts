@@ -35,6 +35,7 @@ const ACTIVE_MIGRATIONS = [
 	{ name: "007_review_lanes_tax_reports.sql" },
 	{ name: "008_finance_import_uploads.sql" },
 	{ name: "009_unified_workflows_text_source_overrides.sql" },
+	{ name: "010_finance_ledger_override_indexes.sql" },
 ];
 
 const loginOpenAICodex = vi.fn(async () => ({

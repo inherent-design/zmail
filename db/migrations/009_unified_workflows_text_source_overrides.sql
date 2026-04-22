@@ -16,6 +16,10 @@ CREATE TABLE IF NOT EXISTS finance_ledger_entry_overrides (
 CREATE INDEX IF NOT EXISTS finance_ledger_entry_overrides_active_idx
   ON finance_ledger_entry_overrides (canonical_key, status, updated_at);
 
+CREATE INDEX IF NOT EXISTS finance_ledger_entry_overrides_status_updated_idx
+  ON finance_ledger_entry_overrides (status, updated_at)
+  WHERE status = 'active';
+
 UPDATE finance_import_runs
   SET source_kind = 'text'
   WHERE source_kind = 'statement';
