@@ -242,3 +242,16 @@ Target service-ready examples:
 ## Out Of Scope
 
 - hiding duplicate import repair inside unrelated schema migrations
+
+## Migration 009
+
+Migration 009 adds durable finance ledger overrides, guarded review decision
+columns, and exact source-kind backfills from legacy `statement` to canonical
+`text`. Guarded DDL for `review_classification_heads.resolution_note` and
+`review_classification_heads.decided_at` runs before migration stamping so stale
+adopted databases do not fail duplicate column creation.
+
+Backfills only touch source-kind columns: finance import runs, finance upload
+hints, ledger entry authority, ledger entry source kind, yearly rollups,
+subcategory rollups, and registry suggestion source kind. Semantic statement
+fields are not altered.

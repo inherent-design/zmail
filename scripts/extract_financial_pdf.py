@@ -50,7 +50,7 @@ def build_schema() -> dict:
         ],
         "properties": {
             "schemaVersion": {"type": "string", "enum": ["finance-source-import.v1"]},
-            "sourceKind": {"type": "string", "enum": ["pdf", "statement", "csv", "ofx"]},
+            "sourceKind": {"type": "string", "enum": ["pdf", "text", "statement", "csv", "ofx"]},
             "sourceFile": {"type": "object"},
             "artifactSha256": {"type": "string"},
             "extractor": {"type": "object"},
@@ -109,9 +109,13 @@ def main() -> int:
     parsed = json.loads(result.stdout)
 
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    source_kind = parsed.get("sourceKind", "pdf")
+    if source_kind == "statement":
+        source_kind = "text"
+
     artifact = {
         "schemaVersion": "finance-source-import.v1",
-        "sourceKind": parsed.get("sourceKind", "pdf"),
+        "sourceKind": source_kind,
         "sourceFile": {
             "absolutePath": str(pdf_path),
             "sha256": file_sha,

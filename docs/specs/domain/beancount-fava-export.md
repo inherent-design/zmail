@@ -241,3 +241,10 @@ Remaining known drift:
 - statement parity checks are still staging-side validation work
 - implementation must explicitly keep `both`, `neither`, and `unknown`
   directions in sidecars if any such row reaches `status = "ready"`
+
+## Browser Workflow
+
+Export queue actions return mutation envelopes targeting export run state,
+export-health, and lane islands. Export manifests and validation JSON render
+through `DataInspector`. Redacted manifest data may be copied from the browser;
+raw secrets, tokens, and full account numbers are not rendered.

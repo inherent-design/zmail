@@ -17,6 +17,8 @@ import type {
 	loadRunsData,
 } from "#/server/actions";
 import type { loadOrgSelectionData } from "#/server/auth";
+import type { UiNodeRenderMap } from "#/server/ui/nodes";
+import { DataInspector, ToastRegion } from "#/server/ui/primitives";
 
 const CLIENT_CONFIG = loadResolvedConfig();
 
@@ -64,6 +66,7 @@ export type IslandDefinition = {
 };
 
 export type IslandRenderMap = Record<string, unknown>;
+export type { UiNodeRenderMap };
 
 const DEFAULT_STATE_POLICY = {
 	semanticUrlKeys: [],
@@ -432,6 +435,16 @@ function jsonScript(value: unknown) {
 		.replaceAll("\u2029", "\\u2029");
 }
 
+function messageLabelExplanation(value: unknown) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return null;
+	}
+	const explanation = (value as { explanation?: unknown }).explanation;
+	return typeof explanation === "string" && explanation.trim().length > 0
+		? explanation
+		: null;
+}
+
 function href(path: string) {
 	return appPath(path);
 }
@@ -491,6 +504,7 @@ export function DocumentShell(input: {
 						{input.children}
 					</main>
 				</div>
+				<ToastRegion />
 				<script type="module" src={assetPath("/client/core/browser-env.js")} />
 				<script type="module" src={assetPath("/client/app.js")}></script>
 			</body>
@@ -562,12 +576,31 @@ export function IslandFragmentEnvelope(input: {
 	);
 }
 
-function JsonBlock(input: { value: unknown }) {
-	return <pre class="json-block">{json(input.value)}</pre>;
+export function NodeFragmentEnvelope(input: {
+	page: string;
+	eventCursor: number;
+	children: unknown;
+}) {
+	return (
+		<div
+			data-zmail-node-fragments={input.page}
+			data-event-cursor={String(input.eventCursor)}
+		>
+			{input.children}
+		</div>
+	);
 }
 
 function Pill(input: { children: unknown }) {
 	return <span class="pill">{input.children}</span>;
+}
+
+function nodeAttrs(input: { nodeId: string; key: string; islandId: string }) {
+	return {
+		"data-zmail-node": input.nodeId,
+		"data-zmail-node-key": input.key,
+		"data-zmail-parent-island": input.islandId,
+	};
 }
 
 function prettyConnectionState(
@@ -667,6 +700,73 @@ function renderAccountWorkStatus(lanes: LaneProgressSnapshot[]) {
 				</span>
 			))}
 		</div>
+	);
+}
+
+function renderAccountListRow(
+	account: AccountsPageData["accounts"][number],
+	options?: {
+		canManageLifecycle?: (ownerPrincipalEmail: string | null) => boolean;
+	},
+) {
+	const canManageLifecycle =
+		options?.canManageLifecycle?.(account.owner_principal_email ?? null) ??
+		false;
+	return (
+		<tr
+			key={account.id}
+			{...nodeAttrs({
+				nodeId: "account.list.item",
+				key: account.id,
+				islandId: "accounts.list",
+			})}
+		>
+			<td>
+				<a href={href(`/accounts/${account.id}`)}>{account.label}</a>
+			</td>
+			<td>{account.email_address}</td>
+			<td>{account.provider_kind}</td>
+			<td>{prettyConnectionState(account.connection_state)}</td>
+			<td>{account.sync_enabled ? "enabled" : "disabled"}</td>
+			<td>{mailboxStateLabel(account.sync_status)}</td>
+			<td>{renderAccountWorkStatus(account.lane_progress)}</td>
+			<td>{account.last_synced_at ?? "never"}</td>
+			<td>{String(account.message_count)}</td>
+			<td>{account.last_error ?? "none"}</td>
+			<td>
+				{account.connection_state === "config_error" && canManageLifecycle ? (
+					<a href={href(`/accounts/${account.id}/reconnect`)}>
+						Retry after config fix
+					</a>
+				) : (account.connection_state === "needs_reconnect" ||
+						account.connection_state === "disconnected") &&
+					canManageLifecycle ? (
+					<a href={href(`/accounts/${account.id}/reconnect`)}>Reconnect</a>
+				) : (
+					<span class="muted">None</span>
+				)}
+			</td>
+		</tr>
+	);
+}
+
+function renderAccountRecentJobRow(
+	job: AccountDetailPageData["recentJobs"][number],
+) {
+	return (
+		<tr
+			key={job.id}
+			{...nodeAttrs({
+				nodeId: "account.detail.job",
+				key: job.id,
+				islandId: "account.recent-jobs",
+			})}
+		>
+			<td>{job.kind}</td>
+			<td>{job.status}</td>
+			<td>{job.created_at}</td>
+			<td>{job.last_error ?? "none"}</td>
+		</tr>
 	);
 }
 
@@ -964,46 +1064,9 @@ export function renderAccountsIslandMap(
 						</tr>
 					</thead>
 					<tbody>
-						{data.accounts.map((account) => {
-							const canManageLifecycle =
-								options?.canManageLifecycle?.(
-									account.owner_principal_email ?? null,
-								) ?? false;
-							return (
-								<tr key={account.id}>
-									<td>
-										<a href={href(`/accounts/${account.id}`)}>
-											{account.label}
-										</a>
-									</td>
-									<td>{account.email_address}</td>
-									<td>{account.provider_kind}</td>
-									<td>{prettyConnectionState(account.connection_state)}</td>
-									<td>{account.sync_enabled ? "enabled" : "disabled"}</td>
-									<td>{mailboxStateLabel(account.sync_status)}</td>
-									<td>{renderAccountWorkStatus(account.lane_progress)}</td>
-									<td>{account.last_synced_at ?? "never"}</td>
-									<td>{String(account.message_count)}</td>
-									<td>{account.last_error ?? "none"}</td>
-									<td>
-										{account.connection_state === "config_error" &&
-										canManageLifecycle ? (
-											<a href={href(`/accounts/${account.id}/reconnect`)}>
-												Retry after config fix
-											</a>
-										) : (account.connection_state === "needs_reconnect" ||
-												account.connection_state === "disconnected") &&
-											canManageLifecycle ? (
-											<a href={href(`/accounts/${account.id}/reconnect`)}>
-												Reconnect
-											</a>
-										) : (
-											<span class="muted">None</span>
-										)}
-									</td>
-								</tr>
-							);
-						})}
+						{data.accounts.map((account) =>
+							renderAccountListRow(account, options),
+						)}
 					</tbody>
 				</table>
 			</IslandFrame>
@@ -1027,6 +1090,26 @@ export function renderAccountsIslandMap(
 			</IslandFrame>
 		),
 	} satisfies IslandRenderMap;
+}
+
+export function renderAccountsNodeMap(
+	data: AccountsPageData,
+	options?: {
+		canManageLifecycle?: (ownerPrincipalEmail: string | null) => boolean;
+	},
+) {
+	const accountsById = new Map(
+		data.accounts.map((account) => [account.id, account]),
+	);
+	return {
+		"account.list.item": {
+			islandId: "accounts.list",
+			render: (key: string) => {
+				const account = accountsById.get(key);
+				return account ? renderAccountListRow(account, options) : null;
+			},
+		},
+	} satisfies UiNodeRenderMap;
 }
 
 export const ACCOUNTS_ISLAND_IDS = [
@@ -1230,19 +1313,25 @@ export function renderAccountDetailIslandMap(
 						</tr>
 					</thead>
 					<tbody>
-						{data.recentJobs.map((job) => (
-							<tr key={job.id}>
-								<td>{job.kind}</td>
-								<td>{job.status}</td>
-								<td>{job.created_at}</td>
-								<td>{job.last_error ?? "none"}</td>
-							</tr>
-						))}
+						{data.recentJobs.map((job) => renderAccountRecentJobRow(job))}
 					</tbody>
 				</table>
 			</IslandFrame>
 		),
 	} satisfies IslandRenderMap;
+}
+
+export function renderAccountDetailNodeMap(data: AccountDetailPageData) {
+	const jobsById = new Map(data.recentJobs.map((job) => [job.id, job]));
+	return {
+		"account.detail.job": {
+			islandId: "account.recent-jobs",
+			render: (key: string) => {
+				const job = jobsById.get(key);
+				return job ? renderAccountRecentJobRow(job) : null;
+			},
+		},
+	} satisfies UiNodeRenderMap;
 }
 
 export const ACCOUNT_DETAIL_ISLAND_IDS = [
@@ -1766,11 +1855,22 @@ export function renderMessageDetailIslandMap(data: MessageDetailPageData) {
 				<div class="stack">
 					<div>
 						<h3>Current label</h3>
-						<JsonBlock value={data.currentLabel?.label ?? null} />
+						{messageLabelExplanation(data.currentLabel?.label ?? null) ? (
+							<p>{messageLabelExplanation(data.currentLabel?.label ?? null)}</p>
+						) : null}
+						<DataInspector
+							kind="message-label"
+							id={data.message.id}
+							value={data.currentLabel?.label ?? null}
+						/>
 					</div>
 					<div>
 						<h3>Classification history</h3>
-						<JsonBlock value={data.classifications} />
+						<DataInspector
+							kind="classification-history"
+							id={data.message.id}
+							value={data.classifications}
+						/>
 					</div>
 				</div>
 			</IslandFrame>
@@ -1778,7 +1878,11 @@ export function renderMessageDetailIslandMap(data: MessageDetailPageData) {
 		"message.finance": (
 			<IslandFrame id="message.finance" class="card stack">
 				<h2>Finance intel</h2>
-				<JsonBlock value={data.financeIntel} />
+				<DataInspector
+					kind="finance-intel"
+					id={data.message.id}
+					value={data.financeIntel}
+				/>
 			</IslandFrame>
 		),
 		"message.reviews": (
@@ -1787,19 +1891,35 @@ export function renderMessageDetailIslandMap(data: MessageDetailPageData) {
 				<div class="stack">
 					<details class="drawer">
 						<summary>Metadata</summary>
-						<JsonBlock value={data.message} />
+						<DataInspector
+							kind="message"
+							id={data.message.id}
+							value={data.message}
+						/>
 					</details>
 					<details class="drawer">
 						<summary>Attachments</summary>
-						<JsonBlock value={data.attachments} />
+						<DataInspector
+							kind="attachments"
+							id={data.message.id}
+							value={data.attachments}
+						/>
 					</details>
 					<details class="drawer">
 						<summary>Moderation</summary>
-						<JsonBlock value={data.moderation} />
+						<DataInspector
+							kind="moderation"
+							id={data.message.id}
+							value={data.moderation}
+						/>
 					</details>
 					<details class="drawer">
 						<summary>Latest overseer profile</summary>
-						<JsonBlock value={data.latestProfile} />
+						<DataInspector
+							kind="profile"
+							id={data.message.account_id}
+							value={data.latestProfile}
+						/>
 					</details>
 				</div>
 			</IslandFrame>
@@ -1834,6 +1954,148 @@ export function renderMessageDetailPage(data: MessageDetailPageData) {
 	);
 }
 
+function renderReviewQueueItem(row: ReviewPageData["rootReviews"][number]) {
+	return (
+		<section
+			key={row.id}
+			class="card stack"
+			data-review-id={row.id}
+			data-mutation-root
+			{...nodeAttrs({
+				nodeId: "review.queue.item",
+				key: row.id,
+				islandId: "review.queue",
+			})}
+		>
+			<div class="row">
+				<strong>{row.subject ?? "(no subject)"}</strong>
+				<Pill>{row.sender_address ?? "unknown sender"}</Pill>
+				<Pill>{row.body_extraction_strategy}</Pill>
+				{row.has_forwarded ? <Pill>Forwarded</Pill> : null}
+				{row.parse_status === "error" ? <Pill>Parse error</Pill> : null}
+			</div>
+			<p>{row.snippet}</p>
+			{row.parse_status === "error" && row.parse_error_reason ? (
+				<p class="muted">Parse issue: {row.parse_error_reason}</p>
+			) : null}
+			<DataInspector
+				kind="root-review-result"
+				id={row.id}
+				value={row.result}
+				stateKey={`root-review-result:${row.id}`}
+			/>
+			<label>
+				Override JSON
+				<textarea rows={14} data-override-json name="override">
+					{json(row.result)}
+				</textarea>
+			</label>
+			<label>
+				Decision note
+				<input class="input" name="note" data-resolution-note />
+			</label>
+			<p class="muted" data-mutation-error></p>
+			<div class="actions" data-page-actions="review">
+				<Button
+					label="Accept"
+					action={`/rpc/reviews/${row.id}/resolve`}
+					payload={{ action: "accept" }}
+					variant="secondary"
+				/>
+				<Button
+					label="Override"
+					action={`/rpc/reviews/${row.id}/resolve`}
+					payload={{ action: "override" }}
+				/>
+				<Button
+					label="Defer"
+					action={`/rpc/reviews/${row.id}/resolve`}
+					payload={{ action: "defer" }}
+					variant="secondary"
+				/>
+			</div>
+		</section>
+	);
+}
+
+function reviewFindingNodeKey(row: ReviewPageData["findings"][number]) {
+	return `${row.target_kind}:${row.target_id}`;
+}
+
+function renderReviewFindingRow(row: ReviewPageData["findings"][number]) {
+	const key = reviewFindingNodeKey(row);
+	const payloadBase = {
+		targetKind: row.target_kind,
+		targetId: row.target_id,
+	};
+	return (
+		<tr
+			key={`${key}:${row.action}`}
+			data-review-finding-key={key}
+			data-mutation-root
+			{...nodeAttrs({
+				nodeId: "review.finding.item",
+				key,
+				islandId: "review.queue",
+			})}
+		>
+			<td>
+				{row.target_kind}:{row.target_id}
+			</td>
+			<td>{row.status}</td>
+			<td>{row.severity}</td>
+			<td>{row.action}</td>
+			<td>{percent(row.confidence)}</td>
+			<td>{row.reason}</td>
+			<td>
+				<DataInspector
+					kind="review-finding"
+					id={key}
+					status={row.status}
+					confidence={row.confidence}
+					value={row}
+					stateKey={`review-finding:${key}:${row.action}`}
+				/>
+			</td>
+			<td>
+				<div class="stack">
+					<input
+						class="input"
+						name="resolutionNote"
+						data-resolution-note
+						placeholder="Decision note"
+					/>
+					<p class="muted" data-mutation-error></p>
+					{row.status === "open" ? (
+						<div class="actions">
+							<Button
+								label="Accept"
+								action="/rpc/finance/review-findings/resolve"
+								payload={{ ...payloadBase, action: "accept" }}
+								variant="secondary"
+							/>
+							<Button
+								label="Dismiss"
+								action="/rpc/finance/review-findings/resolve"
+								payload={{ ...payloadBase, action: "dismiss" }}
+								variant="secondary"
+							/>
+							<Button
+								label="Defer"
+								action="/rpc/finance/review-findings/resolve"
+								payload={{ ...payloadBase, action: "defer" }}
+								variant="secondary"
+							/>
+						</div>
+					) : (
+						<span class="muted">decided</span>
+					)}
+				</div>
+			</td>
+		</tr>
+	);
+}
+
 export function renderReviewIslandMap(rows: ReviewPageData) {
 	return {
 		"review.stats": (
@@ -1858,36 +2120,6 @@ export function renderReviewIslandMap(rows: ReviewPageData) {
 						</div>
 					</div>
 				</div>
-				<h2>Review classifier findings</h2>
-				<table>
-					<thead>
-						<tr>
-							<th>Target</th>
-							<th>Severity</th>
-							<th>Action</th>
-							<th>Confidence</th>
-							<th>Reason</th>
-						</tr>
-					</thead>
-					<tbody>
-						{rows.findings.map((row) => (
-							<tr key={`${row.target_kind}:${row.target_id}`}>
-								<td>
-									{row.target_kind}:{row.target_id}
-								</td>
-								<td>{row.severity}</td>
-								<td>{row.action}</td>
-								<td>{percent(row.confidence)}</td>
-								<td>{row.reason}</td>
-							</tr>
-						))}
-						{rows.findings.length === 0 ? (
-							<tr>
-								<td colspan={5}>No review classifier findings.</td>
-							</tr>
-						) : null}
-					</tbody>
-				</table>
 				<h2>Action history</h2>
 				<table>
 					<thead>
@@ -1916,7 +2148,12 @@ export function renderReviewIslandMap(rows: ReviewPageData) {
 								<td>
 									<details class="drawer">
 										<summary>Open</summary>
-										<JsonBlock value={row.result} />
+										<DataInspector
+											kind="review-classifier-run"
+											id={row.id}
+											value={row.result}
+											stateKey={`review-classifier-run:${row.id}`}
+										/>
 									</details>
 								</td>
 							</tr>
@@ -1940,45 +2177,58 @@ export function renderReviewIslandMap(rows: ReviewPageData) {
 		),
 		"review.queue": (
 			<IslandFrame id="review.queue" class="stack">
-				{rows.rootReviews.map((row) => (
-					<section key={row.id} class="card stack" data-review-id={row.id}>
-						<div class="row">
-							<strong>{row.subject ?? "(no subject)"}</strong>
-							<Pill>{row.sender_address ?? "unknown sender"}</Pill>
-							<Pill>{row.body_extraction_strategy}</Pill>
-							{row.has_forwarded ? <Pill>Forwarded</Pill> : null}
-							{row.parse_status === "error" ? <Pill>Parse error</Pill> : null}
-						</div>
-						<p>{row.snippet}</p>
-						{row.parse_status === "error" && row.parse_error_reason ? (
-							<p class="muted">Parse issue: {row.parse_error_reason}</p>
-						) : null}
-						<JsonBlock value={row.result} />
-						<label>
-							Override JSON
-							<textarea rows={14} data-override-json>
-								{json(row.result)}
-							</textarea>
-						</label>
-						<p class="muted" data-review-error></p>
-						<div class="actions" data-page-actions="review">
-							<Button
-								label="Accept"
-								action={`/rpc/reviews/${row.id}/resolve`}
-								payload={{ action: "accept" }}
-								variant="secondary"
-							/>
-							<Button
-								label="Override"
-								action={`/rpc/reviews/${row.id}/resolve`}
-								payload={{ action: "override" }}
-							/>
-						</div>
-					</section>
-				))}
+				<section class="card stack">
+					<h2>Review classifier findings</h2>
+					<table>
+						<thead>
+							<tr>
+								<th>Target</th>
+								<th>Status</th>
+								<th>Severity</th>
+								<th>Action</th>
+								<th>Confidence</th>
+								<th>Reason</th>
+								<th>Details</th>
+								<th>Decision</th>
+							</tr>
+						</thead>
+						<tbody>
+							{rows.findings.map((row) => renderReviewFindingRow(row))}
+							{rows.findings.length === 0 ? (
+								<tr>
+									<td colspan={8}>No review classifier findings.</td>
+								</tr>
+							) : null}
+						</tbody>
+					</table>
+				</section>
+				{rows.rootReviews.map((row) => renderReviewQueueItem(row))}
 			</IslandFrame>
 		),
 	} satisfies IslandRenderMap;
+}
+
+export function renderReviewNodeMap(rows: ReviewPageData) {
+	const reviewsById = new Map(rows.rootReviews.map((row) => [row.id, row]));
+	const findingsByKey = new Map(
+		rows.findings.map((row) => [reviewFindingNodeKey(row), row]),
+	);
+	return {
+		"review.queue.item": {
+			islandId: "review.queue",
+			render: (key: string) => {
+				const row = reviewsById.get(key);
+				return row ? renderReviewQueueItem(row) : null;
+			},
+		},
+		"review.finding.item": {
+			islandId: "review.queue",
+			render: (key: string) => {
+				const row = findingsByKey.get(key);
+				return row ? renderReviewFindingRow(row) : null;
+			},
+		},
+	} satisfies UiNodeRenderMap;
 }
 
 export const REVIEW_ISLAND_IDS = [
@@ -1997,6 +2247,50 @@ function money(minor: number) {
 		style: "currency",
 		currency: "USD",
 	}).format(minor / 100);
+}
+
+function renderFinanceLedgerRow(
+	row: FinancePageData["ledgerPreview"][number],
+	input: { nodeId: string; islandId: string; includeCategory: boolean },
+) {
+	return (
+		<tr
+			key={row.canonicalKey}
+			{...nodeAttrs({
+				nodeId: input.nodeId,
+				key: row.canonicalKey,
+				islandId: input.islandId,
+			})}
+		>
+			<td>{row.status}</td>
+			<td>{row.occurredAt ?? "unknown"}</td>
+			<td>{row.description ?? "n/a"}</td>
+			<td>{row.amountMinor != null ? money(row.amountMinor) : "n/a"}</td>
+			<td>{row.book}</td>
+			{input.includeCategory ? (
+				<td>
+					{row.primaryCategory}
+					{row.secondaryCategory ? ` / ${row.secondaryCategory}` : ""}
+				</td>
+			) : null}
+			<td>{row.sourceKind}</td>
+			<td>
+				<details
+					class="drawer"
+					data-zmail-state-key={`${input.nodeId}:${row.canonicalKey}`}
+				>
+					<summary>Open</summary>
+					<DataInspector
+						kind="finance-ledger-row"
+						id={row.canonicalKey}
+						status={row.status}
+						value={row}
+						stateKey={`${input.nodeId}:${row.canonicalKey}`}
+					/>
+				</details>
+			</td>
+		</tr>
+	);
 }
 
 function filterHref(
@@ -2099,6 +2393,300 @@ function taxRunStatusLabel(status: string) {
 	return status === "audit_only" ? "audit snapshot" : status;
 }
 
+function renderFinanceUploadRunRow(row: FinancePageData["uploadRuns"][number]) {
+	return (
+		<tr
+			key={row.id}
+			{...nodeAttrs({
+				nodeId: "finance.upload.run",
+				key: row.id,
+				islandId: "finance.imports",
+			})}
+		>
+			<td>{row.originalFilename}</td>
+			<td>{row.status}</td>
+			<td>{String(row.fileCount)}</td>
+			<td>{String(row.selectedPageCount)}</td>
+			<td>{row.mode}</td>
+			<td>{String(row.totalBytes)}</td>
+			<td>
+				{row.artifactSha256?.slice(0, 12) ?? "n/a"}
+				{row.importRunId ? ` / ${row.importRunId.slice(0, 8)}` : ""}
+			</td>
+			<td>{row.updatedAt}</td>
+			<td>
+				{row.status === "failed" || row.status === "needs_review"
+					? String(row.error?.reason ?? row.error?.message ?? "")
+					: ""}
+			</td>
+			<td>
+				<DataInspector
+					kind="finance-upload"
+					id={row.id}
+					status={row.status}
+					value={row}
+					stateKey={`finance-upload:${row.id}`}
+				/>
+			</td>
+		</tr>
+	);
+}
+
+function renderTaxReportRunRow(row: FinancePageData["taxReportRuns"][number]) {
+	return (
+		<tr
+			key={row.id}
+			{...nodeAttrs({
+				nodeId: "finance.tax.run",
+				key: row.id,
+				islandId: "finance.tax",
+			})}
+		>
+			<td>{taxRunStatusLabel(row.status)}</td>
+			<td>{row.reportKind}</td>
+			<td>
+				{String(row.year)}
+				{row.quarter ? ` Q${String(row.quarter)}` : ""}
+			</td>
+			<td>{row.outDir || "pending"}</td>
+			<td>
+				<div class="stack">
+					<span>
+						readiness blockers: {String(readinessBlockerCount(row.manifest))}
+					</span>
+					<span>
+						ready totals:{" "}
+						{row.validation &&
+						typeof row.validation === "object" &&
+						"acceptedTotalsUseReadyOnly" in row.validation
+							? String(
+									(row.validation as Record<string, unknown>)
+										.acceptedTotalsUseReadyOnly,
+								)
+							: "pending"}
+					</span>
+				</div>
+			</td>
+			<td>
+				<DataInspector
+					kind="tax-report-run"
+					id={row.id}
+					status={row.status}
+					value={row}
+					stateKey={`tax-report-run:${row.id}`}
+				/>
+			</td>
+		</tr>
+	);
+}
+
+function renderFinanceExportRunRow(row: FinancePageData["exportRuns"][number]) {
+	return (
+		<tr
+			key={row.id}
+			{...nodeAttrs({
+				nodeId: "finance.export.run",
+				key: row.id,
+				islandId: "finance.export-health",
+			})}
+		>
+			<td>{row.status}</td>
+			<td>{String(row.year ?? "all")}</td>
+			<td>{String(row.itemCount)}</td>
+			<td>{row.outDir}</td>
+			<td>
+				{row.validation &&
+				typeof row.validation === "object" &&
+				"beanCheck" in row.validation
+					? String(row.validation.beanCheck)
+					: "pending"}
+			</td>
+			<td>
+				<DataInspector
+					kind="finance-export-run"
+					id={row.id}
+					status={row.status}
+					value={row}
+					stateKey={`finance-export-run:${row.id}`}
+				/>
+			</td>
+		</tr>
+	);
+}
+
+function financeReviewFindingNodeKey(
+	row: FinancePageData["reviewFindings"][number],
+) {
+	return `${row.targetKind}:${row.targetId}`;
+}
+
+function renderFinanceReviewFindingRow(
+	row: FinancePageData["reviewFindings"][number],
+) {
+	const key = financeReviewFindingNodeKey(row);
+	const payloadBase = {
+		targetKind: row.targetKind,
+		targetId: row.targetId,
+	};
+	return (
+		<tr
+			key={`${key}:${row.action}`}
+			data-mutation-root
+			{...nodeAttrs({
+				nodeId: "finance.review.finding",
+				key,
+				islandId: "finance.review",
+			})}
+		>
+			<td>
+				{row.targetKind}:{row.targetId}
+			</td>
+			<td>{row.status}</td>
+			<td>{row.severity}</td>
+			<td>{row.action}</td>
+			<td>{row.reason}</td>
+			<td>
+				<DataInspector
+					kind="review-finding"
+					id={key}
+					status={row.status}
+					confidence={row.confidence}
+					value={row}
+					stateKey={`review-finding:${key}:${row.action}`}
+				/>
+			</td>
+			<td>
+				<div class="stack">
+					<p class="muted" data-mutation-error></p>
+					{row.status === "open" ? (
+						<div class="actions">
+							<Button
+								label="Accept"
+								action="/rpc/finance/review-findings/resolve"
+								payload={{ ...payloadBase, action: "accept" }}
+								variant="secondary"
+							/>
+							<Button
+								label="Dismiss"
+								action="/rpc/finance/review-findings/resolve"
+								payload={{ ...payloadBase, action: "dismiss" }}
+								variant="secondary"
+							/>
+							<Button
+								label="Defer"
+								action="/rpc/finance/review-findings/resolve"
+								payload={{ ...payloadBase, action: "defer" }}
+								variant="secondary"
+							/>
+						</div>
+					) : (
+						<span class="muted">decided</span>
+					)}
+				</div>
+			</td>
+		</tr>
+	);
+}
+
+function isMappingSuggestionRow(
+	row: FinancePageData["registrySuggestions"][number],
+) {
+	const suggestion = row.suggestion as unknown;
+	return (
+		row.entityKind === "finance_account_mapping" &&
+		isRecord(suggestion) &&
+		suggestion.schemaVersion === "finance-account-mapping-suggestion.v1"
+	);
+}
+
+function renderFinanceMappingCandidateRow(
+	row: FinancePageData["registrySuggestions"][number],
+) {
+	const suggestion = row.suggestion as unknown as Record<string, unknown>;
+	const impact = isRecord(suggestion.impact) ? suggestion.impact : {};
+	const mapping = isRecord(suggestion.mapping) ? suggestion.mapping : {};
+	const evidence = isRecord(suggestion.evidence) ? suggestion.evidence : {};
+	const sampleMessageIds = Array.isArray(evidence.sampleMessageIds)
+		? evidence.sampleMessageIds.map(String).slice(0, 4)
+		: [];
+	const autoApplyEligible = suggestion.autoApplyEligible === true;
+	return (
+		<tr
+			key={row.id}
+			{...nodeAttrs({
+				nodeId: "finance.mapping.candidate",
+				key: row.id,
+				islandId: "finance.mappings",
+			})}
+		>
+			<td>{percent(row.confidence)}</td>
+			<td>
+				{String(impact.rowCount ?? 0)} rows,{" "}
+				{String(impact.readyUnlockEstimate ?? 0)} ready unlock
+			</td>
+			<td>
+				<div class="stack">
+					<span>{String(mapping.debitAccount ?? "n/a")}</span>
+					<span>{String(mapping.creditAccount ?? "n/a")}</span>
+				</div>
+			</td>
+			<td>
+				{row.status}
+				{autoApplyEligible ? " / auto" : " / review"}
+			</td>
+			<td>
+				<div class="stack">
+					<span>
+						{Array.isArray(evidence.senderDomains)
+							? evidence.senderDomains.map(String).join(", ")
+							: "no domain"}
+					</span>
+					<span>
+						{sampleMessageIds.map((messageId, index) => (
+							<>
+								{index > 0 ? ", " : ""}
+								<a href={href(`/messages/${messageId}`)}>{messageId}</a>
+							</>
+						))}
+					</span>
+					<details
+						class="drawer"
+						data-zmail-state-key={`mapping-candidate:${row.id}`}
+					>
+						<summary>Details</summary>
+						<DataInspector
+							kind="mapping-candidate"
+							id={row.id}
+							status={row.status}
+							confidence={row.confidence}
+							value={row}
+							stateKey={`mapping-candidate:${row.id}`}
+						/>
+					</details>
+				</div>
+			</td>
+			<td>
+				{row.status === "pending" ? (
+					<div class="actions">
+						<Button
+							label="Yes"
+							action={`/rpc/finance/mappings/suggestions/${row.id}/apply`}
+							variant="secondary"
+						/>
+						<Button
+							label="No"
+							action={`/rpc/finance/mappings/suggestions/${row.id}/dismiss`}
+							variant="secondary"
+						/>
+					</div>
+				) : (
+					<span class="muted">n/a</span>
+				)}
+			</td>
+		</tr>
+	);
+}
+
 function financeActiveTabIslandId(activeTab: string) {
 	switch (activeTab) {
 		case "readiness":
@@ -2128,14 +2716,9 @@ export function renderFinanceIslandMap(
 		data,
 		currentSearch,
 	);
-	const mappingSuggestions = data.registrySuggestions.filter((row) => {
-		const suggestion = row.suggestion as unknown;
-		return (
-			row.entityKind === "finance_account_mapping" &&
-			isRecord(suggestion) &&
-			suggestion.schemaVersion === "finance-account-mapping-suggestion.v1"
-		);
-	});
+	const mappingSuggestions = data.registrySuggestions.filter(
+		isMappingSuggestionRow,
+	);
 
 	return {
 		"finance.command-bar": (
@@ -2428,7 +3011,13 @@ export function renderFinanceIslandMap(
 								<td>
 									<details class="drawer">
 										<summary>Open</summary>
-										<JsonBlock value={row.summary} />
+										<DataInspector
+											kind="finance-pattern"
+											id={row.id}
+											confidence={row.confidence}
+											value={row.summary}
+											stateKey={`finance-pattern:${row.id}`}
+										/>
 									</details>
 								</td>
 							</tr>
@@ -2566,30 +3155,13 @@ export function renderFinanceIslandMap(
 								</tr>
 							</thead>
 							<tbody>
-								{data.ledgerPreview.map((row) => (
-									<tr key={row.canonicalKey}>
-										<td>{row.status}</td>
-										<td>{row.occurredAt ?? "unknown"}</td>
-										<td>{row.description ?? "n/a"}</td>
-										<td>
-											{row.amountMinor != null ? money(row.amountMinor) : "n/a"}
-										</td>
-										<td>{row.book}</td>
-										<td>
-											{row.primaryCategory}
-											{row.secondaryCategory
-												? ` / ${row.secondaryCategory}`
-												: ""}
-										</td>
-										<td>{row.sourceKind}</td>
-										<td>
-											<details class="drawer">
-												<summary>Open</summary>
-												<JsonBlock value={row} />
-											</details>
-										</td>
-									</tr>
-								))}
+								{data.ledgerPreview.map((row) =>
+									renderFinanceLedgerRow(row, {
+										nodeId: "finance.ledger.row",
+										islandId: "finance.ledger",
+										includeCategory: true,
+									}),
+								)}
 								{data.ledgerPreview.length === 0 ? (
 									<tr>
 										<td colspan={8}>No ledger rows for current filters.</td>
@@ -2608,7 +3180,7 @@ export function renderFinanceIslandMap(
 							enctype="multipart/form-data"
 							method="post"
 							action={href("/api/finance/uploads")}
-							data-finance-upload="true"
+							data-mutation="multipart"
 						>
 							<label>
 								File
@@ -2633,7 +3205,7 @@ export function renderFinanceIslandMap(
 								Source
 								<select name="sourceKindHint">
 									<option value="">PDF</option>
-									<option value="statement">Statement</option>
+									<option value="text">Text</option>
 								</select>
 							</label>
 							<div class="actions">
@@ -2657,37 +3229,7 @@ export function renderFinanceIslandMap(
 								</tr>
 							</thead>
 							<tbody>
-								{data.uploadRuns.map((row) => (
-									<tr key={row.id}>
-										<td>{row.originalFilename}</td>
-										<td>{row.status}</td>
-										<td>{String(row.fileCount)}</td>
-										<td>{String(row.selectedPageCount)}</td>
-										<td>{row.mode}</td>
-										<td>{String(row.totalBytes)}</td>
-										<td>
-											{row.artifactSha256?.slice(0, 12) ?? "n/a"}
-											{row.importRunId
-												? ` / ${row.importRunId.slice(0, 8)}`
-												: ""}
-										</td>
-										<td>{row.updatedAt}</td>
-										<td>
-											{row.status === "failed" || row.status === "needs_review"
-												? String(row.error?.reason ?? row.error?.message ?? "")
-												: ""}
-										</td>
-										<td>
-											<details
-												class="drawer"
-												data-zmail-state-key={`finance-upload:${row.id}`}
-											>
-												<summary>Open</summary>
-												<JsonBlock value={row} />
-											</details>
-										</td>
-									</tr>
-								))}
+								{data.uploadRuns.map((row) => renderFinanceUploadRunRow(row))}
 								{data.uploadRuns.length === 0 ? (
 									<tr>
 										<td colspan={10}>No upload runs.</td>
@@ -2722,7 +3264,12 @@ export function renderFinanceIslandMap(
 												data-zmail-state-key={`finance-import-document:${row.id}`}
 											>
 												<summary>Open</summary>
-												<JsonBlock value={row} />
+												<DataInspector
+													kind="finance-import-document"
+													id={row.id}
+													value={row}
+													stateKey={`finance-import-document:${row.id}`}
+												/>
 											</details>
 										</td>
 									</tr>
@@ -2758,7 +3305,12 @@ export function renderFinanceIslandMap(
 												data-zmail-state-key={`finance-import-transaction:${row.id}`}
 											>
 												<summary>Open</summary>
-												<JsonBlock value={row} />
+												<DataInspector
+													kind="finance-import-transaction"
+													id={row.id}
+													value={row}
+													stateKey={`finance-import-transaction:${row.id}`}
+												/>
 											</details>
 										</td>
 									</tr>
@@ -2788,84 +3340,9 @@ export function renderFinanceIslandMap(
 								</tr>
 							</thead>
 							<tbody>
-								{mappingSuggestions.map((row) => {
-									const suggestion = row.suggestion as unknown as Record<
-										string,
-										unknown
-									>;
-									const impact = isRecord(suggestion.impact)
-										? suggestion.impact
-										: {};
-									const mapping = isRecord(suggestion.mapping)
-										? suggestion.mapping
-										: {};
-									const evidence = isRecord(suggestion.evidence)
-										? suggestion.evidence
-										: {};
-									const sampleMessageIds = Array.isArray(
-										evidence.sampleMessageIds,
-									)
-										? evidence.sampleMessageIds.map(String).slice(0, 4)
-										: [];
-									const autoApplyEligible =
-										suggestion.autoApplyEligible === true;
-									return (
-										<tr key={row.id}>
-											<td>{percent(row.confidence)}</td>
-											<td>
-												{String(impact.rowCount ?? 0)} rows,{" "}
-												{String(impact.readyUnlockEstimate ?? 0)} ready unlock
-											</td>
-											<td>
-												<div class="stack">
-													<span>{String(mapping.debitAccount ?? "n/a")}</span>
-													<span>{String(mapping.creditAccount ?? "n/a")}</span>
-												</div>
-											</td>
-											<td>
-												{row.status}
-												{autoApplyEligible ? " / auto" : " / review"}
-											</td>
-											<td>
-												<div class="stack">
-													<span>
-														{Array.isArray(evidence.senderDomains)
-															? evidence.senderDomains.map(String).join(", ")
-															: "no domain"}
-													</span>
-													<span>
-														{sampleMessageIds.map((messageId, index) => (
-															<>
-																{index > 0 ? ", " : ""}
-																<a href={href(`/messages/${messageId}`)}>
-																	{messageId}
-																</a>
-															</>
-														))}
-													</span>
-													<details
-														class="drawer"
-														data-zmail-state-key={`mapping-candidate:${row.id}`}
-													>
-														<summary>Details</summary>
-														<JsonBlock value={row} />
-													</details>
-												</div>
-											</td>
-											<td>
-												{row.status === "pending" ? (
-													<Button
-														label="Apply"
-														action={`/rpc/finance/mappings/suggestions/${row.id}/apply`}
-														variant="secondary"
-													/>
-												) : (
-													<span class="muted">n/a</span>
-												)}
-											</td>
-										</tr>
-									);
-								})}
+								{mappingSuggestions.map((row) =>
+									renderFinanceMappingCandidateRow(row),
+								)}
 								{mappingSuggestions.length === 0 ? (
 									<tr>
 										<td colspan={6}>No mapping candidates.</td>
@@ -2877,6 +3354,7 @@ export function renderFinanceIslandMap(
 						<form
 							class="stack"
 							data-rpc={appPath("/rpc/finance/mappings/upsert")}
+							data-json-fields="mapping"
 						>
 							<label>
 								Mapping JSON
@@ -2936,35 +3414,21 @@ export function renderFinanceIslandMap(
 							<thead>
 								<tr>
 									<th>Target</th>
+									<th>Status</th>
 									<th>Severity</th>
 									<th>Action</th>
 									<th>Reason</th>
 									<th>Details</th>
+									<th>Decision</th>
 								</tr>
 							</thead>
 							<tbody>
-								{data.reviewFindings.map((row) => (
-									<tr key={`${row.targetKind}:${row.targetId}:${row.action}`}>
-										<td>
-											{row.targetKind}:{row.targetId}
-										</td>
-										<td>{row.severity}</td>
-										<td>{row.action}</td>
-										<td>{row.reason}</td>
-										<td>
-											<details
-												class="drawer"
-												data-zmail-state-key={`review-finding:${row.targetKind}:${row.targetId}:${row.action}`}
-											>
-												<summary>Open</summary>
-												<JsonBlock value={row} />
-											</details>
-										</td>
-									</tr>
-								))}
+								{data.reviewFindings.map((row) =>
+									renderFinanceReviewFindingRow(row),
+								)}
 								{data.reviewFindings.length === 0 ? (
 									<tr>
-										<td colspan={5}>No review classifier findings.</td>
+										<td colspan={7}>No review classifier findings.</td>
 									</tr>
 								) : null}
 							</tbody>
@@ -2983,24 +3447,13 @@ export function renderFinanceIslandMap(
 								</tr>
 							</thead>
 							<tbody>
-								{data.reviewRows.map((row) => (
-									<tr key={row.canonicalKey}>
-										<td>{row.status}</td>
-										<td>{row.occurredAt ?? "unknown"}</td>
-										<td>{row.description ?? "n/a"}</td>
-										<td>
-											{row.amountMinor != null ? money(row.amountMinor) : "n/a"}
-										</td>
-										<td>{row.book}</td>
-										<td>{row.sourceKind}</td>
-										<td>
-											<details class="drawer">
-												<summary>Open</summary>
-												<JsonBlock value={row} />
-											</details>
-										</td>
-									</tr>
-								))}
+								{data.reviewRows.map((row) =>
+									renderFinanceLedgerRow(row, {
+										nodeId: "finance.review.ledger-row",
+										islandId: "finance.review",
+										includeCategory: false,
+									}),
+								)}
 								{data.reviewRows.length === 0 ? (
 									<tr>
 										<td colspan={7}>No unresolved ledger rows.</td>
@@ -3022,7 +3475,12 @@ export function renderFinanceIslandMap(
 									data-zmail-state-key={`finance-export-run:${data.exportHealth.latestExport.id}:manifest`}
 								>
 									<summary>Manifest</summary>
-									<JsonBlock value={data.exportRuns[0]?.package ?? null} />
+									<DataInspector
+										kind="finance-export-manifest"
+										id={data.exportHealth.latestExport.id}
+										value={data.exportRuns[0]?.package ?? null}
+										stateKey={`finance-export-run:${data.exportHealth.latestExport.id}:manifest`}
+									/>
 								</details>
 							</>
 						) : null}
@@ -3035,6 +3493,8 @@ export function renderFinanceIslandMap(
 						<form
 							class="form-grid"
 							data-rpc={appPath("/rpc/finance/tax/personal")}
+							data-number-fields="year"
+							data-null-empty="outDir"
 						>
 							<label>
 								Personal tax year
@@ -3057,6 +3517,8 @@ export function renderFinanceIslandMap(
 						<form
 							class="form-grid"
 							data-rpc={appPath("/rpc/finance/tax/business/inherent-design")}
+							data-number-fields="year,quarter"
+							data-null-empty="outDir"
 						>
 							<label>
 								Business tax year
@@ -3093,45 +3555,7 @@ export function renderFinanceIslandMap(
 								</tr>
 							</thead>
 							<tbody>
-								{data.taxReportRuns.map((row) => (
-									<tr key={row.id}>
-										<td>{taxRunStatusLabel(row.status)}</td>
-										<td>{row.reportKind}</td>
-										<td>
-											{String(row.year)}
-											{row.quarter ? ` Q${String(row.quarter)}` : ""}
-										</td>
-										<td>{row.outDir || "pending"}</td>
-										<td>
-											<div class="stack">
-												<span>
-													readiness blockers:{" "}
-													{String(readinessBlockerCount(row.manifest))}
-												</span>
-												<span>
-													ready totals:{" "}
-													{row.validation &&
-													typeof row.validation === "object" &&
-													"acceptedTotalsUseReadyOnly" in row.validation
-														? String(
-																(row.validation as Record<string, unknown>)
-																	.acceptedTotalsUseReadyOnly,
-															)
-														: "pending"}
-												</span>
-											</div>
-										</td>
-										<td>
-											<details
-												class="drawer"
-												data-zmail-state-key={`tax-report-run:${row.id}`}
-											>
-												<summary>Open</summary>
-												<JsonBlock value={row} />
-											</details>
-										</td>
-									</tr>
-								))}
+								{data.taxReportRuns.map((row) => renderTaxReportRunRow(row))}
 								{data.taxReportRuns.length === 0 ? (
 									<tr>
 										<td colspan={6}>No tax package runs.</td>
@@ -3174,7 +3598,13 @@ export function renderFinanceIslandMap(
 				{activeTab === "exports" ? (
 					<>
 						<h2>Start export</h2>
-						<form class="form-grid" data-rpc={appPath("/rpc/finance/export")}>
+						<form
+							class="form-grid"
+							data-rpc={appPath("/rpc/finance/export")}
+							data-number-fields="year"
+							data-checkbox-fields="strict,force"
+							data-null-empty="year,outDir"
+						>
 							<label>
 								Year
 								<input class="input" name="year" value={String(data.year)} />
@@ -3214,30 +3644,7 @@ export function renderFinanceIslandMap(
 								</tr>
 							</thead>
 							<tbody>
-								{data.exportRuns.map((row) => (
-									<tr key={row.id}>
-										<td>{row.status}</td>
-										<td>{String(row.year ?? "all")}</td>
-										<td>{String(row.itemCount)}</td>
-										<td>{row.outDir}</td>
-										<td>
-											{row.validation &&
-											typeof row.validation === "object" &&
-											"beanCheck" in row.validation
-												? String(row.validation.beanCheck)
-												: "pending"}
-										</td>
-										<td>
-											<details
-												class="drawer"
-												data-zmail-state-key={`finance-export-run:${row.id}`}
-											>
-												<summary>Open</summary>
-												<JsonBlock value={row} />
-											</details>
-										</td>
-									</tr>
-								))}
+								{data.exportRuns.map((row) => renderFinanceExportRunRow(row))}
 								{data.exportRuns.length === 0 ? (
 									<tr>
 										<td colspan={6}>No export runs.</td>
@@ -3252,6 +3659,89 @@ export function renderFinanceIslandMap(
 	} satisfies IslandRenderMap;
 }
 
+export function renderFinanceNodeMap(data: FinancePageData) {
+	const ledgerRows = new Map(
+		data.ledgerPreview.map((row) => [row.canonicalKey, row]),
+	);
+	const reviewRows = new Map(
+		data.reviewRows.map((row) => [row.canonicalKey, row]),
+	);
+	const uploadRuns = new Map(data.uploadRuns.map((row) => [row.id, row]));
+	const exportRuns = new Map(data.exportRuns.map((row) => [row.id, row]));
+	const taxReportRuns = new Map(data.taxReportRuns.map((row) => [row.id, row]));
+	const reviewFindings = new Map(
+		data.reviewFindings.map((row) => [financeReviewFindingNodeKey(row), row]),
+	);
+	const mappingCandidates = new Map(
+		data.registrySuggestions
+			.filter(isMappingSuggestionRow)
+			.map((row) => [row.id, row]),
+	);
+	return {
+		"finance.ledger.row": {
+			islandId: "finance.ledger",
+			render: (key: string) => {
+				const row = ledgerRows.get(key);
+				return row
+					? renderFinanceLedgerRow(row, {
+							nodeId: "finance.ledger.row",
+							islandId: "finance.ledger",
+							includeCategory: true,
+						})
+					: null;
+			},
+		},
+		"finance.review.ledger-row": {
+			islandId: "finance.review",
+			render: (key: string) => {
+				const row = reviewRows.get(key);
+				return row
+					? renderFinanceLedgerRow(row, {
+							nodeId: "finance.review.ledger-row",
+							islandId: "finance.review",
+							includeCategory: false,
+						})
+					: null;
+			},
+		},
+		"finance.upload.run": {
+			islandId: "finance.imports",
+			render: (key: string) => {
+				const row = uploadRuns.get(key);
+				return row ? renderFinanceUploadRunRow(row) : null;
+			},
+		},
+		"finance.export.run": {
+			islandId: "finance.export-health",
+			render: (key: string) => {
+				const row = exportRuns.get(key);
+				return row ? renderFinanceExportRunRow(row) : null;
+			},
+		},
+		"finance.tax.run": {
+			islandId: "finance.tax",
+			render: (key: string) => {
+				const row = taxReportRuns.get(key);
+				return row ? renderTaxReportRunRow(row) : null;
+			},
+		},
+		"finance.review.finding": {
+			islandId: "finance.review",
+			render: (key: string) => {
+				const row = reviewFindings.get(key);
+				return row ? renderFinanceReviewFindingRow(row) : null;
+			},
+		},
+		"finance.mapping.candidate": {
+			islandId: "finance.mappings",
+			render: (key: string) => {
+				const row = mappingCandidates.get(key);
+				return row ? renderFinanceMappingCandidateRow(row) : null;
+			},
+		},
+	} satisfies UiNodeRenderMap;
+}
+
 export function renderFinancePage(
 	data: FinancePageData,
 	currentSearch: URLSearchParams,
@@ -3261,13 +3751,13 @@ export function renderFinancePage(
 	const activeTabIsland = financeActiveTabIslandId(activeTab);
 	const pageIslandIds = [
 		"finance.command-bar",
+		activeTabIsland,
 		"finance.filters",
 		"finance.lanes",
 		"finance.summary",
 		"finance.cashflow",
 		"finance.categories",
 		"finance.subscriptions",
-		activeTabIsland,
 		...(activeTab === "overview" || activeTab === "exports"
 			? ["finance.export-health"]
 			: []),
@@ -3333,7 +3823,12 @@ export function renderProfileIslandMap(data: ProfilePageData) {
 								<Pill>{profile.created_at}</Pill>
 								<Pill>{String(profile.built_from_messages)} messages</Pill>
 							</div>
-							<JsonBlock value={profile.profile} />
+							<DataInspector
+								kind="profile"
+								id={profile.id}
+								value={profile.profile}
+								stateKey={`profile:${profile.id}`}
+							/>
 						</section>
 					))
 				)}
@@ -3407,6 +3902,49 @@ function formatProgress(
 	return `${String(processed)}/${String(total)} (${percent.toFixed(1)}%)`;
 }
 
+function renderRunJobRow(row: RunsPageData["jobs"][number]) {
+	const meta = parseRunMeta(row.meta_json);
+	return (
+		<tr
+			key={row.id}
+			{...nodeAttrs({
+				nodeId: "runs.job.row",
+				key: row.id,
+				islandId: "runs.jobs",
+			})}
+		>
+			<td>{row.kind}</td>
+			<td>{row.status}</td>
+			<td>{row.lane ?? "n/a"}</td>
+			<td>{String(row.priority ?? "n/a")}</td>
+			<td>
+				{row.scope_type}:{row.scope_id}
+			</td>
+			<td>{row.model ?? "n/a"}</td>
+			<td>{row.progress.phase ?? "n/a"}</td>
+			<td>{formatProgress(row.progress.processed, row.progress.total)}</td>
+			<td>{formatEta(row.progress.etaSeconds)}</td>
+			<td>{row.progress.updatedAt ?? "n/a"}</td>
+			<td>
+				{row.success_count}/{row.request_count} success, {row.error_count}{" "}
+				errors
+			</td>
+			<td>
+				<div class="stack">
+					<span>
+						processed: {String(meta.processed ?? 0)}/{String(meta.total ?? 0)}
+					</span>
+					<span>backend: {String(meta.backendUsed ?? "n/a")}</span>
+					<span>
+						last error:{" "}
+						{row.last_error ?? String(meta.lastErrorMessage ?? "none")}
+					</span>
+				</div>
+			</td>
+		</tr>
+	);
+}
+
 export function renderRunsIslandMap(data: RunsPageData) {
 	return {
 		"runs.lanes": (
@@ -3434,51 +3972,24 @@ export function renderRunsIslandMap(data: RunsPageData) {
 							<th>Live meta</th>
 						</tr>
 					</thead>
-					<tbody>
-						{data.jobs.map((row) => {
-							const meta = parseRunMeta(row.meta_json);
-							return (
-								<tr key={row.id}>
-									<td>{row.kind}</td>
-									<td>{row.status}</td>
-									<td>{row.lane ?? "n/a"}</td>
-									<td>{String(row.priority ?? "n/a")}</td>
-									<td>
-										{row.scope_type}:{row.scope_id}
-									</td>
-									<td>{row.model ?? "n/a"}</td>
-									<td>{row.progress.phase ?? "n/a"}</td>
-									<td>
-										{formatProgress(row.progress.processed, row.progress.total)}
-									</td>
-									<td>{formatEta(row.progress.etaSeconds)}</td>
-									<td>{row.progress.updatedAt ?? "n/a"}</td>
-									<td>
-										{row.success_count}/{row.request_count} success,{" "}
-										{row.error_count} errors
-									</td>
-									<td>
-										<div class="stack">
-											<span>
-												processed: {String(meta.processed ?? 0)}/
-												{String(meta.total ?? 0)}
-											</span>
-											<span>backend: {String(meta.backendUsed ?? "n/a")}</span>
-											<span>
-												last error:{" "}
-												{row.last_error ??
-													String(meta.lastErrorMessage ?? "none")}
-											</span>
-										</div>
-									</td>
-								</tr>
-							);
-						})}
-					</tbody>
+					<tbody>{data.jobs.map((row) => renderRunJobRow(row))}</tbody>
 				</table>
 			</IslandFrame>
 		),
 	} satisfies IslandRenderMap;
+}
+
+export function renderRunsNodeMap(data: RunsPageData) {
+	const jobsById = new Map(data.jobs.map((job) => [job.id, job]));
+	return {
+		"runs.job.row": {
+			islandId: "runs.jobs",
+			render: (key: string) => {
+				const job = jobsById.get(key);
+				return job ? renderRunJobRow(job) : null;
+			},
+		},
+	} satisfies UiNodeRenderMap;
 }
 
 export const RUNS_ISLAND_IDS = ["runs.lanes", "runs.jobs"] as const;

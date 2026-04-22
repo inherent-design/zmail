@@ -61,6 +61,7 @@ export const UNIT_BUCKETS: UnitBucket[] = [
 			"test/unit/db.test.ts",
 			"test/unit/new-schemas.test.ts",
 			"test/unit/schemas.test.ts",
+			"test/unit/ui-targets.test.ts",
 		],
 		coverageInclude: [
 			"lib/app-config.ts",
@@ -68,6 +69,7 @@ export const UNIT_BUCKETS: UnitBucket[] = [
 			"lib/db.ts",
 			"lib/runtime.ts",
 			"lib/schemas.ts",
+			"lib/ui-targets.ts",
 		],
 	},
 	{
@@ -126,6 +128,7 @@ export const UNIT_BUCKETS: UnitBucket[] = [
 		name: "domain-finance",
 		tests: [
 			"test/unit/beancount-export.test.ts",
+			"test/unit/finance-imports.test.ts",
 			"test/unit/finance-upload.test.ts",
 			"test/unit/finance-mapping-candidates.test.ts",
 			"test/unit/finance-intel.test.ts",
@@ -135,6 +138,7 @@ export const UNIT_BUCKETS: UnitBucket[] = [
 		],
 		coverageInclude: [
 			"lib/beancount-export.ts",
+			"lib/finance-imports.ts",
 			"lib/finance-upload.ts",
 			"lib/finance-mapping-candidates.ts",
 			"lib/finance-intel.ts",
@@ -194,6 +198,7 @@ export const UNIT_BUCKETS: UnitBucket[] = [
 		domain: "runtime",
 		name: "runtime-scripts",
 		tests: [
+			"test/unit/data-inspector.test.ts",
 			"test/unit/scripts.test.ts",
 			"test/unit/island-registry.test.ts",
 			"test/unit/shell-nav.test.ts",

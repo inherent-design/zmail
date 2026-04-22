@@ -32,9 +32,11 @@ import {
 	classifyReviewBacklogInputSchema,
 	classifyRootMessagesInputSchema,
 	financeMappingUpsertInputSchema,
+	normalizeFinanceFilterSourceKind,
 	taxBusinessQuarterPackageInputSchema,
 	taxPersonalPackageInputSchema,
 } from "#/lib/schemas";
+import { decodeUiNodeToken, encodeUiNodeToken } from "#/lib/ui-targets";
 import {
 	applyFinanceMappingSuggestionCommand,
 	beginGoogleConnectCommand,
@@ -42,6 +44,7 @@ import {
 	classifyOneNowCommand,
 	completeGoogleConnectCommand,
 	disconnectAccountCommand,
+	dismissFinanceMappingSuggestionCommand,
 	loadAccountDeleteData,
 	loadAccountDetailData,
 	loadAccountLifecycleAccessData,
@@ -73,6 +76,7 @@ import {
 	queueTargetedRootMessagesCommand,
 	queueTaxBusinessQuarterPackageCommand,
 	queueTaxPersonalPackageCommand,
+	resolveReviewClassifierFindingCommand,
 	resolveReviewCommand,
 	resumeAccountSyncCommand,
 	upsertFinanceMappingCommand,
@@ -103,14 +107,18 @@ import {
 	DocumentShell,
 	IslandFragmentEnvelope,
 	type IslandRenderMap,
+	NodeFragmentEnvelope,
 	PartialMain,
 	renderAccountDeletePage,
 	renderAccountDetailIslandMap,
+	renderAccountDetailNodeMap,
 	renderAccountDetailPage,
 	renderAccountFormPage,
 	renderAccountsIslandMap,
+	renderAccountsNodeMap,
 	renderAccountsPage,
 	renderFinanceIslandMap,
+	renderFinanceNodeMap,
 	renderFinancePage,
 	renderHomeIslandMap,
 	renderHomePage,
@@ -123,9 +131,12 @@ import {
 	renderProfileIslandMap,
 	renderProfilePage,
 	renderReviewIslandMap,
+	renderReviewNodeMap,
 	renderReviewPage,
 	renderRunsIslandMap,
+	renderRunsNodeMap,
 	renderRunsPage,
+	type UiNodeRenderMap,
 } from "#/server/ui";
 
 const config = loadResolvedConfig();
@@ -139,7 +150,7 @@ const app = new Hono();
 const webApp = config.server.basePath === "/" ? app : new Hono();
 
 const reviewResolveSchema = z.object({
-	action: z.enum(["accept", "override"]),
+	action: z.enum(["accept", "override", "defer"]),
 	override: z.unknown().optional(),
 	note: z.string().nullable().optional(),
 });
@@ -178,6 +189,7 @@ function renderPage(
 		page: string;
 		children: unknown;
 		islands?: IslandRenderMap;
+		nodes?: UiNodeRenderMap;
 	},
 ) {
 	const orgId = c.get("orgId");
@@ -211,6 +223,49 @@ function renderPage(
 			</IslandFragmentEnvelope>,
 		);
 	}
+	if (c.req.header("X-Zmail-Partial") === "nodes") {
+		const requested = (c.req.header("X-Zmail-Nodes") ?? "")
+			.split(",")
+			.map((value) => value.trim())
+			.filter(Boolean)
+			.flatMap((token) => {
+				try {
+					return [decodeUiNodeToken(token)];
+				} catch {
+					return [];
+				}
+			});
+		const knownNodes = input.nodes ?? {};
+		const fragments: Array<{ token: string; content: unknown }> = [];
+		const missingTokens: string[] = [];
+		for (const target of requested) {
+			const token = encodeUiNodeToken(target);
+			const renderer = knownNodes[target.nodeId];
+			const content = renderer?.render(target.key) ?? null;
+			if (!renderer || content === null) {
+				missingTokens.push(token);
+				continue;
+			}
+			fragments.push({ token, content });
+		}
+		c.header("X-Zmail-Title", input.title);
+		c.header("X-Zmail-Url", `${url.pathname}${url.search}`);
+		c.header("X-Zmail-Page", input.page);
+		c.header("X-Zmail-Event-Cursor", String(eventCursor));
+		c.header("X-Zmail-Nodes", fragments.map((item) => item.token).join(","));
+		if (missingTokens.length > 0) {
+			c.header("X-Zmail-Node-Missing", missingTokens.join(","));
+		}
+		return c.html(
+			<NodeFragmentEnvelope page={input.page} eventCursor={eventCursor}>
+				{fragments.map((item) => (
+					<template data-zmail-node-fragment={item.token}>
+						{item.content}
+					</template>
+				))}
+			</NodeFragmentEnvelope>,
+		);
+	}
 	if (c.req.header("X-Zmail-Partial") === "main") {
 		c.header("X-Zmail-Title", input.title);
 		c.header("X-Zmail-Url", `${url.pathname}${url.search}`);
@@ -241,6 +296,50 @@ function okJson(status: string, extra: Record<string, unknown> = {}) {
 		status,
 		...extra,
 	};
+}
+
+function ui(extra: {
+	targets?: unknown[];
+	toast?: { tone: "success" | "warning" | "error"; text: string };
+	jobs?: Array<{ jobId: string; kind: string; scopeId: string }>;
+}): { ui: typeof extra } {
+	return { ui: extra };
+}
+
+function islandTargets(...ids: string[]) {
+	return ids.map((id) => ({ type: "island" as const, id }));
+}
+
+function nodeTarget(input: { islandId: string; nodeId: string; key: string }) {
+	return { type: "node" as const, ...input };
+}
+
+function optionalNodeTarget(input: {
+	islandId: string;
+	nodeId: string;
+	key: string | null | undefined;
+}) {
+	return input.key
+		? [
+				nodeTarget({
+					islandId: input.islandId,
+					nodeId: input.nodeId,
+					key: input.key,
+				}),
+			]
+		: [];
+}
+
+function redirectTarget(url: string, replace = false) {
+	return { type: "redirect" as const, url, replace };
+}
+
+function jobHints(
+	jobId: string | null | undefined,
+	kind: string,
+	scopeId: string,
+) {
+	return jobId ? [{ jobId, kind, scopeId }] : [];
 }
 
 function errorJson(error: string, message?: string, issues?: unknown) {
@@ -743,6 +842,7 @@ webApp.get(
 			page: "accounts",
 			children: renderAccountsPage(data, accountOptions),
 			islands: renderAccountsIslandMap(data, accountOptions),
+			nodes: renderAccountsNodeMap(data, accountOptions),
 		});
 	},
 );
@@ -788,6 +888,7 @@ webApp.get(
 			page: "account-detail",
 			children: renderAccountDetailPage(data, accountOptions),
 			islands: renderAccountDetailIslandMap(data, accountOptions),
+			nodes: renderAccountDetailNodeMap(data),
 		});
 	},
 );
@@ -892,6 +993,7 @@ webApp.get(
 			page: "review",
 			children: renderReviewPage(data),
 			islands: renderReviewIslandMap(data),
+			nodes: renderReviewNodeMap(data),
 		});
 	},
 );
@@ -904,14 +1006,16 @@ webApp.get(
 	async (c) => {
 		const year = c.req.query("year");
 		const sourceKindQuery = c.req.query("sourceKind");
-		const sourceKind =
-			sourceKindQuery === "email" ||
-			sourceKindQuery === "pdf" ||
-			sourceKindQuery === "statement" ||
-			sourceKindQuery === "csv" ||
-			sourceKindQuery === "ofx"
-				? sourceKindQuery
+		let sourceKind:
+			| ReturnType<typeof normalizeFinanceFilterSourceKind>
+			| undefined;
+		try {
+			sourceKind = sourceKindQuery
+				? normalizeFinanceFilterSourceKind(sourceKindQuery)
 				: undefined;
+		} catch {
+			sourceKind = undefined;
+		}
 		const data = await loadFinanceData({
 			year: year ? Number.parseInt(year, 10) : undefined,
 			accountId: c.req.query("accountId") ?? undefined,
@@ -925,6 +1029,7 @@ webApp.get(
 			page: "finance",
 			children: renderFinancePage(data, searchParams),
 			islands: renderFinanceIslandMap(data, searchParams),
+			nodes: renderFinanceNodeMap(data),
 		});
 	},
 );
@@ -963,6 +1068,7 @@ webApp.get(
 			page: "runs",
 			children: renderRunsPage(data),
 			islands: renderRunsIslandMap(data),
+			nodes: renderRunsNodeMap(data),
 		});
 	},
 );
@@ -1047,7 +1153,15 @@ webApp.post(
 			label: body.label.trim(),
 			ownerPrincipalEmail: principal.email,
 		});
-		return c.json(okJson("redirect", result));
+		return c.json(
+			okJson("redirect", {
+				...result,
+				...ui({
+					targets: [redirectTarget(result.url)],
+					toast: { tone: "success", text: "Redirecting to Google." },
+				}),
+			}),
+		);
 	},
 );
 
@@ -1075,7 +1189,15 @@ webApp.post(
 			accountId: c.req.param("accountId"),
 			label: body.label.trim(),
 		});
-		return c.json(okJson("redirect", result));
+		return c.json(
+			okJson("redirect", {
+				...result,
+				...ui({
+					targets: [redirectTarget(result.url)],
+					toast: { tone: "success", text: "Redirecting to Google." },
+				}),
+			}),
+		);
 	},
 );
 
@@ -1085,8 +1207,25 @@ webApp.post(
 	activeBrowserOrgMiddleware,
 	requireOrgRole("org_operator"),
 	async (c) => {
-		await queueAccountFullSyncCommand({ accountId: c.req.param("accountId") });
-		return c.json(okJson("queued"));
+		const accountId = c.req.param("accountId");
+		const jobId = await queueAccountFullSyncCommand({ accountId });
+		return c.json(
+			okJson("queued", {
+				jobId,
+				...ui({
+					targets: [
+						...optionalNodeTarget({
+							islandId: "account.recent-jobs",
+							nodeId: "account.detail.job",
+							key: jobId,
+						}),
+						...islandTargets("account.lanes", "account.mailbox-sync"),
+					],
+					toast: { tone: "success", text: "Full sync queued." },
+					jobs: jobHints(jobId, "sync_account_full", accountId),
+				}),
+			}),
+		);
 	},
 );
 
@@ -1096,8 +1235,25 @@ webApp.post(
 	activeBrowserOrgMiddleware,
 	requireOrgRole("org_operator"),
 	async (c) => {
-		await queueAccountDeltaSyncCommand({ accountId: c.req.param("accountId") });
-		return c.json(okJson("queued"));
+		const accountId = c.req.param("accountId");
+		const jobId = await queueAccountDeltaSyncCommand({ accountId });
+		return c.json(
+			okJson("queued", {
+				jobId,
+				...ui({
+					targets: [
+						...optionalNodeTarget({
+							islandId: "account.recent-jobs",
+							nodeId: "account.detail.job",
+							key: jobId,
+						}),
+						...islandTargets("account.lanes", "account.mailbox-sync"),
+					],
+					toast: { tone: "success", text: "Delta sync queued." },
+					jobs: jobHints(jobId, "sync_account_delta", accountId),
+				}),
+			}),
+		);
 	},
 );
 
@@ -1107,8 +1263,25 @@ webApp.post(
 	activeBrowserOrgMiddleware,
 	requireOrgRole("org_operator"),
 	async (c) => {
-		await queueAccountReconcileCommand({ accountId: c.req.param("accountId") });
-		return c.json(okJson("queued"));
+		const accountId = c.req.param("accountId");
+		const jobId = await queueAccountReconcileCommand({ accountId });
+		return c.json(
+			okJson("queued", {
+				jobId,
+				...ui({
+					targets: [
+						...optionalNodeTarget({
+							islandId: "account.recent-jobs",
+							nodeId: "account.detail.job",
+							key: jobId,
+						}),
+						...islandTargets("account.lanes", "account.mailbox-sync"),
+					],
+					toast: { tone: "success", text: "Reconcile queued." },
+					jobs: jobHints(jobId, "sync_account_reconcile", accountId),
+				}),
+			}),
+		);
 	},
 );
 
@@ -1118,10 +1291,25 @@ webApp.post(
 	activeBrowserOrgMiddleware,
 	requireOrgRole("org_operator"),
 	async (c) => {
-		await queueAccountClassifyBacklogCommand({
-			accountId: c.req.param("accountId"),
-		});
-		return c.json(okJson("queued"));
+		const accountId = c.req.param("accountId");
+		const jobId = await queueAccountClassifyBacklogCommand({ accountId });
+		return c.json(
+			okJson("queued", {
+				jobId,
+				...ui({
+					targets: [
+						...optionalNodeTarget({
+							islandId: "account.recent-jobs",
+							nodeId: "account.detail.job",
+							key: jobId,
+						}),
+						...islandTargets("account.lanes"),
+					],
+					toast: { tone: "success", text: "Root classification queued." },
+					jobs: jobHints(jobId, "classify_account_backlog", accountId),
+				}),
+			}),
+		);
 	},
 );
 
@@ -1137,7 +1325,22 @@ webApp.post(
 			accountId: c.req.param("accountId"),
 			messageIds: body.messageIds,
 		});
-		return c.json(okJson("queued", { jobId: result }));
+		return c.json(
+			okJson("queued", {
+				jobId: result,
+				...ui({
+					targets: [
+						...optionalNodeTarget({
+							islandId: "account.recent-jobs",
+							nodeId: "account.detail.job",
+							key: result,
+						}),
+						...islandTargets("account.lanes"),
+					],
+					toast: { tone: "success", text: "Targeted classification queued." },
+				}),
+			}),
+		);
 	},
 );
 
@@ -1147,10 +1350,25 @@ webApp.post(
 	activeBrowserOrgMiddleware,
 	requireOrgRole("org_operator"),
 	async (c) => {
-		await queueAccountFinanceBacklogCommand({
-			accountId: c.req.param("accountId"),
-		});
-		return c.json(okJson("queued"));
+		const accountId = c.req.param("accountId");
+		const jobId = await queueAccountFinanceBacklogCommand({ accountId });
+		return c.json(
+			okJson("queued", {
+				jobId,
+				...ui({
+					targets: [
+						...optionalNodeTarget({
+							islandId: "account.recent-jobs",
+							nodeId: "account.detail.job",
+							key: jobId,
+						}),
+						...islandTargets("account.lanes"),
+					],
+					toast: { tone: "success", text: "Finance classification queued." },
+					jobs: jobHints(jobId, "classify_finance_backlog", accountId),
+				}),
+			}),
+		);
 	},
 );
 
@@ -1161,8 +1379,22 @@ webApp.post(
 	requireOrgRole("org_operator"),
 	async (c) => {
 		const { enqueueOverseerCommand } = await import("#/server/actions");
-		await enqueueOverseerCommand({ accountId: c.req.param("accountId") });
-		return c.json(okJson("queued"));
+		const accountId = c.req.param("accountId");
+		const jobId = await enqueueOverseerCommand({ accountId });
+		return c.json(
+			okJson("queued", {
+				jobId,
+				...ui({
+					targets: islandTargets(
+						"profiles.actions",
+						"profiles.findings",
+						"profiles.summary",
+						"account.lanes",
+					),
+					toast: { tone: "success", text: "Overseer rebuild queued." },
+				}),
+			}),
+		);
 	},
 );
 
@@ -1173,7 +1405,18 @@ webApp.post(
 	requireOrgRole("org_operator"),
 	async (c) => {
 		await pauseAccountSyncCommand({ accountId: c.req.param("accountId") });
-		return c.json(okJson("paused"));
+		return c.json(
+			okJson("paused", {
+				...ui({
+					targets: islandTargets(
+						"account.header",
+						"account.actions",
+						"account.mailbox-sync",
+					),
+					toast: { tone: "success", text: "Sync paused." },
+				}),
+			}),
+		);
 	},
 );
 
@@ -1184,7 +1427,18 @@ webApp.post(
 	requireOrgRole("org_operator"),
 	async (c) => {
 		await resumeAccountSyncCommand({ accountId: c.req.param("accountId") });
-		return c.json(okJson("resumed"));
+		return c.json(
+			okJson("resumed", {
+				...ui({
+					targets: islandTargets(
+						"account.header",
+						"account.actions",
+						"account.mailbox-sync",
+					),
+					toast: { tone: "success", text: "Sync resumed." },
+				}),
+			}),
+		);
 	},
 );
 
@@ -1202,7 +1456,18 @@ webApp.post(
 			return access;
 		}
 		await disconnectAccountCommand({ accountId: c.req.param("accountId") });
-		return c.json(okJson("disconnected"));
+		return c.json(
+			okJson("disconnected", {
+				...ui({
+					targets: islandTargets(
+						"account.header",
+						"account.actions",
+						"account.mailbox-sync",
+					),
+					toast: { tone: "success", text: "Gmail disconnected." },
+				}),
+			}),
+		);
 	},
 );
 
@@ -1230,7 +1495,14 @@ webApp.post(
 			accountId: c.req.param("accountId"),
 			confirmationEmail: body.confirmationEmail,
 		});
-		return c.json(okJson("deleted"));
+		return c.json(
+			okJson("deleted", {
+				...ui({
+					targets: [redirectTarget(appPath("/accounts"), true)],
+					toast: { tone: "success", text: "Account deleted." },
+				}),
+			}),
+		);
 	},
 );
 
@@ -1241,7 +1513,20 @@ webApp.post(
 	requireOrgRole("org_operator"),
 	async (c) => {
 		await classifyOneNowCommand({ messageId: c.req.param("messageId") });
-		return c.json(okJson("queued"));
+		return c.json(
+			okJson("queued", {
+				...ui({
+					targets: islandTargets(
+						"message.header",
+						"message.labels",
+						"message.finance",
+						"message.reviews",
+						"message.actions",
+					),
+					toast: { tone: "success", text: "Message classification queued." },
+				}),
+			}),
+		);
 	},
 );
 
@@ -1259,7 +1544,24 @@ webApp.post(
 			override: body.override,
 			note: body.note ?? undefined,
 		});
-		return c.json(okJson(result.status));
+		return c.json(
+			okJson(result.status, {
+				...ui({
+					targets: [
+						nodeTarget({
+							islandId: "review.queue",
+							nodeId: "review.queue.item",
+							key: c.req.param("reviewId"),
+						}),
+						...islandTargets("review.stats", "review.actions"),
+					],
+					toast: {
+						tone: result.status === "deferred" ? "warning" : "success",
+						text: `Review ${result.status}.`,
+					},
+				}),
+			}),
+		);
 	},
 );
 
@@ -1275,7 +1577,65 @@ webApp.post(
 			accountId: body.accountId,
 			limit: body.limit,
 		});
-		return c.json(okJson("queued", { jobId: result }));
+		return c.json(
+			okJson("queued", {
+				jobId: result,
+				...ui({
+					targets: islandTargets(
+						"review.stats",
+						"review.actions",
+						"runs.lanes",
+					),
+					toast: { tone: "success", text: "Review classifier queued." },
+				}),
+			}),
+		);
+	},
+);
+
+webApp.post(
+	"/rpc/finance/review-findings/resolve",
+	browserSessionMiddleware,
+	activeBrowserOrgMiddleware,
+	requireOrgRole("org_operator"),
+	async (c) => {
+		const body = await c.req.json().catch(() => ({}));
+		const result = await resolveReviewClassifierFindingCommand(body);
+		if (result.status === "not_found") {
+			return c.json(
+				errorJson("not_found", "Review finding was not found."),
+				404,
+			);
+		}
+		const targetKind =
+			body && typeof body === "object" && "targetKind" in body
+				? String(body.targetKind)
+				: "";
+		const targetId =
+			body && typeof body === "object" && "targetId" in body
+				? String(body.targetId)
+				: "";
+		return c.json(
+			okJson(result.status, {
+				jobIds: result.jobs,
+				...ui({
+					targets: [
+						nodeTarget({
+							islandId: "finance.review",
+							nodeId: "finance.review.finding",
+							key: `${targetKind}:${targetId}`,
+						}),
+						nodeTarget({
+							islandId: "review.queue",
+							nodeId: "review.finding.item",
+							key: `${targetKind}:${targetId}`,
+						}),
+						...islandTargets("finance.lanes", "review.stats", "review.actions"),
+					],
+					toast: { tone: "success", text: `Review finding ${result.status}.` },
+				}),
+			}),
+		);
 	},
 );
 
@@ -1286,7 +1646,14 @@ webApp.post(
 	requireOrgRole("org_operator"),
 	async (c) => {
 		await queueImportOperatorRegistryCommand();
-		return c.json(okJson("queued"));
+		return c.json(
+			okJson("queued", {
+				...ui({
+					targets: islandTargets("finance.command-bar", "finance.lanes"),
+					toast: { tone: "success", text: "Registry import queued." },
+				}),
+			}),
+		);
 	},
 );
 
@@ -1297,7 +1664,14 @@ webApp.post(
 	requireOrgRole("org_operator"),
 	async (c) => {
 		await queueReconcileRegistrySuggestionsCommand();
-		return c.json(okJson("queued"));
+		return c.json(
+			okJson("queued", {
+				...ui({
+					targets: islandTargets("finance.command-bar", "finance.lanes"),
+					toast: { tone: "success", text: "Suggestion reconcile queued." },
+				}),
+			}),
+		);
 	},
 );
 
@@ -1308,7 +1682,18 @@ webApp.post(
 	requireOrgRole("org_operator"),
 	async (c) => {
 		await queueRebuildFinanceKnowledgeCommand();
-		return c.json(okJson("queued"));
+		return c.json(
+			okJson("queued", {
+				...ui({
+					targets: islandTargets(
+						"finance.command-bar",
+						"finance.lanes",
+						"finance.summary",
+					),
+					toast: { tone: "success", text: "Finance knowledge rebuild queued." },
+				}),
+			}),
+		);
 	},
 );
 
@@ -1319,7 +1704,20 @@ webApp.post(
 	requireOrgRole("org_operator"),
 	async (c) => {
 		await queueRebuildFinanceRollupsCommand();
-		return c.json(okJson("queued"));
+		return c.json(
+			okJson("queued", {
+				...ui({
+					targets: islandTargets(
+						"finance.command-bar",
+						"finance.lanes",
+						"finance.summary",
+						"finance.cashflow",
+						"finance.categories",
+					),
+					toast: { tone: "success", text: "Finance rollups rebuild queued." },
+				}),
+			}),
+		);
 	},
 );
 
@@ -1332,7 +1730,19 @@ webApp.post(
 	async (c) => {
 		const body = c.req.valid("json");
 		const result = await upsertFinanceMappingCommand({ mapping: body.mapping });
-		return c.json(okJson("queued", result));
+		return c.json(
+			okJson("queued", {
+				...result,
+				...ui({
+					targets: islandTargets(
+						"finance.mappings",
+						"finance.readiness",
+						"finance.lanes",
+					),
+					toast: { tone: "success", text: "Mapping upsert queued." },
+				}),
+			}),
+		);
 	},
 );
 
@@ -1347,7 +1757,19 @@ webApp.post(
 		const result = await queueGenerateFinanceMappingCandidatesCommand({
 			year: body.year ?? null,
 		});
-		return c.json(okJson("queued", { jobId: result }));
+		return c.json(
+			okJson("queued", {
+				jobId: result,
+				...ui({
+					targets: islandTargets(
+						"finance.mappings",
+						"finance.readiness",
+						"finance.lanes",
+					),
+					toast: { tone: "success", text: "Mapping candidate job queued." },
+				}),
+			}),
+		);
 	},
 );
 
@@ -1360,7 +1782,162 @@ webApp.post(
 		const result = await applyFinanceMappingSuggestionCommand({
 			suggestionId: c.req.param("suggestionId"),
 		});
-		return c.json(okJson("applied", result));
+		return c.json(
+			okJson("applied", {
+				...result,
+				...ui({
+					targets: [
+						nodeTarget({
+							islandId: "finance.mappings",
+							nodeId: "finance.mapping.candidate",
+							key: c.req.param("suggestionId"),
+						}),
+						...islandTargets("finance.readiness", "finance.lanes"),
+					],
+					toast: { tone: "success", text: "Mapping suggestion applied." },
+				}),
+			}),
+		);
+	},
+);
+
+webApp.post(
+	"/rpc/finance/mappings/suggestions/:suggestionId/dismiss",
+	browserSessionMiddleware,
+	activeBrowserOrgMiddleware,
+	requireOrgRole("org_operator"),
+	async (c) => {
+		const result = await dismissFinanceMappingSuggestionCommand({
+			suggestionId: c.req.param("suggestionId"),
+		});
+		return c.json(
+			okJson("dismissed", {
+				...result,
+				...ui({
+					targets: [
+						nodeTarget({
+							islandId: "finance.mappings",
+							nodeId: "finance.mapping.candidate",
+							key: c.req.param("suggestionId"),
+						}),
+						...islandTargets("finance.readiness", "finance.lanes"),
+					],
+					toast: { tone: "success", text: "Mapping suggestion dismissed." },
+				}),
+			}),
+		);
+	},
+);
+
+webApp.post(
+	"/rpc/finance/ledger/overrides",
+	browserSessionMiddleware,
+	activeBrowserOrgMiddleware,
+	requireOrgRole("org_operator"),
+	async (c) => {
+		const principal = c.get("principal");
+		const body = await c.req.json().catch(() => ({}));
+		const { applyFinanceLedgerOverride } = await import(
+			"#/lib/finance-ledger-overrides"
+		);
+		const result = await applyFinanceLedgerOverride({
+			...(body && typeof body === "object" ? body : {}),
+			actorRef:
+				principal?.kind === "browser" ? `browser:${principal.sub}` : "browser",
+		});
+		if (result.status === "not_found") {
+			return c.json(
+				errorJson("not_found", "Finance ledger row was not found."),
+				404,
+			);
+		}
+		const canonicalKey =
+			body && typeof body === "object" && "canonicalKey" in body
+				? String(body.canonicalKey)
+				: "";
+		return c.json(
+			okJson("applied", {
+				overrideId: result.overrideId,
+				jobIds: result.jobs,
+				...ui({
+					targets: [
+						nodeTarget({
+							islandId: "finance.ledger",
+							nodeId: "finance.ledger.row",
+							key: canonicalKey,
+						}),
+						nodeTarget({
+							islandId: "finance.review",
+							nodeId: "finance.review.ledger-row",
+							key: canonicalKey,
+						}),
+						...islandTargets(
+							"finance.summary",
+							"finance.readiness",
+							"finance.lanes",
+							"finance.cashflow",
+							"finance.categories",
+						),
+					],
+					toast: { tone: "success", text: "Ledger override applied." },
+				}),
+			}),
+		);
+	},
+);
+
+webApp.post(
+	"/rpc/finance/ledger/overrides/:overrideId/revert",
+	browserSessionMiddleware,
+	activeBrowserOrgMiddleware,
+	requireOrgRole("org_operator"),
+	async (c) => {
+		const principal = c.get("principal");
+		const { revertFinanceLedgerOverride } = await import(
+			"#/lib/finance-ledger-overrides"
+		);
+		const result = await revertFinanceLedgerOverride({
+			overrideId: c.req.param("overrideId"),
+			actorRef:
+				principal?.kind === "browser" ? `browser:${principal.sub}` : "browser",
+		});
+		if (result.status === "not_found") {
+			return c.json(errorJson("not_found", "Override was not found."), 404);
+		}
+		if (result.status === "inactive") {
+			return c.json(errorJson("inactive", "Override is not active."), 409);
+		}
+		return c.json(
+			okJson("reverted", {
+				jobIds: result.jobs,
+				...ui({
+					targets: [
+						...(result.canonicalKey
+							? [
+									nodeTarget({
+										islandId: "finance.ledger",
+										nodeId: "finance.ledger.row",
+										key: result.canonicalKey,
+									}),
+									nodeTarget({
+										islandId: "finance.review",
+										nodeId: "finance.review.ledger-row",
+										key: result.canonicalKey,
+									}),
+								]
+							: []),
+						...islandTargets(
+							"finance.summary",
+							"finance.readiness",
+							"finance.lanes",
+							"finance.cashflow",
+							"finance.categories",
+						),
+					],
+					toast: { tone: "success", text: "Ledger override reverted." },
+				}),
+			}),
+		);
 	},
 );
 
@@ -1378,7 +1955,22 @@ webApp.post(
 			strict: body.strict ?? true,
 			force: body.force ?? false,
 		});
-		return c.json(okJson("queued", result));
+		return c.json(
+			okJson("queued", {
+				...result,
+				...ui({
+					targets: [
+						nodeTarget({
+							islandId: "finance.export-health",
+							nodeId: "finance.export.run",
+							key: result.exportRunId,
+						}),
+						...islandTargets("finance.lanes"),
+					],
+					toast: { tone: "success", text: "Finance export queued." },
+				}),
+			}),
+		);
 	},
 );
 
@@ -1394,7 +1986,22 @@ webApp.post(
 			year: body.year,
 			outDir: body.outDir ?? null,
 		});
-		return c.json(okJson("queued", result));
+		return c.json(
+			okJson("queued", {
+				...result,
+				...ui({
+					targets: [
+						nodeTarget({
+							islandId: "finance.tax",
+							nodeId: "finance.tax.run",
+							key: result.reportRunId,
+						}),
+						...islandTargets("finance.lanes"),
+					],
+					toast: { tone: "success", text: "Personal tax package queued." },
+				}),
+			}),
+		);
 	},
 );
 
@@ -1412,7 +2019,22 @@ webApp.post(
 			businessSlug: body.businessSlug,
 			outDir: body.outDir ?? null,
 		});
-		return c.json(okJson("queued", result));
+		return c.json(
+			okJson("queued", {
+				...result,
+				...ui({
+					targets: [
+						nodeTarget({
+							islandId: "finance.tax",
+							nodeId: "finance.tax.run",
+							key: result.reportRunId,
+						}),
+						...islandTargets("finance.lanes"),
+					],
+					toast: { tone: "success", text: "Business tax package queued." },
+				}),
+			}),
+		);
 	},
 );
 
@@ -1465,6 +2087,24 @@ webApp.post(
 				okJson(result.status, {
 					uploadId: result.uploadId,
 					jobId: result.jobId,
+					...ui({
+						targets: [
+							nodeTarget({
+								islandId: "finance.imports",
+								nodeId: "finance.upload.run",
+								key: result.uploadId,
+							}),
+							...islandTargets("finance.lanes", "finance.command-bar"),
+						],
+						toast: {
+							tone:
+								result.status === "already_imported" ? "warning" : "success",
+							text:
+								result.status === "already_imported"
+									? "Upload already imported."
+									: "Finance upload queued.",
+						},
+					}),
 				}),
 				result.status === "already_imported" ? 200 : 202,
 			);

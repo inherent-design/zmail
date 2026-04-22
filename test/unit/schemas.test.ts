@@ -10,6 +10,8 @@ import {
 	messageLabelSchema,
 	messageLabelV3Schema,
 	messageModerationSchema,
+	normalizeFinanceFilterSourceKind,
+	normalizeFinanceImportSourceKind,
 	parseCurrentFinanceIntel,
 	resolveReviewInputSchema,
 	reviewClassifierSchema,
@@ -131,6 +133,13 @@ describe("schemas", () => {
 				note: "Manual fix",
 			}),
 		).toMatchObject({ action: "override" });
+		expect(
+			resolveReviewInputSchema.parse({
+				reviewId: "review-1",
+				action: "defer",
+				note: "Needs source evidence.",
+			}),
+		).toMatchObject({ action: "defer" });
 
 		expect(() =>
 			resolveReviewInputSchema.parse({
@@ -632,6 +641,38 @@ describe("schemas", () => {
 				provenance: { parser: "fixture" },
 			}),
 		).toMatchObject({ schemaVersion: "finance-source-import.v2" });
+	});
+
+	it("normalizes legacy statement source kind to text", () => {
+		expect(normalizeFinanceImportSourceKind("statement")).toBe("text");
+		expect(normalizeFinanceFilterSourceKind("statement")).toBe("text");
+		expect(
+			financeSourceImportV2Schema.parse({
+				schemaVersion: "finance-source-import.v2",
+				sourceKind: "statement",
+				sourceFile: {
+					absolutePath: "/tmp/statement.txt",
+					sha256: "source-sha",
+					filename: "statement.txt",
+					importedAt: "2026-01-05T00:00:00.000Z",
+				},
+				extractor: {
+					runner: "test",
+					model: "test",
+					promptVersion: "test",
+					extractedTextHash: null,
+				},
+				registrySuggestions: {
+					identities: [],
+					institutions: [],
+					financialAccounts: [],
+					senderRules: [],
+				},
+				documents: [],
+				transactions: [],
+				provenance: {},
+			}).sourceKind,
+		).toBe("text");
 	});
 
 	it("accepts finance-ledger-export.v1 manifests", () => {

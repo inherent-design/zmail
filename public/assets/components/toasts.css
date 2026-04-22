@@ -1,0 +1,29 @@
+.toast-region {
+	position: fixed;
+	inset-block-start: 1rem;
+	inset-inline-end: 1rem;
+	z-index: 20;
+	display: grid;
+	gap: 0.5rem;
+	max-inline-size: min(24rem, calc(100vw - 2rem));
+}
+
+.toast {
+	padding: 0.75rem 0.9rem;
+	border-radius: 8px;
+	border: 1px solid rgba(24, 35, 29, 0.18);
+	background: #fffdf8;
+	box-shadow: 0 12px 30px rgba(24, 35, 29, 0.14);
+}
+
+.toast-success {
+	border-color: #2f6f4e;
+}
+
+.toast-warning {
+	border-color: #9a6a13;
+}
+
+.toast-error {
+	border-color: #8a1f1f;
+}

@@ -261,3 +261,16 @@ rows directly.
 - manual candidate adjudication
 - automatic writeback into Beancount source files edited by Fava
 - new non-finance semantic lenses
+
+## Text Imports And Overrides
+
+Imported `text`, `csv`, and `ofx` rows outrank email evidence. `pdf` remains
+imported evidence below structured rows. Rollup fallback source kind is `text`.
+Legacy `statement` source-kind rows are migrated to `text`; semantic statement
+fields are not changed.
+
+Ledger overrides are durable records in `finance_ledger_entry_overrides`.
+Applying an override supersedes prior active overrides for the same canonical
+key, patches the current ledger row, and queues rollup rebuilds when rollup
+fields change. Finance knowledge rebuild loads active overrides before pattern
+generation and writes overridden entries with original source rows.

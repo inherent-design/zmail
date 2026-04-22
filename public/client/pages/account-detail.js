@@ -13,10 +13,6 @@ const LIFECYCLE_ACTION_ISLANDS = [
 
 const CLASSIFIER_ACTION_ISLANDS = ["account.lanes", "account.recent-jobs"];
 
-function parsePayload(button) {
-	return button.dataset.payload ? JSON.parse(button.dataset.payload) : {};
-}
-
 function isTerminalJob(event) {
 	return (
 		event.eventType === "job.updated" &&
@@ -82,25 +78,13 @@ export function init(app) {
 	}
 	const accountId = app.currentPathname().split("/")[2];
 
-	const onClick = async (event) => {
-		const button = event.target.closest("button[data-rpc]");
-		if (!button || !root.contains(button)) {
-			return;
-		}
-		button.disabled = true;
-		try {
-			await app.postJson(button.dataset.rpc, parsePayload(button));
-			await app.refresh({
-				islands: actionRefreshIslands(button),
-				fallback: "none",
-			});
-		} catch (error) {
-			window.alert(error instanceof Error ? error.message : String(error));
-			button.disabled = false;
-		}
-	};
-
-	root.addEventListener("click", onClick);
+	const cleanupMutations = app.bindMutations(root, (target) => ({
+		fallbackTargets: actionRefreshIslands(target).map((id) => ({
+			type: "island",
+			id,
+		})),
+		fallback: "none",
+	}));
 	const onAccountEvent = (event) => {
 		const islands = accountDetailIslandHints(event, accountId);
 		if (islands.length === 0) {
@@ -119,7 +103,7 @@ export function init(app) {
 	const unsubscribers = [app.subscribe(`account:${accountId}`, onAccountEvent)];
 
 	return () => {
-		root.removeEventListener("click", onClick);
+		cleanupMutations();
 		for (const unsubscribe of unsubscribers) {
 			unsubscribe();
 		}

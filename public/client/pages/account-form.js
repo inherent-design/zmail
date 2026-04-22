@@ -16,13 +16,10 @@ export function init(app) {
 		button.disabled = true;
 		status.textContent = "Redirecting...";
 		try {
-			const payload = button.dataset.accountId ? { label } : { label };
-			const result = await app.postJson(button.dataset.rpc, payload);
-			if (result.url) {
-				window.location.href = result.url;
-				return;
-			}
-			await app.refresh();
+			await app.mutate(button, {
+				payload: { label },
+				fallbackTargets: [{ type: "main" }],
+			});
 		} catch (error) {
 			status.textContent =
 				error instanceof Error ? error.message : String(error);

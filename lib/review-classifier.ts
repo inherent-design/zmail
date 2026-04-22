@@ -368,6 +368,8 @@ async function persistReviewClassifierResult(input: {
 					confidence: finding.confidence,
 					reason: finding.reason,
 					evidence_refs_json: jsonText(finding.evidenceRefs),
+					resolution_note: null,
+					decided_at: null,
 					updated_at: createdAt,
 				})
 				.onConflict((oc) =>
@@ -379,6 +381,8 @@ async function persistReviewClassifierResult(input: {
 						confidence: finding.confidence,
 						reason: finding.reason,
 						evidence_refs_json: jsonText(finding.evidenceRefs),
+						resolution_note: null,
+						decided_at: null,
 						updated_at: createdAt,
 					}),
 				)
@@ -400,7 +404,7 @@ function groupMessageIdsByAccount(
 	return groups;
 }
 
-async function dispatchReviewClassifierActions(input: {
+export async function dispatchReviewClassifierActions(input: {
 	resultId: string;
 	result: ReviewClassifierV1;
 	inputPackage: ReviewClassifierInputPackage;
@@ -617,10 +621,44 @@ ${JSON.stringify(reviewClassifierJsonSchema, null, 2)}`,
 		rawResponse,
 		usage: result.usage,
 	});
-	await dispatchReviewClassifierActions({
-		resultId,
-		result: parsed,
-		inputPackage,
+	const { publishActionEvent } = await import("#/lib/runtime-events");
+	await publishActionEvent({
+		topic: "reviews",
+		eventType: "review_classifier.completed",
+		entityKind: "review_classification_result",
+		entityId: resultId,
+		payload: {
+			resultId,
+			findings: parsed.findings.length,
+			changeHints: {
+				islands: ["review.stats", "review.queue", "review.actions"],
+				nodes: parsed.findings.map((finding) => ({
+					type: "node",
+					islandId: "review.queue",
+					nodeId: "review.finding.item",
+					key: `${finding.targetKind}:${finding.targetId}`,
+				})),
+			},
+		},
+	});
+	await publishActionEvent({
+		topic: "finance",
+		eventType: "review_classifier.completed",
+		entityKind: "review_classification_result",
+		entityId: resultId,
+		payload: {
+			resultId,
+			findings: parsed.findings.length,
+			changeHints: {
+				islands: ["finance.review", "finance.lanes"],
+				nodes: parsed.findings.map((finding) => ({
+					type: "node",
+					islandId: "finance.review",
+					nodeId: "finance.review.finding",
+					key: `${finding.targetKind}:${finding.targetId}`,
+				})),
+			},
+		},
 	});
 	return {
 		resultId,

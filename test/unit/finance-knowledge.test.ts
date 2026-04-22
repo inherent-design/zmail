@@ -311,13 +311,13 @@ describe("finance knowledge", () => {
 			.execute();
 
 		expect(result.entries).toBe(1);
-		expect(entry.source_authority).toBe("statement");
+		expect(entry.source_authority).toBe("text");
 		expect(entry.canonical_key).toBe(
 			"composite:business|acct:checking|2026-01-01|42-00|USD|billing-example-com",
 		);
 		expect(sources.map((source) => source.source_kind)).toEqual([
 			"email",
-			"statement",
+			"text",
 		]);
 	});
 

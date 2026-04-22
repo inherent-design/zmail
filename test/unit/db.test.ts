@@ -15,6 +15,7 @@ const ACTIVE_MIGRATIONS = [
 	{ name: "006_finance_v3_clean.sql" },
 	{ name: "007_review_lanes_tax_reports.sql" },
 	{ name: "008_finance_import_uploads.sql" },
+	{ name: "009_unified_workflows_text_source_overrides.sql" },
 ];
 
 describe("db", () => {
@@ -56,6 +57,7 @@ describe("db", () => {
 		expect(tableNames).toContain("finance_import_upload_files");
 		expect(tableNames).toContain("finance_import_upload_pages");
 		expect(tableNames).toContain("finance_import_upload_extractions");
+		expect(tableNames).toContain("finance_ledger_entry_overrides");
 
 		const messageColumns = dbModule
 			.getSqlite()
@@ -70,6 +72,14 @@ describe("db", () => {
 				"body_extraction_strategy",
 				"parse_error_reason",
 			]),
+		);
+
+		const reviewHeadColumns = dbModule
+			.getSqlite()
+			.prepare("PRAGMA table_info(review_classification_heads)")
+			.all() as Array<{ name: string }>;
+		expect(reviewHeadColumns.map((column) => column.name)).toEqual(
+			expect.arrayContaining(["resolution_note", "decided_at"]),
 		);
 
 		const conversationColumns = dbModule

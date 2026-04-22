@@ -111,7 +111,7 @@ Request:
 - fields:
   - `file`: required PDF or ZIP
   - `mode`: optional, `auto | direct_llm | voyage_gate`, default `auto`
-  - `sourceKindHint`: optional, `pdf | statement`
+  - `sourceKindHint`: optional, `pdf | text | statement`
 
 Response:
 
@@ -374,7 +374,7 @@ These rows are attached to one canonical import run.
 
 Supported flow:
 
-1. external tool extracts a PDF/statement into `finance-source-import.v2`
+1. external tool extracts a PDF or text statement into `finance-source-import.v2`
 2. tool computes `artifactSha256`
 3. tool either:
    - submits through the app-relative `POST /api/finance/imports` endpoint with
@@ -428,3 +428,17 @@ Beancount validation during export; install Beancount for full validation.
 - dedup by `sourceFile.sha256`
 - direct Plaid ingestion
 - persistent vector search for uploads
+
+## Source Kind Canonicalization
+
+Finance import input boundaries accept `pdf`, `text`, `csv`, `ofx`, and legacy
+`statement`. Parsed artifacts, stored source-kind columns, rendered filters,
+chips, and new sidecars use canonical `text`. Semantic statement fields remain
+unchanged, including `documentType = "statement"`, statement periods, statement
+row ids, imported statement counts, finance gate `signal = "statement"`, and
+root secondary bucket `statement`.
+
+`artifactSha256` may be missing or empty at input. Import code computes a
+deterministic hash from normalized artifact JSON with `artifactSha256` set to an
+empty string. A non-empty submitted hash remains the deduplication key for
+compatibility. Upload hints accept `pdf`, `text`, legacy `statement`, or empty.

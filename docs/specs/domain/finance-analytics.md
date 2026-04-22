@@ -174,3 +174,14 @@ represented as island-only state.
 Message analytics is deferred. Future specs may add timeline or
 sender-recipient lenses, but this document only reserves the island and event
 patterns needed to add them later.
+
+## Workflow Targets
+
+Finance analytics pages expose keyed nodes for ledger rows, review ledger rows,
+mapping candidates, review findings, upload runs, import runs, export runs, and
+tax report runs. Mutation envelopes refresh the smallest safe target first and
+fall back to parent islands for user actions when a node is absent.
+
+Ledger override editors submit strict patch fields and relationship fields.
+Successful changes refresh affected row nodes, readiness, summary, lanes, and
+analytics islands.

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
+import { z } from "zod";
 
 import {
 	APP_CONFIG,
@@ -11,8 +12,12 @@ import {
 	REVIEW_CLASSIFIER_PROMPT_VERSION,
 } from "#/lib/config";
 import { isGoogleOAuthBootstrapErrorMessage } from "#/lib/google-oauth";
+import { queueJobIdempotent } from "#/lib/jobs";
 import { type LogFields, type LogTrace, startTrace } from "#/lib/log";
-import type { AccountConnectionState } from "#/lib/schemas";
+import {
+	type AccountConnectionState,
+	normalizeFinanceFilterSourceKind,
+} from "#/lib/schemas";
 
 let bootServerOnce: Promise<typeof import("#/lib/db")> | null = null;
 
@@ -80,6 +85,24 @@ function normalizeMessagePageSize(value: string | number | null | undefined) {
 function normalizeNullableFilter(value: string | null | undefined) {
 	const normalized = value?.trim() ?? "";
 	return normalized.length > 0 ? normalized : null;
+}
+
+function canonicalFinanceSourceKind(value: string) {
+	try {
+		return normalizeFinanceFilterSourceKind(value);
+	} catch {
+		return value;
+	}
+}
+
+function uniqueStrings(values: Array<string | null | undefined>) {
+	return Array.from(
+		new Set(
+			values
+				.map((value) => value?.trim() ?? "")
+				.filter((value) => value.length > 0),
+		),
+	);
 }
 
 function normalizeMessagesInput(input: MessagesDataInput = {}) {
@@ -1174,7 +1197,7 @@ export async function loadFinanceData(
 		accountId?: string;
 		institutionId?: string;
 		ownerIdentityId?: string;
-		sourceKind?: "email" | "pdf" | "statement" | "csv" | "ofx";
+		sourceKind?: import("#/lib/schemas").FinanceFilterSourceKind;
 	} = {},
 ) {
 	return runLoggedAction({
@@ -1482,7 +1505,10 @@ export async function loadFinanceData(
 				if (input.accountId) {
 					return false;
 				}
-				if (input.sourceKind && row.source_kind !== input.sourceKind) {
+				if (
+					input.sourceKind &&
+					canonicalFinanceSourceKind(row.source_kind) !== input.sourceKind
+				) {
 					return false;
 				}
 				if (
@@ -1506,13 +1532,18 @@ export async function loadFinanceData(
 				if (input.accountId) {
 					return false;
 				}
-				if (input.sourceKind && row.source_kind !== input.sourceKind) {
+				if (
+					input.sourceKind &&
+					canonicalFinanceSourceKind(row.source_kind) !== input.sourceKind
+				) {
 					return false;
 				}
 				return true;
 			});
 			const filteredSuggestionRows = suggestionRows.filter((row) =>
-				input.sourceKind ? row.source_kind === input.sourceKind : true,
+				input.sourceKind
+					? canonicalFinanceSourceKind(row.source_kind) === input.sourceKind
+					: true,
 			);
 			const hasGranularFilters = Boolean(
 				input.accountId ||
@@ -1523,7 +1554,7 @@ export async function loadFinanceData(
 			const derivedRollups = buildFinanceRollupView({
 				ledger: filteredLedger,
 				importDocuments: filteredImportDocuments.map((row) => ({
-					sourceKind: row.source_kind,
+					sourceKind: canonicalFinanceSourceKind(row.source_kind),
 					statementPeriodEnd: row.statement_period_end,
 				})),
 			});
@@ -1591,9 +1622,15 @@ export async function loadFinanceData(
 				new Set(
 					[
 						...yearLedger.map((entry) => entry.sourceKind),
-						...yearDocuments.map((row) => row.source_kind),
-						...importTransactionRows.map((row) => row.source_kind),
-						...suggestionRows.map((row) => row.source_kind),
+						...yearDocuments.map((row) =>
+							canonicalFinanceSourceKind(row.source_kind),
+						),
+						...importTransactionRows.map((row) =>
+							canonicalFinanceSourceKind(row.source_kind),
+						),
+						...suggestionRows.map((row) =>
+							canonicalFinanceSourceKind(row.source_kind),
+						),
 						input.sourceKind ?? null,
 					].filter((value): value is string => Boolean(value)),
 				),
@@ -1785,7 +1822,7 @@ export async function loadFinanceData(
 							.filter((row) => row.year === selectedYear)
 							.map((row) => ({
 								year: row.year,
-								sourceKind: row.source_kind,
+								sourceKind: canonicalFinanceSourceKind(row.source_kind),
 								primaryCategory: row.primary_category,
 								inflowMinor: row.inflow_minor,
 								outflowMinor: row.outflow_minor,
@@ -1812,7 +1849,7 @@ export async function loadFinanceData(
 							.filter((row) => row.year === selectedYear)
 							.map((row) => ({
 								year: row.year,
-								sourceKind: row.source_kind,
+								sourceKind: canonicalFinanceSourceKind(row.source_kind),
 								primaryCategory: row.primary_category,
 								secondaryCategory: row.secondary_category,
 								inflowMinor: row.inflow_minor,
@@ -1838,7 +1875,7 @@ export async function loadFinanceData(
 					.map((row) => ({
 						id: row.id,
 						importRunId: row.import_run_id,
-						sourceKind: row.source_kind,
+						sourceKind: canonicalFinanceSourceKind(row.source_kind),
 						sourceDocumentRef: row.source_document_ref,
 						occurredAt: row.occurred_at,
 						postedAt: row.posted_at,
@@ -1953,7 +1990,7 @@ export async function loadFinanceData(
 					id: row.id,
 					entityKind: row.entity_kind,
 					canonicalKey: row.canonical_key,
-					sourceKind: row.source_kind,
+					sourceKind: canonicalFinanceSourceKind(row.source_kind),
 					confidence: row.confidence,
 					status: row.status,
 					appliedRegistryId: row.applied_registry_id,
@@ -2003,7 +2040,7 @@ export async function enqueueOverseerCommand(input: { accountId: string }) {
 
 export async function resolveReviewCommand(input: {
 	reviewId: string;
-	action: "accept" | "override";
+	action: "accept" | "override" | "defer";
 	override?: unknown;
 	note?: string;
 }) {
@@ -2036,6 +2073,29 @@ export async function resolveReviewCommand(input: {
 				message_id: review.message_id,
 				account_id: review.account_id,
 			});
+
+			if (input.action === "defer") {
+				await db
+					.updateTable("reviews")
+					.set({
+						reviewer_note: input.note ?? null,
+					})
+					.where("id", "=", input.reviewId)
+					.execute();
+				await publishActionEvent({
+					topic: "reviews",
+					eventType: "review.updated",
+					entityKind: "review",
+					entityId: input.reviewId,
+					payload: {
+						reviewId: input.reviewId,
+						messageId: review.message_id,
+						status: "open",
+						action: "defer",
+					},
+				});
+				return { status: "deferred" as const };
+			}
 
 			if (input.action === "accept") {
 				await db
@@ -2837,6 +2897,245 @@ export async function queueReviewClassifierCommand(input?: {
 	});
 }
 
+const reviewFindingResolveInputSchema = z
+	.object({
+		targetKind: z.enum(["root_review", "finance_ledger_entry"]),
+		targetId: z.string().min(1),
+		action: z.enum(["accept", "dismiss", "defer"]),
+		resolutionNote: z.string().max(1000).nullable().optional(),
+	})
+	.strict();
+
+async function queueRootReclassifyForReview(
+	reviewId: string,
+	resultId: string,
+) {
+	const { getDb } = await bootServer();
+	const row = await getDb()
+		.selectFrom("reviews")
+		.innerJoin("messages", "messages.id", "reviews.message_id")
+		.select(["reviews.message_id", "messages.account_id"])
+		.where("reviews.id", "=", reviewId)
+		.executeTakeFirst();
+	if (!row) {
+		return [];
+	}
+	const jobId = await queueJobIdempotent({
+		kind: "classify_root_messages",
+		scopeType: "account",
+		scopeId: row.account_id,
+		model: APP_CONFIG.classifierModel,
+		promptVersion: CLASSIFY_PROMPT_VERSION,
+		meta: {
+			targetMessageIds: [row.message_id],
+			reviewClassificationResultId: resultId,
+		},
+	});
+	return jobId ? [jobId] : [];
+}
+
+async function queueFinanceReclassifyForLedger(
+	canonicalKey: string,
+	resultId: string,
+) {
+	const { getDb } = await bootServer();
+	const rows = await getDb()
+		.selectFrom("finance_ledger_entries")
+		.innerJoin(
+			"finance_ledger_entry_sources",
+			"finance_ledger_entry_sources.ledger_entry_id",
+			"finance_ledger_entries.id",
+		)
+		.innerJoin(
+			"messages",
+			"messages.id",
+			"finance_ledger_entry_sources.message_id",
+		)
+		.select([
+			"finance_ledger_entry_sources.message_id as message_id",
+			"messages.account_id as account_id",
+		])
+		.where("finance_ledger_entries.canonical_key", "=", canonicalKey)
+		.where("finance_ledger_entry_sources.message_id", "is not", null)
+		.execute();
+	const accountMessages = new Map<string, Set<string>>();
+	for (const row of rows) {
+		if (!row.account_id || !row.message_id) {
+			continue;
+		}
+		const messages = accountMessages.get(row.account_id) ?? new Set<string>();
+		messages.add(row.message_id);
+		accountMessages.set(row.account_id, messages);
+	}
+	const jobs: string[] = [];
+	for (const [accountId, messageIds] of accountMessages) {
+		const jobId = await queueJobIdempotent({
+			kind: "classify_finance_messages",
+			scopeType: "account",
+			scopeId: accountId,
+			model: APP_CONFIG.classifierModel,
+			promptVersion: FINANCE_INTEL_PROMPT_VERSION,
+			meta: {
+				targetMessageIds: Array.from(messageIds),
+				reviewClassificationResultId: resultId,
+			},
+		});
+		if (jobId) {
+			jobs.push(jobId);
+		}
+	}
+	return jobs;
+}
+
+export async function resolveReviewClassifierFindingCommand(input: unknown) {
+	const parsed = reviewFindingResolveInputSchema.parse(input);
+	return runLoggedAction({
+		operation: "resolveReviewClassifierFindingCommand",
+		kind: "command",
+		context: {
+			target_kind: parsed.targetKind,
+			target_id: parsed.targetId,
+			action: parsed.action,
+		},
+		run: async () => {
+			const [{ getDb }, { nowIso }, { publishActionEvent }] = await Promise.all(
+				[bootServer(), import("#/lib/config"), import("#/lib/runtime-events")],
+			);
+			const db = getDb();
+			const head = await db
+				.selectFrom("review_classification_heads")
+				.select(["result_id", "action", "status"])
+				.where("target_kind", "=", parsed.targetKind)
+				.where("target_id", "=", parsed.targetId)
+				.executeTakeFirst();
+			if (!head) {
+				return { status: "not_found" as const, jobs: [] as string[] };
+			}
+			const now = nowIso();
+			if (parsed.action === "defer") {
+				await db
+					.updateTable("review_classification_heads")
+					.set({
+						status: "open",
+						resolution_note: parsed.resolutionNote ?? null,
+						updated_at: now,
+					})
+					.where("target_kind", "=", parsed.targetKind)
+					.where("target_id", "=", parsed.targetId)
+					.execute();
+				return { status: "deferred" as const, jobs: [] as string[] };
+			}
+			const nextStatus =
+				parsed.action === "accept"
+					? ("accepted" as const)
+					: ("dismissed" as const);
+			await db
+				.updateTable("review_classification_heads")
+				.set({
+					status: nextStatus,
+					resolution_note: parsed.resolutionNote ?? null,
+					decided_at: now,
+					updated_at: now,
+				})
+				.where("target_kind", "=", parsed.targetKind)
+				.where("target_id", "=", parsed.targetId)
+				.execute();
+			const jobs: string[] = [];
+			if (parsed.action === "accept") {
+				if (head.action === "enqueue_root_reclassify") {
+					jobs.push(
+						...(await queueRootReclassifyForReview(
+							parsed.targetId,
+							head.result_id,
+						)),
+					);
+				} else if (head.action === "enqueue_finance_reclassify") {
+					jobs.push(
+						...(await queueFinanceReclassifyForLedger(
+							parsed.targetId,
+							head.result_id,
+						)),
+					);
+				} else if (head.action === "mapping_needed") {
+					const reconcileJobId = await queueRegistrySuggestionReconcileJob();
+					if (reconcileJobId) {
+						jobs.push(reconcileJobId);
+					}
+					const mappingJobId = await queueJobIdempotent({
+						kind: "generate_finance_mapping_candidates",
+						scopeType: "system",
+						scopeId: "finance_mapping_candidates",
+						model: APP_CONFIG.fallbackModel,
+						promptVersion: "finance-mapping-overseer-v1",
+					});
+					if (mappingJobId) {
+						jobs.push(mappingJobId);
+					}
+				} else if (head.action === "overseer_signal") {
+					const accountRows =
+						parsed.targetKind === "root_review"
+							? await db
+									.selectFrom("reviews")
+									.innerJoin("messages", "messages.id", "reviews.message_id")
+									.select(["messages.account_id as account_id"])
+									.where("reviews.id", "=", parsed.targetId)
+									.execute()
+							: await db
+									.selectFrom("finance_ledger_entries")
+									.innerJoin(
+										"finance_ledger_entry_sources",
+										"finance_ledger_entry_sources.ledger_entry_id",
+										"finance_ledger_entries.id",
+									)
+									.innerJoin(
+										"messages",
+										"messages.id",
+										"finance_ledger_entry_sources.message_id",
+									)
+									.select(["messages.account_id as account_id"])
+									.where(
+										"finance_ledger_entries.canonical_key",
+										"=",
+										parsed.targetId,
+									)
+									.execute();
+					for (const accountId of uniqueStrings(
+						accountRows.map((row) => row.account_id),
+					)) {
+						const jobId = await queueJobIdempotent({
+							kind: "rebuild_overseer",
+							scopeType: "account",
+							scopeId: accountId,
+							model: APP_CONFIG.fallbackModel,
+							promptVersion: OVERSEER_PROMPT_VERSION,
+						});
+						if (jobId) {
+							jobs.push(jobId);
+						}
+					}
+				}
+			}
+			await publishActionEvent({
+				topic: "reviews",
+				eventType: "review_classifier.finding_resolved",
+				entityKind: "review_finding",
+				entityId: `${parsed.targetKind}:${parsed.targetId}`,
+				payload: {
+					targetKind: parsed.targetKind,
+					targetId: parsed.targetId,
+					status: nextStatus,
+					changeHints: { islands: ["review.stats", "review.queue"] },
+				},
+			});
+			return { status: nextStatus, jobs };
+		},
+		summarize: (result) => ({
+			status: result.status,
+			jobs: result.jobs.length,
+		}),
+	});
+}
+
 export async function queueImportOperatorRegistryCommand() {
 	return runLoggedAction({
 		operation: "queueImportOperatorRegistryCommand",
@@ -3096,6 +3395,30 @@ export async function applyFinanceMappingSuggestionCommand(input: {
 	});
 }
 
+export async function dismissFinanceMappingSuggestionCommand(input: {
+	suggestionId: string;
+}) {
+	return runLoggedAction({
+		operation: "dismissFinanceMappingSuggestionCommand",
+		kind: "command",
+		run: async () => {
+			const [{ getDb }, { nowIso }] = await Promise.all([
+				bootServer(),
+				import("#/lib/config"),
+			]);
+			await getDb()
+				.updateTable("registry_suggestions")
+				.set({ status: "rejected", updated_at: nowIso() })
+				.where("id", "=", input.suggestionId)
+				.execute();
+			return { suggestionId: input.suggestionId };
+		},
+		summarize: (result) => ({
+			suggestion_id: result.suggestionId,
+		}),
+	});
+}
+
 export async function queueTaxPersonalPackageCommand(input: {
 	year: number;
 	outDir?: string | null;
@@ -3248,15 +3571,18 @@ export async function queueImportFinanceArtifactCommand(input: {
 		run: async () => {
 			await bootServer();
 			const { financeSourceImportSchema } = await import("#/lib/schemas");
-			const { computeArtifactSha256 } = await import("#/lib/finance-imports");
+			const { computeArtifactSha256, withFinalArtifactSha256 } = await import(
+				"#/lib/finance-imports"
+			);
 			const artifact = financeSourceImportSchema.parse(input.artifact);
 			const artifactSha256 = computeArtifactSha256(artifact);
+			const queuedArtifact = withFinalArtifactSha256(artifact);
 			const { queueJobIdempotent } = await import("#/lib/jobs");
 			return queueJobIdempotent({
 				kind: "import_finance_artifact",
 				scopeType: "system",
 				scopeId: artifactSha256,
-				meta: { artifact, uploadId: input.uploadId ?? null },
+				meta: { artifact: queuedArtifact, uploadId: input.uploadId ?? null },
 			});
 		},
 		summarize: (result) => ({

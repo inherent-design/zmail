@@ -129,3 +129,11 @@ model names, normalized route labels, and sanitized error types are allowed.
 
 OTLP traces are configured but disabled by default. The first local
 observability contract uses Prometheus scraping and Loki log tailing.
+
+## Refresh Debug Logs
+
+Browser refresh debug logs may include target type, island id, node id, source,
+and route mismatch reason. Logs must not include raw mutation payloads, OAuth
+tokens, email bodies, snippets, raw artifacts, account numbers, or full manifest
+content. Event target hints are redacted to topic, event type, entity id, and
+safe target ids.

@@ -956,15 +956,56 @@ export type ClassificationRulesFile = z.infer<
 	typeof classificationRulesFileSchema
 >;
 
-const financeImportSourceKindSchema = z.enum([
+export const financeImportSourceKindSchema = z.enum([
 	"pdf",
-	"statement",
+	"text",
 	"csv",
 	"ofx",
 ]);
 export type FinanceImportSourceKind = z.infer<
 	typeof financeImportSourceKindSchema
 >;
+export const financeFilterSourceKindSchema = z.enum([
+	"email",
+	"pdf",
+	"text",
+	"csv",
+	"ofx",
+]);
+export type FinanceFilterSourceKind = z.infer<
+	typeof financeFilterSourceKindSchema
+>;
+export const legacyFinanceImportSourceKindSchema = z.enum([
+	"pdf",
+	"text",
+	"csv",
+	"ofx",
+	"statement",
+]);
+export type LegacyFinanceImportSourceKind = z.infer<
+	typeof legacyFinanceImportSourceKindSchema
+>;
+
+export function normalizeFinanceImportSourceKind(
+	value: unknown,
+): FinanceImportSourceKind {
+	const parsed = legacyFinanceImportSourceKindSchema.parse(value);
+	return parsed === "statement" ? "text" : parsed;
+}
+
+export function normalizeFinanceFilterSourceKind(
+	value: unknown,
+): FinanceFilterSourceKind {
+	if (value === "email") {
+		return "email";
+	}
+	return normalizeFinanceImportSourceKind(value);
+}
+
+const financeImportSourceKindInputSchema = z.preprocess(
+	(value) => normalizeFinanceImportSourceKind(value),
+	financeImportSourceKindSchema,
+);
 
 export const registryIdentitySuggestionSchema = registryIdentitySchema
 	.omit({ id: true })
@@ -1046,9 +1087,9 @@ export type FinanceImportTransaction = z.infer<
 
 export const financeSourceImportV1Schema = z.object({
 	schemaVersion: z.literal("finance-source-import.v1"),
-	sourceKind: financeImportSourceKindSchema,
+	sourceKind: financeImportSourceKindInputSchema,
 	sourceFile: financeImportSourceFileSchema,
-	artifactSha256: z.string().min(1),
+	artifactSha256: z.string().default(""),
 	extractor: financeImportExtractorSchema,
 	registrySuggestions: z.object({
 		identities: z.array(registryIdentitySuggestionSchema).default([]),
@@ -1097,9 +1138,9 @@ export const financeImportTransactionV2Schema =
 
 export const financeSourceImportV2Schema = z.object({
 	schemaVersion: z.literal("finance-source-import.v2"),
-	sourceKind: financeImportSourceKindSchema,
+	sourceKind: financeImportSourceKindInputSchema,
 	sourceFile: financeImportSourceFileSchema,
-	artifactSha256: z.string().min(1),
+	artifactSha256: z.string().default(""),
 	extractor: financeImportExtractorSchema,
 	registrySuggestions: z.object({
 		identities: z.array(registryIdentitySuggestionSchema).default([]),
@@ -1161,7 +1202,15 @@ export const financeDataInputSchema = z.object({
 	accountId: z.string().min(1).optional(),
 	institutionId: z.string().min(1).optional(),
 	ownerIdentityId: z.string().min(1).optional(),
-	sourceKind: z.enum(["email", "pdf", "statement", "csv", "ofx"]).optional(),
+	sourceKind: z
+		.preprocess(
+			(value) =>
+				value === undefined
+					? undefined
+					: normalizeFinanceFilterSourceKind(value),
+			financeFilterSourceKindSchema.optional(),
+		)
+		.optional(),
 });
 export type FinanceDataInput = z.infer<typeof financeDataInputSchema>;
 
@@ -1382,7 +1431,7 @@ export const classifyReviewBacklogInputSchema = z.object({
 
 export const resolveReviewInputSchema = z.object({
 	reviewId: z.string().min(1),
-	action: z.enum(["accept", "override"]),
+	action: z.enum(["accept", "override", "defer"]),
 	override: messageLabelSchema.optional(),
 	note: z.string().max(1000).optional(),
 });

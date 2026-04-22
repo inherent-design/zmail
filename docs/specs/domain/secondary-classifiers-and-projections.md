@@ -324,3 +324,12 @@ Outputs:
 - secondary classifiers unrelated to an explicitly specified domain contract
 - new visible opportunity, relationship, spam/fatigue, travel, or legal lenses
   in this finance rewrite
+
+## Operator-Gated Findings
+
+Review classifier runs persist findings and heads, then publish refresh events.
+They do not mutate labels, mappings, ledger rows, or YAML directly. Operators
+resolve findings through accept, dismiss, or defer actions. Accepted findings
+dispatch the current safe job for root reclassification, finance
+reclassification, mapping generation, or overseer rebuild. Manual review and
+no-action findings record the decision without queueing a job.

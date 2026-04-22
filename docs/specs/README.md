@@ -145,3 +145,14 @@ Use this rule set:
 - preserving a transitional `app/**` runtime layer after the purge
 - preserving single-tenant runtime assumptions as forward contracts
 - leaving finance import safety, org tenancy, or auth boundaries implicit
+
+## Unified Workflow Refresh
+
+Browser workflows use a shared mutation envelope for JSON RPC and multipart
+forms. Route handlers may return `ui.targets`, `ui.toast`, job hints, and event
+hints while preserving the existing `{ ok: true, status }` shape.
+
+Keyed node refresh is part of the public DOM contract. Pages may refresh main
+content, server islands, or keyed row and card roots without replacing
+`#app-main`. Specs in this tree own every changed API, database shape, DOM
+attribute, workflow, auth boundary, migration rule, and operator flow.

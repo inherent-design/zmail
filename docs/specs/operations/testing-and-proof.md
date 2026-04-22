@@ -205,3 +205,13 @@ Spec/source drift checks must be part of review:
 
 - coverage targets as a substitute for behavioral proof
 - browser-only proof for server/auth/data-integrity contracts
+
+## Unified Workflow Proof
+
+Unit tests cover source-kind normalization, artifact hash fallback, UI target
+normalization, node token handling, mutation parsing, multipart submission, and
+DataInspector state. Integration tests cover compatible envelopes for touched
+RPC routes, finance import legacy `statement` input, node partial headers, and
+ledger override persistence. Browser tests cover account actions, message
+classification, review decisions, finance upload source filters, node refresh,
+and DataInspector state preservation.

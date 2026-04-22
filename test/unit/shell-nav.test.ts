@@ -1,7 +1,10 @@
 import { JSDOM } from "jsdom";
 import { describe, expect, it, vi } from "vitest";
 
-import { createShellNav } from "#/public/client/core/shell-nav.js";
+import {
+	createShellNav,
+	extractNodeFragments,
+} from "#/public/client/core/shell-nav.js";
 
 function createDom(url = "http://localhost/") {
 	return new JSDOM(
@@ -76,6 +79,29 @@ function islandResponse(input: {
 	);
 }
 
+function nodeResponse(input: {
+	page: string;
+	cursor: number;
+	nodes: string[];
+	body: string;
+	missing?: string[];
+}) {
+	return new Response(
+		`<div data-zmail-node-fragments="${input.page}" data-event-cursor="${String(input.cursor)}">${input.body}</div>`,
+		{
+			status: 200,
+			headers: {
+				"X-Zmail-Page": input.page,
+				"X-Zmail-Event-Cursor": String(input.cursor),
+				"X-Zmail-Nodes": input.nodes.join(","),
+				...(input.missing
+					? { "X-Zmail-Node-Missing": input.missing.join(",") }
+					: {}),
+			},
+		},
+	);
+}
+
 function deferredResponse() {
 	let resolveResponse: ((response: Response) => void) | null = null;
 	const promise = new Promise<Response>((resolve) => {
@@ -110,6 +136,26 @@ function abortableResponse() {
 }
 
 describe("shell nav", () => {
+	it("extracts keyed node fragments from a node partial envelope", () => {
+		const dom = createDom();
+		vi.stubGlobal("DOMParser", dom.window.DOMParser);
+
+		const fragments = extractNodeFragments(`
+			<div data-zmail-node-fragments="finance" data-event-cursor="12">
+				<template data-zmail-node-fragment="finance.ledger.row:row-1">
+					<tr data-zmail-node="finance.ledger.row" data-zmail-node-key="row-1">
+						<td>Updated</td>
+					</tr>
+				</template>
+			</div>
+		`);
+
+		expect(fragments.envelope?.getAttribute("data-event-cursor")).toBe("12");
+		expect(
+			fragments.roots.get("finance.ledger.row:row-1")?.textContent,
+		).toContain("Updated");
+	});
+
 	it("updates title, history, and the render-time cursor after navigate", async () => {
 		const dom = createDom();
 		vi.stubGlobal("DOMParser", dom.window.DOMParser);
@@ -413,6 +459,435 @@ describe("shell nav", () => {
 			"finance.summary",
 			expect.any(dom.window.Element),
 			{ zoom: true },
+		);
+	});
+
+	it("encodes node partial requests and swaps matching node roots", async () => {
+		const dom = createFinanceDom();
+		vi.stubGlobal("DOMParser", dom.window.DOMParser);
+		dom.window.document
+			.getElementById("app-main")
+			?.insertAdjacentHTML(
+				"beforeend",
+				`<table><tbody><tr data-zmail-node="custom:node" data-zmail-node-key="key:1"><td>Old row</td></tr></tbody></table>`,
+			);
+		const fetchImpl = vi.fn(async () =>
+			nodeResponse({
+				page: "finance",
+				cursor: 15,
+				nodes: ["custom%3Anode:key%3A1"],
+				body: `<template data-zmail-node-fragment="custom%3Anode:key%3A1"><tr data-zmail-node="custom:node" data-zmail-node-key="key:1"><td>New row</td></tr></template>`,
+			}),
+		);
+		const shellNav = createShellNav({
+			documentRef: dom.window.document,
+			windowRef: dom.window as unknown as Window,
+			fetchImpl: fetchImpl as typeof fetch,
+		});
+
+		await shellNav.refreshNodes(
+			[
+				{
+					type: "node",
+					islandId: "finance.summary",
+					nodeId: "custom:node",
+					key: "key:1",
+				},
+			],
+			{ fallback: "none" },
+		);
+
+		expect(fetchImpl).toHaveBeenCalledWith(
+			"/finance",
+			expect.objectContaining({
+				headers: expect.objectContaining({
+					"X-Zmail-Partial": "nodes",
+					"X-Zmail-Nodes": "custom%3Anode:key%3A1",
+				}),
+			}),
+		);
+		expect(dom.window.document.body.textContent).toContain("New row");
+		expect(dom.window.document.body.textContent).not.toContain("Old row");
+	});
+
+	it("prunes node refreshes covered by requested islands", async () => {
+		const dom = createFinanceDom();
+		vi.stubGlobal("DOMParser", dom.window.DOMParser);
+		const fetchImpl = vi.fn(async () =>
+			islandResponse({
+				page: "finance",
+				cursor: 16,
+				islands: ["finance.summary"],
+				body: '<section data-zmail-island="finance.summary">New summary</section>',
+			}),
+		);
+		const shellNav = createShellNav({
+			documentRef: dom.window.document,
+			windowRef: dom.window as unknown as Window,
+			fetchImpl: fetchImpl as typeof fetch,
+		});
+
+		await shellNav.refresh({
+			islands: ["finance.summary"],
+			nodes: [
+				{
+					type: "node",
+					islandId: "finance.summary",
+					nodeId: "finance.summary.row",
+					key: "row-1",
+				},
+			],
+			fallback: "none",
+		});
+
+		expect(fetchImpl).toHaveBeenCalledTimes(1);
+		expect(fetchImpl).toHaveBeenCalledWith(
+			"/finance",
+			expect.objectContaining({
+				headers: expect.objectContaining({
+					"X-Zmail-Partial": "islands",
+					"X-Zmail-Islands": "finance.summary",
+				}),
+			}),
+		);
+	});
+
+	it("preserves queued island refreshes when a node-only refresh joins the queue", async () => {
+		const dom = createFinanceDom();
+		vi.stubGlobal("DOMParser", dom.window.DOMParser);
+		dom.window.document
+			.getElementById("app-main")
+			?.insertAdjacentHTML(
+				"beforeend",
+				`<table><tbody><tr data-zmail-node="finance.ledger.row" data-zmail-node-key="row-1"><td>Old row</td></tr></tbody></table>`,
+			);
+		const first = deferredResponse();
+		const responses = [
+			first.promise,
+			Promise.resolve(
+				islandResponse({
+					page: "finance",
+					cursor: 17,
+					islands: ["finance.summary"],
+					body: '<section data-zmail-island="finance.summary">New summary</section>',
+				}),
+			),
+			Promise.resolve(
+				nodeResponse({
+					page: "finance",
+					cursor: 18,
+					nodes: ["finance.ledger.row:row-1"],
+					body: `<template data-zmail-node-fragment="finance.ledger.row:row-1"><tr data-zmail-node="finance.ledger.row" data-zmail-node-key="row-1"><td>New row</td></tr></template>`,
+				}),
+			),
+		];
+		const fetchImpl = vi.fn(
+			() => responses.shift() ?? Promise.reject(new Error("unexpected fetch")),
+		);
+		const shellNav = createShellNav({
+			documentRef: dom.window.document,
+			windowRef: dom.window as unknown as Window,
+			fetchImpl: fetchImpl as typeof fetch,
+		});
+
+		const firstRefresh = shellNav.refresh({
+			islands: ["finance.cashflow"],
+			fallback: "none",
+		});
+		const queuedIsland = shellNav.refresh({
+			islands: ["finance.summary"],
+			fallback: "none",
+		});
+		const queuedNode = shellNav.refreshNodes(
+			[
+				{
+					type: "node",
+					islandId: "finance.ledger",
+					nodeId: "finance.ledger.row",
+					key: "row-1",
+				},
+			],
+			{ fallback: "none" },
+		);
+
+		expect(fetchImpl).toHaveBeenCalledTimes(1);
+		first.resolve(
+			islandResponse({
+				page: "finance",
+				cursor: 16,
+				islands: ["finance.cashflow"],
+				body: '<section data-zmail-island="finance.cashflow">New chart</section>',
+			}),
+		);
+		await Promise.all([firstRefresh, queuedIsland, queuedNode]);
+
+		expect(fetchImpl).toHaveBeenCalledTimes(3);
+		expect(fetchImpl).toHaveBeenNthCalledWith(
+			2,
+			"/finance",
+			expect.objectContaining({
+				headers: expect.objectContaining({
+					"X-Zmail-Partial": "islands",
+					"X-Zmail-Islands": "finance.summary",
+				}),
+			}),
+		);
+		expect(fetchImpl).toHaveBeenNthCalledWith(
+			3,
+			"/finance",
+			expect.objectContaining({
+				headers: expect.objectContaining({
+					"X-Zmail-Partial": "nodes",
+					"X-Zmail-Nodes": "finance.ledger.row:row-1",
+				}),
+			}),
+		);
+		expect(dom.window.document.body.textContent).toContain("New summary");
+		expect(dom.window.document.body.textContent).toContain("New row");
+	});
+
+	it("skips focused SSE nodes while refreshing unrelated nodes", async () => {
+		vi.useFakeTimers();
+		try {
+			const dom = createFinanceDom();
+			vi.stubGlobal("DOMParser", dom.window.DOMParser);
+			dom.window.document.getElementById("app-main")?.insertAdjacentHTML(
+				"beforeend",
+				`<table><tbody>
+						<tr data-zmail-node="finance.ledger.row" data-zmail-node-key="row-1"><td><input value="draft"></td></tr>
+						<tr data-zmail-node="finance.ledger.row" data-zmail-node-key="row-2"><td>Old row 2</td></tr>
+					</tbody></table>`,
+			);
+			dom.window.document.querySelector("input")?.focus();
+			const fetchImpl = vi.fn(async (_url, init) => {
+				const headers =
+					((init as RequestInit | undefined)?.headers as
+						| Record<string, string>
+						| undefined) ?? {};
+				expect(headers["X-Zmail-Nodes"]).toBe("finance.ledger.row:row-2");
+				return nodeResponse({
+					page: "finance",
+					cursor: 19,
+					nodes: ["finance.ledger.row:row-2"],
+					body: `<template data-zmail-node-fragment="finance.ledger.row:row-2"><tr data-zmail-node="finance.ledger.row" data-zmail-node-key="row-2"><td>New row 2</td></tr></template>`,
+				});
+			});
+			const shellNav = createShellNav({
+				documentRef: dom.window.document,
+				windowRef: dom.window as unknown as Window,
+				fetchImpl: fetchImpl as typeof fetch,
+			});
+
+			await shellNav.scheduleRefresh({
+				nodes: [
+					{
+						type: "node",
+						islandId: "finance.ledger",
+						nodeId: "finance.ledger.row",
+						key: "row-1",
+					},
+					{
+						type: "node",
+						islandId: "finance.ledger",
+						nodeId: "finance.ledger.row",
+						key: "row-2",
+					},
+				],
+				immediate: true,
+				source: "sse",
+				fallback: "none",
+			});
+			await vi.advanceTimersByTimeAsync(0);
+
+			expect(fetchImpl).toHaveBeenCalledTimes(1);
+			expect(dom.window.document.body.textContent).toContain("New row 2");
+			expect(dom.window.document.querySelector("input")?.value).toBe("draft");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("skips selected SSE nodes while refreshing unrelated nodes", async () => {
+		vi.useFakeTimers();
+		try {
+			const dom = createFinanceDom();
+			vi.stubGlobal("DOMParser", dom.window.DOMParser);
+			dom.window.document.getElementById("app-main")?.insertAdjacentHTML(
+				"beforeend",
+				`<table><tbody>
+						<tr data-zmail-node="finance.ledger.row" data-zmail-node-key="row-1"><td>Selected row</td></tr>
+						<tr data-zmail-node="finance.ledger.row" data-zmail-node-key="row-2"><td>Old row 2</td></tr>
+					</tbody></table>`,
+			);
+			const selectedCell = dom.window.document.querySelector(
+				'[data-zmail-node-key="row-1"] td',
+			);
+			if (!selectedCell?.firstChild) {
+				throw new Error("selected row text missing");
+			}
+			const range = dom.window.document.createRange();
+			range.selectNodeContents(selectedCell.firstChild);
+			const selection = dom.window.getSelection();
+			selection?.removeAllRanges();
+			selection?.addRange(range);
+			const fetchImpl = vi.fn(async (_url, init) => {
+				const headers =
+					((init as RequestInit | undefined)?.headers as
+						| Record<string, string>
+						| undefined) ?? {};
+				expect(headers["X-Zmail-Nodes"]).toBe("finance.ledger.row:row-2");
+				return nodeResponse({
+					page: "finance",
+					cursor: 20,
+					nodes: ["finance.ledger.row:row-2"],
+					body: `<template data-zmail-node-fragment="finance.ledger.row:row-2"><tr data-zmail-node="finance.ledger.row" data-zmail-node-key="row-2"><td>New row 2</td></tr></template>`,
+				});
+			});
+			const shellNav = createShellNav({
+				documentRef: dom.window.document,
+				windowRef: dom.window as unknown as Window,
+				fetchImpl: fetchImpl as typeof fetch,
+			});
+
+			await shellNav.scheduleRefresh({
+				nodes: [
+					{
+						type: "node",
+						islandId: "finance.ledger",
+						nodeId: "finance.ledger.row",
+						key: "row-1",
+					},
+					{
+						type: "node",
+						islandId: "finance.ledger",
+						nodeId: "finance.ledger.row",
+						key: "row-2",
+					},
+				],
+				immediate: true,
+				source: "sse",
+				fallback: "none",
+			});
+			await vi.advanceTimersByTimeAsync(0);
+
+			expect(fetchImpl).toHaveBeenCalledTimes(1);
+			expect(dom.window.document.body.textContent).toContain("Selected row");
+			expect(dom.window.document.body.textContent).toContain("New row 2");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps immediate action island refresh exact when scheduled SSE is pending", async () => {
+		vi.useFakeTimers();
+		try {
+			const dom = createFinanceDom();
+			vi.stubGlobal("DOMParser", dom.window.DOMParser);
+			const fetchImpl = vi.fn(async () =>
+				islandResponse({
+					page: "finance",
+					cursor: 14,
+					islands: ["finance.cashflow"],
+					body: '<section data-zmail-island="finance.cashflow">New chart</section>',
+				}),
+			);
+			const shellNav = createShellNav({
+				documentRef: dom.window.document,
+				windowRef: dom.window as unknown as Window,
+				fetchImpl: fetchImpl as typeof fetch,
+			});
+
+			await shellNav.scheduleRefresh({
+				islands: ["finance.summary", "finance.cashflow"],
+				source: "sse",
+				debounceMs: 1000,
+				maxWaitMs: 5000,
+				fallback: "none",
+			});
+			await shellNav.scheduleRefresh({
+				islands: ["finance.cashflow"],
+				immediate: true,
+				fallback: "none",
+			});
+			await vi.advanceTimersByTimeAsync(5000);
+
+			expect(fetchImpl).toHaveBeenCalledTimes(1);
+			expect(fetchImpl).toHaveBeenCalledWith(
+				"/finance",
+				expect.objectContaining({
+					headers: expect.objectContaining({
+						"X-Zmail-Islands": "finance.cashflow",
+					}),
+				}),
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps immediate action island refresh exact when SSE is queued behind an in-flight refresh", async () => {
+		const dom = createDom();
+		vi.stubGlobal("DOMParser", dom.window.DOMParser);
+		const first = deferredResponse();
+		const responses = [
+			first.promise,
+			Promise.resolve(
+				islandResponse({
+					page: "home",
+					cursor: 17,
+					islands: ["home.lanes"],
+					body: '<section data-zmail-island="home.lanes">New lanes</section>',
+				}),
+			),
+		];
+		const fetchImpl = vi.fn(
+			() => responses.shift() ?? Promise.reject(new Error("unexpected fetch")),
+		);
+		const shellNav = createShellNav({
+			documentRef: dom.window.document,
+			windowRef: dom.window as unknown as Window,
+			fetchImpl: fetchImpl as typeof fetch,
+		});
+
+		const firstRefresh = shellNav.scheduleRefresh({
+			islands: ["home.stats"],
+			immediate: true,
+			fallback: "none",
+			source: "sse",
+		});
+		void shellNav.scheduleRefresh({
+			islands: ["home.stats"],
+			immediate: true,
+			fallback: "none",
+			source: "sse",
+		});
+		const actionRefresh = shellNav.scheduleRefresh({
+			islands: ["home.lanes"],
+			immediate: true,
+			fallback: "none",
+		});
+
+		expect(fetchImpl).toHaveBeenCalledTimes(1);
+		first.resolve(
+			islandResponse({
+				page: "home",
+				cursor: 16,
+				islands: ["home.stats"],
+				body: '<section data-zmail-island="home.stats">New stats</section>',
+			}),
+		);
+		await actionRefresh;
+		await firstRefresh;
+
+		expect(fetchImpl).toHaveBeenCalledTimes(2);
+		expect(fetchImpl).toHaveBeenLastCalledWith(
+			"/",
+			expect.objectContaining({
+				headers: expect.objectContaining({
+					"X-Zmail-Partial": "islands",
+					"X-Zmail-Islands": "home.lanes",
+				}),
+			}),
 		);
 	});
 

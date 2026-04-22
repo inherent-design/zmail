@@ -1,4 +1,10 @@
-import { createIslandRegistry } from "./core/island-registry.js";
+import { initDataInspectors } from "./components/data-inspector.js";
+import {
+	captureGenericState,
+	createIslandRegistry,
+	restoreGenericState,
+} from "./core/island-registry.js";
+import { createMutationRuntime } from "./core/mutations.js";
 import { createRpcClient } from "./core/rpc-client.js";
 import { createShellNav } from "./core/shell-nav.js";
 import { createSyncProvider } from "./core/sync-provider.js";
@@ -63,6 +69,7 @@ const syncProvider = createSyncProvider({
 	initialCursor: readEventCursor(),
 });
 const rpcClient = createRpcClient();
+let mutationRuntime;
 
 const app = {
 	basePath,
@@ -72,6 +79,9 @@ const app = {
 	reconnect: syncProvider.reconnect,
 	close: syncProvider.close,
 	postJson: rpcClient.postJson,
+	mutate: (target, options) => mutationRuntime.mutate(target, options),
+	bindMutations: (root, optionsForTarget) =>
+		mutationRuntime.bind(root, optionsForTarget),
 	refresh: (options) => shellNav.refresh(options),
 	refreshIsland: (ids, options) => shellNav.refreshIsland(ids, options),
 	scheduleRefresh: (options) => shellNav.scheduleRefresh(options),
@@ -91,17 +101,25 @@ const shellNav = createShellNav({
 		syncProvider.setCursor(readEventCursor());
 		await pageRegistry.afterIslandSwap(id, root, state, app);
 	},
+	onBeforeNodeSwap: (_target, root) => captureGenericState(root),
+	onAfterNodeSwap: async (_target, root, state) => {
+		syncProvider.setCursor(readEventCursor());
+		restoreGenericState(root, state);
+	},
 });
+mutationRuntime = createMutationRuntime({ app });
 
 const cleanupLinkClicks = shellNav.bindLinkClicks();
 const cleanupPopState = shellNav.bindPopState();
 const cleanupPrefetch = shellNav.bindPrefetch();
+const cleanupDataInspectors = initDataInspectors();
 
 window.Zmail = app;
 window.addEventListener("beforeunload", () => {
 	cleanupLinkClicks();
 	cleanupPopState();
 	cleanupPrefetch();
+	cleanupDataInspectors();
 	syncProvider.close();
 	pageRegistry.cleanup();
 });

@@ -405,3 +405,22 @@ Fragment responses must:
 - framework-generated route trees
 - server actions hidden behind component helpers
 - cross-org request multiplexing inside one route handler
+
+## Mutation Envelope
+
+Browser RPC and multipart routes return `{ ok: true, status }` plus optional
+`ui` metadata. `ui.targets` accepts redirect, main, island, and node targets.
+Unknown target types and unknown target keys are invalid. Existing callers that
+only read `ok` and `status` remain compatible.
+
+## Node Partials
+
+`renderPage()` supports `X-Zmail-Partial: nodes` with `X-Zmail-Nodes` containing
+comma-separated `<nodeId>:<encodedKey>` tokens. Responses include
+`X-Zmail-Page`, `X-Zmail-Event-Cursor`, `X-Zmail-Nodes`, and optional
+`X-Zmail-Node-Missing`.
+
+The response body is a `data-zmail-node-fragments` envelope containing templates
+keyed by `data-zmail-node-fragment`. Unsupported nodes and absent keys are
+reported through `X-Zmail-Node-Missing`. User actions may fall back to the parent
+island when a node is missing; SSE skips missing nodes.

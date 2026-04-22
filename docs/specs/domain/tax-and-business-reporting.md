@@ -284,3 +284,10 @@ same job kinds or call the same package generator used by worker jobs.
 - duplicate rows: retain suppressed provenance and keep duplicates out of
   accepted totals
 - unsafe evidence: omit unsafe fields and record redacted provenance
+
+## Browser Workflow
+
+Tax and business report queue actions return mutation envelopes targeting report
+run state, tax, and lane islands. Report manifests and validation JSON render
+through `DataInspector`. Export and report output directories are org-local and
+never public static paths.

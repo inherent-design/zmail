@@ -182,3 +182,16 @@ Cross-org reads or writes are forbidden.
 - shared-database row-scoped multitenancy
 - open unauthenticated HTTP APIs
 - manual finance candidate adjudication in the first vNext contract
+
+## Browser Workflow Mutation Flow
+
+Hono route handlers own UI target shaping. Domain services stay UI-agnostic
+unless they return neutral change hints. Browser JSON RPC and multipart
+submissions return one mutation envelope with optional redirect, main, island,
+and keyed node targets. The enhanced MPA shell applies targets in this order:
+redirect, main, islands, then remaining nodes.
+
+SSE events may carry redacted target hints with topic, event type, and entity id.
+The shell schedules island and node refreshes from those hints. SSE never
+replaces `#app-main`; focused or selected node roots are skipped while unrelated
+nodes may still refresh.

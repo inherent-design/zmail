@@ -335,3 +335,20 @@ fallback blocks, and route-origin mismatch drops.
 - React-specific router or server-action abstractions
 - client-owned route trees
 - long-lived websocket or WebRTC application transports in v1
+
+## Keyed Nodes And Mutation Lifecycle
+
+Hono JSX pages may expose keyed node roots inside server islands. A node root
+sets `data-zmail-node`, `data-zmail-node-key`, and
+`data-zmail-parent-island`. Full island rendering and node partial rendering
+share row or card render functions.
+
+The browser mutation lifecycle disables the submitter, sends JSON or multipart
+data, renders inline errors in `[data-mutation-error]`, renders `ui.toast`, and
+refreshes targets from the mutation envelope. Redirects use enhanced
+navigation. Islands refresh before nodes, and nodes covered by refreshed islands
+are pruned.
+
+Shared JSX primitives live under `server/ui/primitives.tsx`. Touched surfaces
+use `DataInspector` for JSON-heavy evidence, decision cards for operator
+choices, and stable table or list roots for node replacement.

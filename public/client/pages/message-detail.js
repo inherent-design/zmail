@@ -23,17 +23,12 @@ export function init(app) {
 		if (!button) {
 			return;
 		}
-		button.disabled = true;
-		try {
-			await app.postJson(button.dataset.rpc, {});
-			await app.refresh({
-				islands: MESSAGE_ISLANDS,
+		await app
+			.mutate(button, {
+				fallbackTargets: MESSAGE_ISLANDS.map((id) => ({ type: "island", id })),
 				fallback: "none",
-			});
-		} catch (error) {
-			window.alert(error instanceof Error ? error.message : String(error));
-			button.disabled = false;
-		}
+			})
+			.catch(() => {});
 	};
 
 	button?.addEventListener("click", onClick);

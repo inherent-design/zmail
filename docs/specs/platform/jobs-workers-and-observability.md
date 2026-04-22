@@ -237,3 +237,10 @@ Do not log:
 - cross-org shared jobs tables
 - multi-process distributed worker coordination
 - unaudited background mutation paths outside the jobs system
+
+## Job Event Target Hints
+
+Job events may include redacted change hints for islands and keyed nodes. Hints
+carry topic, event type, entity id, and safe target metadata only. Workers do not
+read DOM contracts; event producers attach neutral entity ids and route handlers
+or page modules translate those ids when needed.

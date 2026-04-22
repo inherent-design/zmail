@@ -6,6 +6,10 @@ const ISLAND_PARTIAL_HEADERS = {
 	"X-Zmail-Partial": "islands",
 };
 
+const NODE_PARTIAL_HEADERS = {
+	"X-Zmail-Partial": "nodes",
+};
+
 export function extractPartialMain(html, parser = new DOMParser()) {
 	const doc = parser.parseFromString(html, "text/html");
 	return doc.getElementById("app-main");
@@ -24,11 +28,61 @@ export function extractIslandFragments(html, parser = new DOMParser()) {
 	return { envelope, roots };
 }
 
+export function extractNodeFragments(html, parser = new DOMParser()) {
+	const doc = parser.parseFromString(html, "text/html");
+	const envelope = doc.querySelector("[data-zmail-node-fragments]");
+	const roots = new Map();
+	for (const template of doc.querySelectorAll("[data-zmail-node-fragment]")) {
+		const token = template.getAttribute("data-zmail-node-fragment");
+		if (!token) {
+			continue;
+		}
+		const content =
+			"content" in template
+				? template.content.firstElementChild
+				: template.firstElementChild;
+		if (content) {
+			roots.set(token, content);
+		}
+	}
+	return { envelope, roots };
+}
+
 function splitHeaderList(value) {
 	return (value ?? "")
 		.split(",")
 		.map((item) => item.trim())
 		.filter(Boolean);
+}
+
+function normalizeNodeTargets(value) {
+	if (!value) {
+		return [];
+	}
+	const targets = Array.isArray(value) ? value : [value];
+	const seen = new Set();
+	const normalized = [];
+	for (const target of targets) {
+		if (!target || target.type !== "node") {
+			continue;
+		}
+		const node = {
+			type: "node",
+			islandId: String(target.islandId ?? "").trim(),
+			nodeId: String(target.nodeId ?? "").trim(),
+			key: String(target.key ?? "").trim(),
+		};
+		if (!node.islandId || !node.nodeId || !node.key) {
+			continue;
+		}
+		const dedupeKey = `${node.islandId}:${node.nodeId}:${node.key}`;
+		if (seen.has(dedupeKey)) {
+			continue;
+		}
+		seen.add(dedupeKey);
+		normalized.push(node);
+	}
+	return normalized;
 }
 
 function normalizeIslandIds(value) {
@@ -44,6 +98,25 @@ function islandSelector(id) {
 	return `[data-zmail-island="${String(id).replaceAll('"', '\\"')}"]`;
 }
 
+function cssEscape(value) {
+	if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+		return CSS.escape(String(value));
+	}
+	return String(value).replace(/["\\]/g, "\\$&");
+}
+
+function nodeToken(target) {
+	return `${encodeURIComponent(target.nodeId)}:${encodeURIComponent(target.key)}`;
+}
+
+function nodeSelector(target) {
+	return `[data-zmail-node="${cssEscape(target.nodeId)}"][data-zmail-node-key="${cssEscape(target.key)}"]`;
+}
+
+function eventElement(event) {
+	return event.target?.nodeType === 1 ? event.target : null;
+}
+
 export function createShellNav(input = {}) {
 	const {
 		documentRef = document,
@@ -52,6 +125,8 @@ export function createShellNav(input = {}) {
 		onAfterSwap,
 		onBeforeIslandSwap,
 		onAfterIslandSwap,
+		onBeforeNodeSwap,
+		onAfterNodeSwap,
 	} = input;
 	let refreshInFlight = null;
 	let refreshQueued = null;
@@ -120,9 +195,14 @@ export function createShellNav(input = {}) {
 
 	function buildRefreshRequest(options = {}) {
 		const islands = normalizeIslandIds(options.islands);
+		const coveredIslandIds = islands ? new Set(islands) : null;
+		const nodes = normalizeNodeTargets(options.nodes).filter(
+			(target) => !coveredIslandIds?.has(target.islandId),
+		);
 		const source = options.source ?? "action";
 		return {
 			islands,
+			nodes,
 			source,
 			originPage: options.originPage ?? null,
 			originUrl: normalizeUrl(options.originUrl) ?? null,
@@ -136,6 +216,7 @@ export function createShellNav(input = {}) {
 				originPage: request.originPage,
 				currentPage: currentPage(),
 				islands: request.islands,
+				nodes: request.nodes,
 				source: request.source,
 			});
 			return false;
@@ -145,6 +226,7 @@ export function createShellNav(input = {}) {
 				originUrl: request.originUrl,
 				currentUrl: currentUrl(),
 				islands: request.islands,
+				nodes: request.nodes,
 				source: request.source,
 			});
 			return false;
@@ -156,21 +238,35 @@ export function createShellNav(input = {}) {
 		if (!current) {
 			return next;
 		}
-		if (!current.islands || !next.islands) {
+		const nodes = [...(current.nodes ?? []), ...(next.nodes ?? [])];
+		const currentWantsMain = !current.islands?.length && !current.nodes?.length;
+		const nextWantsMain = !next.islands?.length && !next.nodes?.length;
+		if (currentWantsMain || nextWantsMain) {
 			const source = next.source ?? current.source ?? "action";
 			return {
 				...next,
 				source,
 				islands: null,
+				nodes: [],
 				fallback: refreshFallback(source, null, next.fallback),
 			};
 		}
 		const source = next.source ?? current.source ?? "action";
-		const islands = Array.from(new Set([...current.islands, ...next.islands]));
+		const islands =
+			current.islands || next.islands
+				? Array.from(
+						new Set([...(current.islands ?? []), ...(next.islands ?? [])]),
+					)
+				: null;
+		const coveredIslandIds = new Set(islands ?? []);
+		const mergedNodes = normalizeNodeTargets(nodes).filter(
+			(target) => !coveredIslandIds.has(target.islandId),
+		);
 		return {
 			...next,
 			source,
 			islands,
+			nodes: mergedNodes,
 			fallback: refreshFallback(
 				source,
 				islands,
@@ -450,18 +546,143 @@ export function createShellNav(input = {}) {
 		}
 	}
 
+	async function fallbackMissingActionNodes(request, missingTargets) {
+		if (request.source === "sse" || missingTargets.length === 0) {
+			return;
+		}
+		const islands = Array.from(
+			new Set(missingTargets.map((target) => target.islandId).filter(Boolean)),
+		);
+		if (islands.length === 0) {
+			return;
+		}
+		await refreshIslandsNow({
+			...request,
+			islands,
+			nodes: [],
+			fallback: "none",
+		});
+	}
+
+	async function refreshNodesNow(request) {
+		if (!request.nodes?.length || !sameRefreshOrigin(request)) {
+			return;
+		}
+		debugRefresh("node-refresh-requested", {
+			nodes: request.nodes.map(nodeToken),
+			source: request.source,
+		});
+		const navigation = beginNavigation("refresh");
+		if (!navigation) {
+			return;
+		}
+		const targetUrl = request.originUrl ?? currentUrl();
+		try {
+			const response = await fetchImpl(targetUrl, {
+				headers: {
+					...NODE_PARTIAL_HEADERS,
+					"X-Zmail-Nodes": request.nodes.map(nodeToken).join(","),
+					"X-Requested-With": "zmail-nav",
+				},
+				signal: navigation.controller.signal,
+			});
+			if (!isCurrentNavigation(navigation)) {
+				return;
+			}
+			if (!response.ok) {
+				await fallbackMissingActionNodes(request, request.nodes);
+				return;
+			}
+			const html = await response.text();
+			if (!isCurrentNavigation(navigation) || !sameRefreshOrigin(request)) {
+				return;
+			}
+			const { envelope, roots } = extractNodeFragments(html);
+			const returnedPage = response.headers.get("X-Zmail-Page");
+			if (returnedPage && returnedPage !== currentPage()) {
+				return;
+			}
+			if (!envelope) {
+				await fallbackMissingActionNodes(request, request.nodes);
+				return;
+			}
+			const supportedTokens = new Set(
+				splitHeaderList(response.headers.get("X-Zmail-Nodes")),
+			);
+			const missingTokens = new Set(
+				splitHeaderList(response.headers.get("X-Zmail-Node-Missing")),
+			);
+			const replacements = [];
+			const missingTargets = [];
+			for (const target of request.nodes) {
+				const token = nodeToken(target);
+				const incomingRoot = roots.get(token);
+				const currentRoot = documentRef.querySelector(nodeSelector(target));
+				if (
+					!incomingRoot ||
+					!currentRoot ||
+					missingTokens.has(token) ||
+					!supportedTokens.has(token)
+				) {
+					missingTargets.push(target);
+					continue;
+				}
+				replacements.push({
+					target,
+					currentRoot,
+					incomingRoot,
+					state: onBeforeNodeSwap?.(target, currentRoot),
+				});
+			}
+			const swap = () => {
+				if (!isCurrentNavigation(navigation)) {
+					return;
+				}
+				for (const item of replacements) {
+					item.currentRoot.replaceWith(item.incomingRoot);
+				}
+			};
+			if (documentRef.startViewTransition) {
+				await documentRef.startViewTransition(swap).finished;
+			} else {
+				swap();
+			}
+			if (!isCurrentNavigation(navigation) || !sameRefreshOrigin(request)) {
+				return;
+			}
+			setCursorFrom(response, envelope);
+			for (const item of replacements) {
+				await onAfterNodeSwap?.(item.target, item.incomingRoot, item.state);
+			}
+			await fallbackMissingActionNodes(request, missingTargets);
+		} catch (error) {
+			if (isAbortError(error)) {
+				return;
+			}
+			throw error;
+		} finally {
+			if (isCurrentNavigation(navigation)) {
+				activeNavigation = null;
+			}
+		}
+	}
+
 	async function performRefresh(request) {
 		if (!sameRefreshOrigin(request)) {
 			return;
 		}
 		if (request.islands?.length) {
 			await refreshIslandsNow(request);
+		}
+		if (request.nodes?.length) {
+			await refreshNodesNow(request);
 			return;
 		}
-		if (request.source === "sse") {
+		if (request.islands?.length || request.source === "sse") {
 			debugRefresh("main-fallback-blocked", {
 				source: request.source,
 				islands: request.islands,
+				nodes: request.nodes,
 			});
 			return;
 		}
@@ -495,6 +716,10 @@ export function createShellNav(input = {}) {
 
 	function refreshIsland(ids, options = {}) {
 		return refresh({ ...options, islands: normalizeIslandIds(ids) });
+	}
+
+	function refreshNodes(nodes, options = {}) {
+		return refresh({ ...options, nodes: normalizeNodeTargets(nodes) });
 	}
 
 	function clearScheduledRefresh() {
@@ -535,6 +760,17 @@ export function createShellNav(input = {}) {
 		);
 	}
 
+	function activeNodeToken(active) {
+		const node = active?.closest?.("[data-zmail-node][data-zmail-node-key]");
+		if (!node) {
+			return null;
+		}
+		return nodeToken({
+			nodeId: node.dataset.zmailNode,
+			key: node.dataset.zmailNodeKey,
+		});
+	}
+
 	function islandIdForNode(node) {
 		if (!node) {
 			return null;
@@ -562,12 +798,46 @@ export function createShellNav(input = {}) {
 		);
 	}
 
+	function selectedNodeTokens() {
+		const selection =
+			documentRef.getSelection?.() ?? windowRef.getSelection?.() ?? null;
+		if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+			return [];
+		}
+		const nodeFor = (node) => {
+			const element =
+				node?.nodeType === 1 ? node : (node?.parentElement ?? node?.parentNode);
+			const root = element?.closest?.("[data-zmail-node][data-zmail-node-key]");
+			return root
+				? nodeToken({
+						nodeId: root.dataset.zmailNode,
+						key: root.dataset.zmailNodeKey,
+					})
+				: null;
+		};
+		return Array.from(
+			new Set(
+				[nodeFor(selection.anchorNode), nodeFor(selection.focusNode)].filter(
+					Boolean,
+				),
+			),
+		);
+	}
+
 	function requestWouldReplaceSelectedIsland(request) {
 		if (request.source !== "sse" || !request.islands?.length) {
 			return false;
 		}
 		const selected = selectedIslandIds();
 		return request.islands.some((id) => selected.includes(id));
+	}
+
+	function requestWouldReplaceSelectedNode(request) {
+		if (request.source !== "sse" || !request.nodes?.length) {
+			return false;
+		}
+		const selected = selectedNodeTokens();
+		return request.nodes.some((target) => selected.includes(nodeToken(target)));
 	}
 
 	function flushDeferredRefreshes() {
@@ -642,15 +912,20 @@ export function createShellNav(input = {}) {
 		if (!sameRefreshOrigin(request)) {
 			return;
 		}
-		if (request.source === "sse" && !request.islands?.length) {
+		if (
+			request.source === "sse" &&
+			!request.islands?.length &&
+			!request.nodes?.length
+		) {
 			debugRefresh("main-fallback-blocked", {
 				source: request.source,
 				islands: request.islands,
+				nodes: request.nodes,
 			});
 			return;
 		}
 		const active = activeEditElement();
-		if (active && !request.islands?.length) {
+		if (active && !request.islands?.length && !request.nodes?.length) {
 			deferRefreshUntilInactive(active, "main", request);
 			return;
 		}
@@ -687,6 +962,22 @@ export function createShellNav(input = {}) {
 				return;
 			}
 		}
+		if (request.source === "sse" && request.nodes?.length) {
+			const blocked = new Set(
+				[activeNodeToken(active), ...selectedNodeTokens()].filter(Boolean),
+			);
+			if (blocked.size > 0) {
+				request = {
+					...request,
+					nodes: request.nodes.filter(
+						(target) => !blocked.has(nodeToken(target)),
+					),
+				};
+				if (!request.nodes.length && !request.islands?.length) {
+					return;
+				}
+			}
+		}
 		void refresh(request);
 	}
 
@@ -698,12 +989,36 @@ export function createShellNav(input = {}) {
 			originPage: options.originPage ?? currentPage(),
 			originUrl: options.originUrl ?? currentUrl(),
 		});
+		if (
+			options.immediate &&
+			!activeEditElement() &&
+			!requestWouldReplaceSelectedIsland(request) &&
+			!requestWouldReplaceSelectedNode(request)
+		) {
+			clearScheduledRefresh();
+			if (request.source !== "sse") {
+				refreshQueued = null;
+			}
+			debugRefresh("scheduled-refresh", {
+				islands: request.islands,
+				nodes: request.nodes,
+				source: request.source,
+				fallback: request.fallback,
+				originPage: request.originPage,
+				originUrl: request.originUrl,
+				immediate: true,
+				debounceMs,
+				maxWaitMs,
+			});
+			return refresh(request);
+		}
 		scheduledRefreshRequest = mergeRefreshRequest(
 			scheduledRefreshRequest,
 			request,
 		);
 		debugRefresh("scheduled-refresh", {
 			islands: scheduledRefreshRequest?.islands,
+			nodes: scheduledRefreshRequest?.nodes,
 			source: scheduledRefreshRequest?.source,
 			fallback: scheduledRefreshRequest?.fallback,
 			originPage: scheduledRefreshRequest?.originPage,
@@ -712,14 +1027,6 @@ export function createShellNav(input = {}) {
 			debounceMs,
 			maxWaitMs,
 		});
-		if (
-			options.immediate &&
-			!activeEditElement() &&
-			!requestWouldReplaceSelectedIsland(scheduledRefreshRequest)
-		) {
-			const pending = takeScheduledRefreshRequest(request);
-			return refresh(pending);
-		}
 		if (scheduledRefreshTimer) {
 			clearTimeout(scheduledRefreshTimer);
 		}
@@ -749,7 +1056,7 @@ export function createShellNav(input = {}) {
 
 	function bindLinkClicks() {
 		const handler = (event) => {
-			const link = event.target.closest("a[href]");
+			const link = eventElement(event)?.closest("a[href]");
 			if (!link) {
 				return;
 			}
@@ -782,7 +1089,7 @@ export function createShellNav(input = {}) {
 
 	function bindPrefetch() {
 		const handler = (event) => {
-			const link = event.target.closest("a[href]");
+			const link = eventElement(event)?.closest("a[href]");
 			if (!link || link.origin !== windowRef.location.origin) {
 				return;
 			}
@@ -801,6 +1108,7 @@ export function createShellNav(input = {}) {
 		navigate,
 		refresh,
 		refreshIsland,
+		refreshNodes,
 		scheduleRefresh,
 		bindLinkClicks,
 		bindPopState,

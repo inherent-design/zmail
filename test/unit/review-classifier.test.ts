@@ -9,7 +9,7 @@ import {
 import { createTestRuntime } from "#/test/helpers/runtime";
 
 describe("review classifier", () => {
-	it("persists findings and dispatches targeted follow-up jobs", async () => {
+	it("persists findings without automatic side effects", async () => {
 		const runtime = await createTestRuntime();
 		const { db } = await bootDb({ seedDefaultAccount: true });
 		const messageId = await insertMessageRow(db, {
@@ -131,7 +131,7 @@ describe("review classifier", () => {
 		expect(result.result.findings).toHaveLength(2);
 		const heads = await db
 			.selectFrom("review_classification_heads")
-			.select(["target_kind", "target_id", "action"])
+			.select(["target_kind", "target_id", "action", "status", "decided_at"])
 			.orderBy("target_kind")
 			.execute();
 		expect(heads).toEqual([
@@ -139,11 +139,15 @@ describe("review classifier", () => {
 				target_kind: "finance_ledger_entry",
 				target_id: "ledger-target",
 				action: "mapping_needed",
+				status: "open",
+				decided_at: null,
 			},
 			{
 				target_kind: "root_review",
 				target_id: "review-target",
 				action: "enqueue_root_reclassify",
+				status: "open",
+				decided_at: null,
 			},
 		]);
 		const jobs = await db
@@ -151,24 +155,9 @@ describe("review classifier", () => {
 			.select(["kind", "scope_id", "meta_json"])
 			.orderBy("kind")
 			.execute();
-		expect(jobs.map((job) => job.kind)).toEqual([
-			"classify_finance_messages",
-			"classify_root_messages",
-			"rebuild_overseer",
-		]);
-		expect(jobs.map((job) => JSON.parse(job.meta_json ?? "{}"))).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({
-					targetMessageIds: [messageId],
-					reviewClassificationResultId: result.resultId,
-				}),
-				expect.objectContaining({
-					reviewClassificationResultId: result.resultId,
-				}),
-			]),
-		);
+		expect(jobs).toEqual([]);
 		expect(
 			await db.selectFrom("registry_suggestions").selectAll().execute(),
-		).toHaveLength(1);
+		).toHaveLength(0);
 	});
 });

@@ -207,3 +207,10 @@ Rules:
 - cross-provider canonical message deduplication
 - attachment text extraction as part of the active message contract
 - vector/embedding storage
+
+## Evidence Inspectors
+
+Message detail surfaces use `DataInspector` for current labels,
+classification history, finance intelligence, moderation output, message row
+metadata, attachments, and latest profile context. Inspectors keep raw JSON
+available while preserving redaction rules for raw RFC822 bodies and secrets.

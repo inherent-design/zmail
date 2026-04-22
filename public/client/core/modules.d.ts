@@ -33,8 +33,14 @@ type IslandApp = {
 	appPath(path: string): string;
 	subscribe(topic: string, handler: (event: RuntimeEvent) => void): () => void;
 	postJson(path: string, payload?: unknown): Promise<unknown>;
+	mutate(target: Element, options?: unknown): Promise<unknown>;
+	bindMutations(
+		root: Element,
+		optionsForTarget?: (target: Element, event: Event) => unknown,
+	): () => void;
 	refresh(options?: {
 		islands?: string | string[];
+		nodes?: UiNodeTarget[];
 		originPage?: string;
 		originUrl?: string;
 		fallback?: IslandFallback;
@@ -54,6 +60,7 @@ type IslandApp = {
 		debounceMs?: number;
 		maxWaitMs?: number;
 		islands?: string | string[];
+		nodes?: UiNodeTarget[];
 		originPage?: string;
 		originUrl?: string;
 		fallback?: IslandFallback;
@@ -63,6 +70,13 @@ type IslandApp = {
 	currentPage(): string | null;
 	currentPathname(): string;
 	islandsForEvent(event: RuntimeEvent): string[];
+};
+
+type UiNodeTarget = {
+	type: "node";
+	islandId: string;
+	nodeId: string;
+	key: string;
 };
 
 type IslandContext = {
@@ -144,6 +158,12 @@ declare module "#/public/client/core/shell-nav.js" {
 			root: Element,
 			state: unknown,
 		) => void | Promise<void>;
+		onBeforeNodeSwap?: (target: UiNodeTarget, root: Element) => unknown;
+		onAfterNodeSwap?: (
+			target: UiNodeTarget,
+			root: Element,
+			state: unknown,
+		) => void | Promise<void>;
 	}): {
 		navigate(
 			url: string | URL,
@@ -155,6 +175,7 @@ declare module "#/public/client/core/shell-nav.js" {
 		): Promise<void>;
 		refresh(options?: {
 			islands?: string | string[];
+			nodes?: UiNodeTarget[];
 			originPage?: string;
 			originUrl?: string;
 			fallback?: IslandFallback;
@@ -169,11 +190,21 @@ declare module "#/public/client/core/shell-nav.js" {
 				source?: RefreshSource;
 			},
 		): Promise<void>;
+		refreshNodes(
+			nodes: UiNodeTarget[],
+			options?: {
+				originPage?: string;
+				originUrl?: string;
+				fallback?: IslandFallback;
+				source?: RefreshSource;
+			},
+		): Promise<void>;
 		scheduleRefresh(options?: {
 			immediate?: boolean;
 			debounceMs?: number;
 			maxWaitMs?: number;
 			islands?: string | string[];
+			nodes?: UiNodeTarget[];
 			originPage?: string;
 			originUrl?: string;
 			fallback?: IslandFallback;
@@ -192,6 +223,46 @@ declare module "#/public/client/core/shell-nav.js" {
 		html: string,
 		parser?: DOMParser,
 	): { envelope: Element | null; roots: Map<string, Element> };
+	export function extractNodeFragments(
+		html: string,
+		parser?: DOMParser,
+	): { envelope: Element | null; roots: Map<string, Element> };
+}
+
+declare module "#/public/client/components/data-inspector.js" {
+	export function initDataInspectors(root?: Document | Element): () => void;
+}
+
+declare module "#/public/client/core/mutations.js" {
+	export function parseJsonForm(form: HTMLFormElement): Record<string, unknown>;
+	export function planRefreshTargets(
+		targets: unknown,
+		fallbackTargets?: unknown[],
+	): {
+		redirects: unknown[];
+		main: unknown[];
+		islands: unknown[];
+		nodes: UiNodeTarget[];
+	};
+	export function partitionTargets(targets?: unknown[]): {
+		redirects: unknown[];
+		main: unknown[];
+		islands: unknown[];
+		nodes: UiNodeTarget[];
+	};
+	export function createMutationRuntime(input: {
+		app: IslandApp;
+		documentRef?: Document;
+		fetchImpl?: typeof fetch;
+	}): {
+		bind(
+			root: Element,
+			optionsForTarget?: (target: Element, event: Event) => unknown,
+		): () => void;
+		mutate(target: Element, options?: unknown): Promise<unknown>;
+		parseJsonForm(form: HTMLFormElement): Record<string, unknown>;
+		planRefreshTargets: typeof planRefreshTargets;
+	};
 }
 
 declare module "#/public/client/core/sync-provider.js" {

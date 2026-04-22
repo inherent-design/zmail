@@ -13,17 +13,14 @@ export function init(app) {
 		if (!button) {
 			return;
 		}
+		event.preventDefault();
 		const section = button.closest("[data-review-id]");
-		const errorNode = section?.querySelector("[data-review-error]");
-		button.disabled = true;
-		if (errorNode) {
-			errorNode.textContent = "";
-		}
+		const finding = button.closest("[data-review-finding-key]");
 		try {
 			const payload = button.dataset.payload
 				? JSON.parse(button.dataset.payload)
 				: {};
-			if (payload.action === "override") {
+			if (section && payload.action === "override") {
 				const text =
 					section?.querySelector("[data-override-json]")?.value ?? "{}";
 				try {
@@ -32,17 +29,46 @@ export function init(app) {
 					throw new Error("Override JSON must be valid JSON.");
 				}
 			}
-			await app.postJson(button.dataset.rpc, payload);
-			await app.refresh({
-				islands: REVIEW_ISLANDS,
+			const note = (finding ?? section)?.querySelector(
+				"[data-resolution-note]",
+			)?.value;
+			if (note && finding) {
+				payload.resolutionNote = note;
+			} else if (note) {
+				payload.note = note;
+			}
+			await app.mutate(button, {
+				payload,
+				fallbackTargets: [
+					finding
+						? {
+								type: "node",
+								nodeId: "review.finding.item",
+								islandId: "review.queue",
+								key: finding.dataset.reviewFindingKey ?? "",
+							}
+						: null,
+					section &&
+					(payload.action === "accept" || payload.action === "override")
+						? {
+								type: "node",
+								nodeId: "review.queue.item",
+								islandId: "review.queue",
+								key: section?.dataset.reviewId ?? "",
+							}
+						: null,
+					...REVIEW_ISLANDS.map((id) => ({ type: "island", id })),
+				].filter(Boolean),
 				fallback: "none",
 			});
 		} catch (error) {
+			const errorNode = (finding ?? section)?.querySelector(
+				"[data-mutation-error]",
+			);
 			if (errorNode) {
 				errorNode.textContent =
 					error instanceof Error ? error.message : String(error);
 			}
-			button.disabled = false;
 		}
 	};
 

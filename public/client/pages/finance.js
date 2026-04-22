@@ -132,31 +132,6 @@ export function actionRefreshIslands(target, tab = currentFinanceTab()) {
 	]);
 }
 
-function parseFormPayload(form) {
-	const formData = new FormData(form);
-	const payload = {};
-	for (const [key, value] of formData.entries()) {
-		if (value === "") {
-			payload[key] = null;
-		} else if (key === "year" || key === "quarter") {
-			payload[key] = Number(value);
-		} else if (key === "mapping") {
-			payload[key] = JSON.parse(value);
-		} else if (key === "strict" || key === "force") {
-			payload[key] = value === "on" || value === "true";
-		} else {
-			payload[key] = value;
-		}
-	}
-	if (!formData.has("strict")) {
-		payload.strict = false;
-	}
-	if (!formData.has("force")) {
-		payload.force = false;
-	}
-	return payload;
-}
-
 function readChartProps(root) {
 	const id = root.dataset.zmailIsland;
 	const script = id
@@ -307,82 +282,14 @@ export function init(app) {
 	if (!root || root.dataset.page !== "finance") {
 		return null;
 	}
-	const onClick = async (event) => {
-		const button = event.target.closest("button[data-rpc]");
-		if (!button || !root.contains(button)) {
-			return;
-		}
-		button.disabled = true;
-		try {
-			const payload = button.dataset.payload
-				? JSON.parse(button.dataset.payload)
-				: {};
-			await app.postJson(button.dataset.rpc, payload);
-			await app.refresh({ islands: actionRefreshIslands(button) });
-		} catch (error) {
-			window.alert(error instanceof Error ? error.message : String(error));
-			button.disabled = false;
-		}
-	};
-	root.addEventListener("click", onClick);
-	const onSubmit = async (event) => {
-		const uploadForm = event.target.closest("form[data-finance-upload]");
-		if (uploadForm && root.contains(uploadForm)) {
-			event.preventDefault();
-			const submit = uploadForm.querySelector('button[type="submit"]');
-			if (submit) {
-				submit.disabled = true;
-			}
-			try {
-				const response = await fetch(uploadForm.action, {
-					method: uploadForm.method || "POST",
-					body: new FormData(uploadForm),
-				});
-				if (!response.ok) {
-					const payload = await response.json().catch(() => null);
-					throw new Error(
-						payload?.message ||
-							payload?.error ||
-							`Upload failed (${response.status})`,
-					);
-				}
-				uploadForm.reset();
-				await app.refresh({
-					islands: unique([
-						"finance.imports",
-						"finance.lanes",
-						"finance.command-bar",
-					]),
-				});
-			} catch (error) {
-				window.alert(error instanceof Error ? error.message : String(error));
-			} finally {
-				if (submit) {
-					submit.disabled = false;
-				}
-			}
-			return;
-		}
-		const form = event.target.closest("form[data-rpc]");
-		if (!form || !root.contains(form)) {
-			return;
-		}
-		event.preventDefault();
-		const submit = form.querySelector('button[type="submit"]');
-		if (submit) {
-			submit.disabled = true;
-		}
-		try {
-			await app.postJson(form.dataset.rpc, parseFormPayload(form));
-			await app.refresh({ islands: actionRefreshIslands(form) });
-		} catch (error) {
-			window.alert(error instanceof Error ? error.message : String(error));
-			if (submit) {
-				submit.disabled = false;
-			}
-		}
-	};
-	root.addEventListener("submit", onSubmit);
+	const cleanupMutations = app.bindMutations(root, (target) => ({
+		fallbackTargets: actionRefreshIslands(target).map((id) => ({
+			type: "island",
+			id,
+		})),
+		fallback: "none",
+		resetOnSuccess: target.dataset.mutation === "multipart",
+	}));
 	const isTerminalJob = (event) =>
 		event.eventType === "job.updated" &&
 		(event.payload?.status === "complete" ||
@@ -429,8 +336,7 @@ export function init(app) {
 		app.subscribe("jobs", onJobs),
 	];
 	return () => {
-		root.removeEventListener("click", onClick);
-		root.removeEventListener("submit", onSubmit);
+		cleanupMutations();
 		for (const unsubscribe of unsubscribers) {
 			unsubscribe();
 		}

@@ -175,3 +175,10 @@ Later refactors should move incrementally toward:
 
 That direction is intentional, but this document does not require the split in
 the same change that introduces the contract.
+
+## Command Return Metadata
+
+Application commands may return neutral change hints such as job ids, entity ids,
+or canonical keys. Hono route handlers convert those hints into UI mutation
+targets. Domain services do not import browser contracts or shape DOM-specific
+target arrays.

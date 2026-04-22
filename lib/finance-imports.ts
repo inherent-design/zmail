@@ -12,7 +12,20 @@ function sha256(value: string) {
 }
 
 export function computeArtifactSha256(artifact: FinanceSourceImport) {
-	return artifact.artifactSha256 || sha256(JSON.stringify(artifact));
+	if (artifact.artifactSha256.trim()) {
+		return artifact.artifactSha256;
+	}
+	return sha256(JSON.stringify({ ...artifact, artifactSha256: "" }));
+}
+
+export function withFinalArtifactSha256<T extends FinanceSourceImport>(
+	artifact: T,
+) {
+	const artifactSha256 = computeArtifactSha256(artifact);
+	return {
+		...artifact,
+		artifactSha256,
+	};
 }
 
 export async function findFinanceImportRunByArtifact(artifactSha256: string) {
@@ -152,6 +165,7 @@ export async function importFinanceArtifact(input: unknown) {
 	const importRunId = randomUUID();
 	const importedAt = nowIso();
 	const artifactSha256 = computeArtifactSha256(artifact);
+	const storedArtifact = withFinalArtifactSha256(artifact);
 	let result:
 		| {
 				status: "imported" | "already_imported";
@@ -179,7 +193,7 @@ export async function importFinanceArtifact(input: unknown) {
 				extractor_prompt_version: artifact.extractor.promptVersion,
 				extracted_text_hash: artifact.extractor.extractedTextHash,
 				status: "imported",
-				raw_artifact_json: jsonText(artifact),
+				raw_artifact_json: jsonText(storedArtifact),
 				imported_at: importedAt,
 			})
 			.onConflict((oc) => oc.column("artifact_sha256").doNothing())

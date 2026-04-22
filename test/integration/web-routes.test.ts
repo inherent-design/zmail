@@ -231,6 +231,151 @@ describe("Hono web routes", () => {
 		expect(html).not.toContain('data-zmail-island="finance.filters"');
 	});
 
+	it("returns keyed node partial fragments and missing headers", async () => {
+		const { app } = await loadServerApp();
+		const { db } = await bootDb();
+		await seedTestAccount(db, {
+			id: "acct-node",
+			label: "Node Account",
+			emailAddress: "node@example.com",
+		});
+
+		const response = await app.request("http://localhost/accounts", {
+			headers: {
+				"X-Zmail-Partial": "nodes",
+				"X-Zmail-Nodes":
+					"account.list.item:acct-node,account.list.item:missing",
+			},
+		});
+
+		expect(response.status).toBe(200);
+		expect(response.headers.get("X-Zmail-Page")).toBe("accounts");
+		expect(response.headers.get("X-Zmail-Nodes")).toBe(
+			"account.list.item:acct-node",
+		);
+		expect(response.headers.get("X-Zmail-Node-Missing")).toBe(
+			"account.list.item:missing",
+		);
+		const html = await response.text();
+		expect(html).toContain('data-zmail-node-fragments="accounts"');
+		expect(html).toContain(
+			'data-zmail-node-fragment="account.list.item:acct-node"',
+		);
+		expect(html).toContain('data-zmail-node="account.list.item"');
+		expect(html).not.toContain('id="app-main"');
+	});
+
+	it("returns review finding node partial fragments", async () => {
+		const { app } = await loadServerApp();
+		const { db } = await bootDb();
+		await db
+			.insertInto("review_classification_results")
+			.values({
+				id: "review-result-node",
+				job_id: null,
+				schema_version: "review-classifier.v1",
+				model: "test",
+				prompt_version: "test",
+				prompt_sha256: null,
+				source: "test",
+				input_summary_json: "{}",
+				result_json: '{"findings":[]}',
+				raw_response_json: "{}",
+				usage_json: null,
+				created_at: "2026-04-22T00:00:00.000Z",
+			})
+			.execute();
+		await db
+			.insertInto("review_classification_heads")
+			.values({
+				target_kind: "root_review",
+				target_id: "review-node-1",
+				result_id: "review-result-node",
+				severity: "medium",
+				action: "enqueue_root_reclassify",
+				status: "open",
+				confidence: 0.91,
+				reason: "Route node coverage",
+				evidence_refs_json: "[]",
+				resolution_note: null,
+				decided_at: null,
+				updated_at: "2026-04-22T00:00:00.000Z",
+			})
+			.execute();
+
+		const response = await app.request("http://localhost/review", {
+			headers: {
+				"X-Zmail-Partial": "nodes",
+				"X-Zmail-Nodes": "review.finding.item:root_review%3Areview-node-1",
+			},
+		});
+
+		expect(response.status).toBe(200);
+		expect(response.headers.get("X-Zmail-Nodes")).toBe(
+			"review.finding.item:root_review%3Areview-node-1",
+		);
+		const html = await response.text();
+		expect(html).toContain('data-zmail-node-fragments="review"');
+		expect(html).toContain('data-zmail-node="review.finding.item"');
+		expect(html).toContain("Route node coverage");
+		expect(html).toContain("Accept");
+		expect(html).not.toContain('id="app-main"');
+	});
+
+	it("returns finance mapping candidate node partial fragments", async () => {
+		const { app } = await loadServerApp();
+		const { db } = await bootDb();
+		await db
+			.insertInto("registry_suggestions")
+			.values({
+				id: "mapping-suggestion-node",
+				entity_kind: "finance_account_mapping",
+				canonical_key: "mapping:test",
+				suggestion_json: JSON.stringify({
+					schemaVersion: "finance-account-mapping-suggestion.v1",
+					impact: { rowCount: 2, readyUnlockEstimate: 1 },
+					mapping: {
+						debitAccount: "Expenses:Business:Software",
+						creditAccount: "Assets:Business:Checking",
+					},
+					evidence: {
+						senderDomains: ["example.com"],
+						sampleMessageIds: ["msg-node"],
+					},
+					autoApplyEligible: false,
+				}),
+				source_kind: "text",
+				source_ref_id: "review-result-node",
+				confidence: 0.88,
+				status: "pending",
+				applied_registry_id: null,
+				created_at: "2026-04-22T00:00:00.000Z",
+				updated_at: "2026-04-22T00:00:00.000Z",
+			})
+			.execute();
+
+		const response = await app.request(
+			"http://localhost/finance?tab=mappings",
+			{
+				headers: {
+					"X-Zmail-Partial": "nodes",
+					"X-Zmail-Nodes": "finance.mapping.candidate:mapping-suggestion-node",
+				},
+			},
+		);
+
+		expect(response.status).toBe(200);
+		expect(response.headers.get("X-Zmail-Nodes")).toBe(
+			"finance.mapping.candidate:mapping-suggestion-node",
+		);
+		const html = await response.text();
+		expect(html).toContain('data-zmail-node-fragments="finance"');
+		expect(html).toContain('data-zmail-node="finance.mapping.candidate"');
+		expect(html).toContain("Expenses:Business:Software");
+		expect(html).toContain("Yes");
+		expect(html).not.toContain('id="app-main"');
+	});
+
 	it("returns requested account, home, and runs island fragments only", async () => {
 		const { app } = await loadServerApp();
 		const { db } = await bootDb();

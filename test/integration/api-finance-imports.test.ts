@@ -290,6 +290,9 @@ describe("POST /api/finance/imports", () => {
 			status: string;
 			uploadId: string;
 			jobId: string;
+			ui?: {
+				targets?: Array<Record<string, string>>;
+			};
 		};
 
 		expect(response.status).toBe(202);
@@ -299,6 +302,16 @@ describe("POST /api/finance/imports", () => {
 			uploadId: expect.stringMatching(/^finup_/),
 			jobId: expect.any(String),
 		});
+		expect(payload.ui?.targets).toEqual([
+			{
+				type: "node",
+				islandId: "finance.imports",
+				nodeId: "finance.upload.run",
+				key: payload.uploadId,
+			},
+			{ type: "island", id: "finance.lanes" },
+			{ type: "island", id: "finance.command-bar" },
+		]);
 
 		const { getDb } = await import("#/lib/db");
 		const db = getDb("org-test");
@@ -311,7 +324,7 @@ describe("POST /api/finance/imports", () => {
 		).resolves.toMatchObject({
 			status: "queued",
 			mode: "auto",
-			source_kind_hint: "statement",
+			source_kind_hint: "text",
 		});
 		await expect(
 			db

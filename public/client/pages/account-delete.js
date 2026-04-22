@@ -21,10 +21,12 @@ export function init(app) {
 			status.textContent = "Deleting local account...";
 		}
 		try {
-			await app.postJson(button.dataset.rpc, {
-				confirmationEmail: input.value,
+			await app.mutate(button, {
+				payload: { confirmationEmail: input.value },
+				fallbackTargets: [
+					{ type: "redirect", url: app.appPath("/accounts"), replace: true },
+				],
 			});
-			window.location.href = app.appPath("/accounts");
 		} catch (error) {
 			if (status) {
 				status.textContent =

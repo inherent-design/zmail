@@ -204,3 +204,10 @@ Rules:
 
 - direct PDF extractor writes into canonical registry tables
 - storage of financial secrets or credentials in operator files
+
+## Mapping Suggestion Decisions
+
+Mapping suggestions support accept and dismiss. Accept applies the suggestion
+through the registry service. Dismiss marks the suggestion `rejected`. Both
+actions return mapping candidate, readiness, mappings, and lane targets so the
+browser can refresh one candidate or fall back to the parent island.

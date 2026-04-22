@@ -5,6 +5,7 @@ import { getDb, jsonText, safeJsonParse } from "#/lib/db";
 import { parseAmountMinor } from "#/lib/finance-imports";
 import {
 	type FinanceIntelV3,
+	normalizeFinanceImportSourceKind,
 	parseCurrentFinanceIntel,
 	parseCurrentMessageLabel,
 } from "#/lib/schemas";
@@ -168,10 +169,14 @@ function statusForDraft(input: {
 }
 
 function sourcePriority(sourceAuthority: string) {
-	if (sourceAuthority === "statement" || sourceAuthority === "csv") {
+	if (
+		sourceAuthority === "text" ||
+		sourceAuthority === "csv" ||
+		sourceAuthority === "ofx"
+	) {
 		return 3;
 	}
-	if (sourceAuthority === "ofx" || sourceAuthority === "pdf") {
+	if (sourceAuthority === "pdf") {
 		return 2;
 	}
 	if (sourceAuthority === "email") {
@@ -417,6 +422,9 @@ export async function rebuildFinanceKnowledge() {
 		.execute();
 
 	for (const row of importRows) {
+		const importSourceKind = normalizeFinanceImportSourceKind(
+			row.import_source_kind,
+		);
 		const mapping = accountFromMapping(mappings, row.account_mapping_key);
 		const date = row.occurred_at ?? row.posted_at ?? row.cleared_at;
 		const currency = row.currency ?? mapping?.currency ?? null;
@@ -459,7 +467,7 @@ export async function rebuildFinanceKnowledge() {
 			id: randomUUID(),
 			canonical_key,
 			status,
-			source_authority: row.import_source_kind,
+			source_authority: importSourceKind,
 			occurred_at: row.occurred_at,
 			posted_at: row.posted_at,
 			cleared_at: row.cleared_at,
@@ -504,7 +512,7 @@ export async function rebuildFinanceKnowledge() {
 		};
 		addOrMerge(entries, sources, entry, {
 			id: randomUUID(),
-			source_kind: row.import_source_kind,
+			source_kind: importSourceKind,
 			message_id: null,
 			secondary_result_id: null,
 			import_run_id: row.import_run_id,
@@ -518,6 +526,13 @@ export async function rebuildFinanceKnowledge() {
 			created_at: now,
 		});
 	}
+
+	const { reapplyActiveFinanceLedgerOverrides } = await import(
+		"#/lib/finance-ledger-overrides"
+	);
+	await reapplyActiveFinanceLedgerOverrides(
+		entries as unknown as Map<string, Record<string, unknown>>,
+	);
 
 	const patternRows = buildFinancePatterns([...entries.values()], now);
 

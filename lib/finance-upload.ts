@@ -23,7 +23,9 @@ import {
 	type FinanceImportSourceKind,
 	type FinanceSourceImportV2,
 	financeImportDocumentV2Schema,
+	financeImportSourceKindSchema,
 	financeImportTransactionV2Schema,
+	normalizeFinanceImportSourceKind,
 	registryFinancialAccountSuggestionSchema,
 	registryIdentitySuggestionSchema,
 	registryInstitutionSuggestionSchema,
@@ -71,7 +73,13 @@ const financeUploadRetentionSchema = z
 	.default("org_file_ref");
 
 const financeUploadSourceKindHintSchema = z
-	.enum(["pdf", "statement"])
+	.preprocess(
+		(value) =>
+			value === null || value === undefined || value === ""
+				? null
+				: normalizeFinanceImportSourceKind(value),
+		financeImportSourceKindSchema.nullable(),
+	)
 	.nullable()
 	.default(null);
 
@@ -1257,7 +1265,7 @@ function buildArtifact(input: {
 			})),
 	);
 	const sourceKind: FinanceImportSourceKind =
-		input.upload.source_kind_hint === "statement" ? "statement" : "pdf";
+		input.upload.source_kind_hint === "text" ? "text" : "pdf";
 	const baseArtifact: FinanceSourceImportV2 = {
 		schemaVersion: "finance-source-import.v2",
 		sourceKind,
@@ -1297,10 +1305,7 @@ function buildArtifact(input: {
 	};
 	return {
 		...baseArtifact,
-		artifactSha256: computeArtifactSha256({
-			...baseArtifact,
-			artifactSha256: sha256Text(JSON.stringify(baseArtifact)),
-		}),
+		artifactSha256: computeArtifactSha256(baseArtifact),
 	};
 }
 
