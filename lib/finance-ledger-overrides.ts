@@ -350,14 +350,15 @@ export async function reapplyActiveFinanceLedgerOverrides(
 		const relationshipPatch = financeLedgerRelationshipPatchSchema.parse(
 			safeJsonParse(override.relationship_patch_json, {}),
 		);
-		Object.assign(
-			entry,
-			dbPatch(patch, String(entry.ledger_metadata_json ?? "{}")),
-		);
-		entry.ledger_metadata_json = mergeMetadata(
-			String(entry.ledger_metadata_json ?? "{}"),
-			patch,
-			relationshipPatch,
-		);
+		const currentMetadataJson = String(entry.ledger_metadata_json ?? "{}");
+		const updatePatch = dbPatch(patch, currentMetadataJson);
+		if (Object.keys(relationshipPatch).length > 0) {
+			updatePatch.ledger_metadata_json = mergeMetadata(
+				String(updatePatch.ledger_metadata_json ?? currentMetadataJson),
+				{},
+				relationshipPatch,
+			);
+		}
+		Object.assign(entry, updatePatch);
 	}
 }

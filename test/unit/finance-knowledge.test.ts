@@ -233,6 +233,138 @@ describe("finance knowledge", () => {
 		]);
 	});
 
+	it("keeps OFX and PDF at equal merge priority", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		await seedMapping(db);
+		await db
+			.insertInto("finance_import_runs")
+			.values([
+				{
+					id: "import-run-pdf",
+					source_kind: "pdf",
+					source_file_path: "/tmp/statement.pdf",
+					source_file_sha256: "statement-pdf-sha",
+					filename: "statement.pdf",
+					artifact_sha256: "artifact-pdf-sha",
+					extractor_runner: "test",
+					extractor_model: "fixture",
+					extractor_prompt_version: "finance-source-import.v2",
+					extracted_text_hash: null,
+					status: "imported",
+					raw_artifact_json: "{}",
+					imported_at: "2026-01-03T00:00:00.000Z",
+				},
+				{
+					id: "import-run-ofx",
+					source_kind: "ofx",
+					source_file_path: "/tmp/statement.ofx",
+					source_file_sha256: "statement-ofx-sha",
+					filename: "statement.ofx",
+					artifact_sha256: "artifact-ofx-sha",
+					extractor_runner: "test",
+					extractor_model: "fixture",
+					extractor_prompt_version: "finance-source-import.v2",
+					extracted_text_hash: null,
+					status: "imported",
+					raw_artifact_json: "{}",
+					imported_at: "2026-01-04T00:00:00.000Z",
+				},
+			])
+			.execute();
+		await db
+			.insertInto("finance_import_transactions")
+			.values([
+				{
+					id: "import-tx-pdf",
+					import_run_id: "import-run-pdf",
+					source_document_ref: "pdf-doc",
+					occurred_at: "2026-01-02",
+					posted_at: "2026-01-03",
+					amount_value: "42.00",
+					amount_minor: 4200,
+					currency: "USD",
+					direction: "expense",
+					description: "PDF import",
+					merchant_or_counterparty: "Example SaaS",
+					balance_value: null,
+					owner_identity_hint: "owner:business",
+					financial_account_hint: "acct:checking",
+					institution_hint: "inst:bank",
+					category_primary: "software_services",
+					category_secondary: "saas",
+					evidence_text: "PDF row.",
+					payload_json: "{}",
+					external_transaction_id: "ext-shared",
+					cleared_at: null,
+					statement_row_id: "pdf-row",
+					row_index: 0,
+					account_mapping_key: "bank:checking",
+					book_hint: "business",
+					business_use_percent: null,
+					extraction_confidence: 0.99,
+					raw_row_payload_json: "{}",
+					row_provenance_json: "{}",
+					raw_payload_json: "{}",
+					created_at: "2026-01-03T00:00:00.000Z",
+				},
+				{
+					id: "import-tx-ofx",
+					import_run_id: "import-run-ofx",
+					source_document_ref: "ofx-doc",
+					occurred_at: "2026-01-02",
+					posted_at: "2026-01-03",
+					amount_value: "42.00",
+					amount_minor: 4200,
+					currency: "USD",
+					direction: "expense",
+					description: "OFX import",
+					merchant_or_counterparty: "Example SaaS",
+					balance_value: null,
+					owner_identity_hint: "owner:business",
+					financial_account_hint: "acct:checking",
+					institution_hint: "inst:bank",
+					category_primary: "software_services",
+					category_secondary: "saas",
+					evidence_text: "OFX row.",
+					payload_json: "{}",
+					external_transaction_id: "ext-shared",
+					cleared_at: null,
+					statement_row_id: "ofx-row",
+					row_index: 0,
+					account_mapping_key: "bank:checking",
+					book_hint: "business",
+					business_use_percent: null,
+					extraction_confidence: 0.99,
+					raw_row_payload_json: "{}",
+					row_provenance_json: "{}",
+					raw_payload_json: "{}",
+					created_at: "2026-01-04T00:00:00.000Z",
+				},
+			])
+			.execute();
+
+		const financeKnowledge = await runtime.importFresh<
+			typeof import("#/lib/finance-knowledge")
+		>("#/lib/finance-knowledge");
+		await financeKnowledge.rebuildFinanceKnowledge();
+		const entry = await db
+			.selectFrom("finance_ledger_entries")
+			.select(["source_authority", "description"])
+			.executeTakeFirstOrThrow();
+		const sources = await db
+			.selectFrom("finance_ledger_entry_sources")
+			.select(["source_kind"])
+			.orderBy("source_kind", "asc")
+			.execute();
+
+		expect(entry).toMatchObject({
+			source_authority: "pdf",
+			description: "PDF import",
+		});
+		expect(sources.map((source) => source.source_kind)).toEqual(["ofx", "pdf"]);
+	});
+
 	it("links imported statement rows to matching email evidence without external ids", async () => {
 		const runtime = await createTestRuntime();
 		const { db } = await bootDb({ seedDefaultAccount: true });

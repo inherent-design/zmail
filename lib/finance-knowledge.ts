@@ -169,14 +169,10 @@ function statusForDraft(input: {
 }
 
 function sourcePriority(sourceAuthority: string) {
-	if (
-		sourceAuthority === "text" ||
-		sourceAuthority === "csv" ||
-		sourceAuthority === "ofx"
-	) {
+	if (sourceAuthority === "text" || sourceAuthority === "csv") {
 		return 3;
 	}
-	if (sourceAuthority === "pdf") {
+	if (sourceAuthority === "ofx" || sourceAuthority === "pdf") {
 		return 2;
 	}
 	if (sourceAuthority === "email") {
