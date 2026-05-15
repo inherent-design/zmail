@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { runCli } from "#/scripts/_shared";
-import { openSseClient } from "#/scripts/_sse";
+import { buildWebSocketUrl, openWebSocketClient } from "#/scripts/_ws";
 
 async function main() {
 	const baseUrl = process.env.ZMAIL_BASE_URL ?? "http://127.0.0.1:56711";
@@ -29,15 +29,18 @@ async function main() {
 	let eventCount = 0;
 
 	console.log(
-		`Stress run against ${baseUrl} with ${clients} SSE clients for ${durationMs}ms.`,
+		`Stress run against ${baseUrl} with ${clients} WebSocket clients for ${durationMs}ms.`,
 	);
 
-	const sseRuns = abortControllers.map((controller) =>
-		openSseClient({
-			url: `${baseUrl}/events?topics=${encodeURIComponent(topics)}`,
+	const wsRuns = abortControllers.map((controller) =>
+		openWebSocketClient({
+			url: buildWebSocketUrl({ baseUrl }),
+			topics: topics.split(","),
 			signal: controller.signal,
-			onEvent: async () => {
-				eventCount += 1;
+			onMessage: async (message) => {
+				if (message.type === "runtime.event") {
+					eventCount += 1;
+				}
 			},
 		}).catch((error) => {
 			if (!controller.signal.aborted) {
@@ -55,7 +58,6 @@ async function main() {
 				}
 				const response = await fetch(`${baseUrl}${path}`, {
 					headers: {
-						"X-Zmail-Partial": "main",
 						"X-Requested-With": "zmail-stress",
 					},
 				}).catch((error) => {
@@ -94,11 +96,11 @@ async function main() {
 	for (const controller of abortControllers) {
 		controller.abort();
 	}
-	await Promise.allSettled(sseRuns);
+	await Promise.allSettled(wsRuns);
 
 	console.log("\nStress summary");
-	console.log(`  SSE clients: ${clients}`);
-	console.log(`  partial navigations: ${navigationCount}`);
+	console.log(`  WebSocket clients: ${clients}`);
+	console.log(`  page navigations: ${navigationCount}`);
 	console.log(`  events observed: ${eventCount}`);
 	if (errors.length > 0) {
 		console.error(`  errors: ${errors.length}`);

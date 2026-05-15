@@ -15,6 +15,9 @@ const ACTIVE_MIGRATIONS = [
 	{ name: "006_finance_v3_clean.sql" },
 	{ name: "007_review_lanes_tax_reports.sql" },
 	{ name: "008_finance_import_uploads.sql" },
+	{ name: "009_unified_workflows_text_source_overrides.sql" },
+	{ name: "010_finance_ledger_override_indexes.sql" },
+	{ name: "011_finance_ledger_date_precision.sql" },
 ];
 
 describe("db", () => {
@@ -56,6 +59,18 @@ describe("db", () => {
 		expect(tableNames).toContain("finance_import_upload_files");
 		expect(tableNames).toContain("finance_import_upload_pages");
 		expect(tableNames).toContain("finance_import_upload_extractions");
+		expect(tableNames).toContain("finance_ledger_entry_overrides");
+		const financeLedgerColumns = dbModule
+			.getSqlite()
+			.prepare("PRAGMA table_info(finance_ledger_entries)")
+			.all() as Array<{ name: string }>;
+		expect(financeLedgerColumns.map((column) => column.name)).toEqual(
+			expect.arrayContaining([
+				"occurred_at_precision",
+				"posted_at_precision",
+				"cleared_at_precision",
+			]),
+		);
 
 		const messageColumns = dbModule
 			.getSqlite()
@@ -70,6 +85,14 @@ describe("db", () => {
 				"body_extraction_strategy",
 				"parse_error_reason",
 			]),
+		);
+
+		const reviewHeadColumns = dbModule
+			.getSqlite()
+			.prepare("PRAGMA table_info(review_classification_heads)")
+			.all() as Array<{ name: string }>;
+		expect(reviewHeadColumns.map((column) => column.name)).toEqual(
+			expect.arrayContaining(["resolution_note", "decided_at"]),
 		);
 
 		const conversationColumns = dbModule
@@ -116,6 +139,16 @@ describe("db", () => {
 			.prepare("PRAGMA index_list(conversations)")
 			.all() as Array<{ unique: number }>;
 		expect(conversationIndexes.some((index) => index.unique === 1)).toBe(true);
+		const financeLedgerOverrideIndexes = dbModule
+			.getSqlite()
+			.prepare("PRAGMA index_list(finance_ledger_entry_overrides)")
+			.all() as Array<{ name: string; partial: number }>;
+		expect(financeLedgerOverrideIndexes).toContainEqual(
+			expect.objectContaining({
+				name: "finance_ledger_entry_overrides_status_updated_idx",
+				partial: 1,
+			}),
+		);
 
 		const jobColumns = dbModule
 			.getSqlite()
@@ -517,6 +550,31 @@ describe("db", () => {
 			{ id: "acct-reconnect", connection_state: "needs_reconnect" },
 			{ id: "acct-stale", connection_state: "connected" },
 		]);
+	});
+
+	it("adds finance ledger date precision columns during canonical adoption", async () => {
+		const runtime = await createTestRuntime();
+		await seedStaleCanonicalMigrationHistory({
+			missingFinanceLedgerDatePrecision: true,
+			migrationNames: ["001_init.sql"],
+			withSampleData: true,
+		});
+		const dbModule =
+			await runtime.importFresh<typeof import("#/lib/db")>("#/lib/db");
+		const sqlite = dbModule.getSqlite();
+
+		await dbModule.adoptCanonicalMigrationHistory();
+
+		const financeLedgerColumns = sqlite
+			.prepare("PRAGMA table_info(finance_ledger_entries)")
+			.all() as Array<{ name: string }>;
+		expect(financeLedgerColumns.map((column) => column.name)).toEqual(
+			expect.arrayContaining([
+				"occurred_at_precision",
+				"posted_at_precision",
+				"cleared_at_precision",
+			]),
+		);
 	});
 
 	it("accounts table uses the live-only schema with provider_kind and sync columns", async () => {

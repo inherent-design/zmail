@@ -1,0 +1,11 @@
+.field,
+.form-grid label,
+label.field {
+	display: grid;
+	gap: 0.35rem;
+}
+
+[data-mutation-error] {
+	min-height: 1.25rem;
+	color: #8a1f1f;
+}

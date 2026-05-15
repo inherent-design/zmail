@@ -173,18 +173,15 @@ function jobTopics(job: {
 	return [...topics];
 }
 
-function changeHintsForJob(job: {
+function invalidationKeysForJob(job: {
 	kind: string;
 	scope_type: string;
 	scope_id: string;
 	lane?: string | null;
 }) {
-	const islands: string[] = [];
+	const invalidate: string[] = ["zmail:runs", "zmail:home"];
 	if (job.scope_type === "account") {
-		islands.push("account.lanes", "account.recent-jobs");
-		if (job.lane === "sync") {
-			islands.push("account.mailbox-sync");
-		}
+		invalidate.push("zmail:accounts", `zmail:account:${job.scope_id}`);
 	}
 	if (
 		job.lane === "finance_llm" ||
@@ -195,12 +192,9 @@ function changeHintsForJob(job: {
 		job.kind.includes("finance") ||
 		job.kind.includes("registry")
 	) {
-		islands.push("finance.lanes", "finance.command-bar");
-		if (job.lane === "export_report") {
-			islands.push("finance.export-health");
-		}
+		invalidate.push("zmail:finance");
 	}
-	return islands.length > 0 ? { islands: Array.from(new Set(islands)) } : null;
+	return Array.from(new Set(invalidate));
 }
 
 function publishJobEvent(
@@ -220,7 +214,7 @@ function publishJobEvent(
 	},
 	eventType: string,
 ) {
-	const changeHints = changeHintsForJob(job);
+	const invalidate = invalidationKeysForJob(job);
 	const payload = {
 		jobId: job.id,
 		kind: job.kind,
@@ -234,7 +228,7 @@ function publishJobEvent(
 		errorCount: job.error_count,
 		lastError: job.last_error,
 		meta: safeJsonParse(job.meta_json, {}),
-		...(changeHints ? { changeHints } : {}),
+		invalidate,
 	};
 	for (const topic of jobTopics(job)) {
 		void trackRuntimeEventTask(

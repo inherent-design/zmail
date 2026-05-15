@@ -237,3 +237,10 @@ Do not log:
 - cross-org shared jobs tables
 - multi-process distributed worker coordination
 - unaudited background mutation paths outside the jobs system
+
+## Job Event Target Hints
+
+Job events may include redacted change hints for SvelteKit invalidation. Hints
+carry topic, event type, and entity id only. Workers do not read DOM contracts;
+event producers attach neutral entity ids and page modules translate those ids
+to invalidation keys when needed.

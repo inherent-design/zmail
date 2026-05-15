@@ -4,8 +4,8 @@
 
 This document defines the product-level architecture for zmail vNext.
 
-It is the root overview for the Hono + Hono JSX + WorkOS + per-org runtime
-model.
+It is the root overview for the Hono API + SvelteKit UI + WorkOS + per-org
+runtime model.
 
 ## Product Summary
 
@@ -27,10 +27,10 @@ Core product responsibilities:
 
 ### Platform
 
-- Hono HTTP server
-- Hono JSX SSR plus `hono/jsx/dom` islands
-- authenticated SSE event streaming
-- enhanced MPA browser navigation
+- Hono API/auth/WebSocket server
+- SvelteKit SSR browser routes
+- authenticated WebSocket event streaming
+- SvelteKit client navigation and invalidation
 - WorkOS AuthKit browser auth
 - WorkOS M2M automation auth
 - per-org runtime resolution
@@ -70,7 +70,8 @@ zmail is a single application process with multiple org-local runtimes.
 
 Topology rules:
 
-- one Hono server process owns all HTTP traffic
+- one Node process dispatches Hono-owned API/auth/WebSocket traffic before
+  falling through to SvelteKit SSR
 - one process-global worker supervisor discovers and manages org-local worker
   loops
 - each organization resolves to one runtime root and one SQLite database
@@ -145,11 +146,11 @@ Cross-org reads or writes are forbidden.
 ### Browser operator flow
 
 1. user authenticates with WorkOS
-2. Hono resolves `org_id` and role/permissions
+2. SvelteKit hooks and Hono middleware share browser principal resolution
 3. org runtime root and org DB are selected
-4. Hono JSX renders the page with org-scoped data
+4. SvelteKit renders the page with org-scoped data
 5. browser mutations submit to Hono RPC or authenticated JSON endpoints
-6. live page state follows org-scoped SSE events
+6. live page state follows org-scoped WebSocket runtime events
 
 ### Gmail connect and sync flow
 
@@ -182,3 +183,14 @@ Cross-org reads or writes are forbidden.
 - shared-database row-scoped multitenancy
 - open unauthenticated HTTP APIs
 - manual finance candidate adjudication in the first vNext contract
+
+## Browser Workflow Mutation Flow
+
+Hono route handlers own mutation command execution. Domain services stay
+UI-agnostic unless they return neutral change hints. Browser JSON RPC and
+multipart submissions return one mutation envelope with optional `redirectTo`,
+`toast`, `invalidate`, `jobs`, and `events` fields.
+
+Runtime events are durable SQLite rows. The browser subscribes to `/ws`, replays
+events newer than its cursor, and invalidates SvelteKit data keys such as
+`zmail:finance` or `zmail:runs`.

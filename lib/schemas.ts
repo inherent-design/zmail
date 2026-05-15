@@ -956,15 +956,56 @@ export type ClassificationRulesFile = z.infer<
 	typeof classificationRulesFileSchema
 >;
 
-const financeImportSourceKindSchema = z.enum([
+export const financeImportSourceKindSchema = z.enum([
 	"pdf",
-	"statement",
+	"text",
 	"csv",
 	"ofx",
 ]);
 export type FinanceImportSourceKind = z.infer<
 	typeof financeImportSourceKindSchema
 >;
+export const financeFilterSourceKindSchema = z.enum([
+	"email",
+	"pdf",
+	"text",
+	"csv",
+	"ofx",
+]);
+export type FinanceFilterSourceKind = z.infer<
+	typeof financeFilterSourceKindSchema
+>;
+export const legacyFinanceImportSourceKindSchema = z.enum([
+	"pdf",
+	"text",
+	"csv",
+	"ofx",
+	"statement",
+]);
+export type LegacyFinanceImportSourceKind = z.infer<
+	typeof legacyFinanceImportSourceKindSchema
+>;
+
+export function normalizeFinanceImportSourceKind(
+	value: unknown,
+): FinanceImportSourceKind {
+	const parsed = legacyFinanceImportSourceKindSchema.parse(value);
+	return parsed === "statement" ? "text" : parsed;
+}
+
+export function normalizeFinanceFilterSourceKind(
+	value: unknown,
+): FinanceFilterSourceKind {
+	if (value === "email") {
+		return "email";
+	}
+	return normalizeFinanceImportSourceKind(value);
+}
+
+const financeImportSourceKindInputSchema = z.preprocess(
+	(value) => normalizeFinanceImportSourceKind(value),
+	financeImportSourceKindSchema,
+);
 
 export const registryIdentitySuggestionSchema = registryIdentitySchema
 	.omit({ id: true })
@@ -1046,9 +1087,9 @@ export type FinanceImportTransaction = z.infer<
 
 export const financeSourceImportV1Schema = z.object({
 	schemaVersion: z.literal("finance-source-import.v1"),
-	sourceKind: financeImportSourceKindSchema,
+	sourceKind: financeImportSourceKindInputSchema,
 	sourceFile: financeImportSourceFileSchema,
-	artifactSha256: z.string().min(1),
+	artifactSha256: z.string().default(""),
 	extractor: financeImportExtractorSchema,
 	registrySuggestions: z.object({
 		identities: z.array(registryIdentitySuggestionSchema).default([]),
@@ -1097,9 +1138,9 @@ export const financeImportTransactionV2Schema =
 
 export const financeSourceImportV2Schema = z.object({
 	schemaVersion: z.literal("finance-source-import.v2"),
-	sourceKind: financeImportSourceKindSchema,
+	sourceKind: financeImportSourceKindInputSchema,
 	sourceFile: financeImportSourceFileSchema,
-	artifactSha256: z.string().min(1),
+	artifactSha256: z.string().default(""),
 	extractor: financeImportExtractorSchema,
 	registrySuggestions: z.object({
 		identities: z.array(registryIdentitySuggestionSchema).default([]),
@@ -1125,13 +1166,18 @@ export const financeLedgerExportItemSchema = z.object({
 	canonicalKey: z.string().min(1).max(500),
 	status: z.enum(["exported", "unresolved", "blocked"]),
 	sourceKind: z.enum(["ledger_entry", "raw_sidecar"]),
+	beancountDate: z.string().min(1).max(10).nullable(),
+	beancountDateSource: z
+		.enum(["occurred_at", "posted_at", "cleared_at"])
+		.nullable(),
+	dateRecovery: z.record(z.string(), z.unknown()).nullable(),
 	beancountLink: z.string().min(1).max(240).nullable(),
 	messageId: z.string().min(1).nullable(),
 	sourceImportId: z.string().min(1).nullable(),
 	reason: z.string().min(1).max(500).nullable(),
 });
 
-export const financeLedgerExportSchema = z.object({
+export const financeLedgerExportV1Schema = z.object({
 	schemaVersion: z.literal("finance-ledger-export.v1"),
 	orgId: z.string().min(1),
 	exportRunId: z.string().min(1),
@@ -1154,14 +1200,147 @@ export const financeLedgerExportSchema = z.object({
 		favaSmoke: z.enum(["manual", "skipped"]),
 	}),
 });
-export type FinanceLedgerExportV1 = z.infer<typeof financeLedgerExportSchema>;
+export type FinanceLedgerExportV1 = z.infer<typeof financeLedgerExportV1Schema>;
+
+export const financeLedgerExportReadinessSchema = z.object({
+	readyCount: z.number().int().nonnegative(),
+	reviewCount: z.number().int().nonnegative(),
+	blockedCount: z.number().int().nonnegative(),
+	duplicateCount: z.number().int().nonnegative(),
+	mappingCoverage: z.object({
+		mappedRows: z.number().int().nonnegative(),
+		totalRows: z.number().int().nonnegative(),
+		ratio: z.number().min(0).max(1),
+	}),
+	missingAmountCount: z.number().int().nonnegative(),
+	missingCurrencyCount: z.number().int().nonnegative(),
+	missingDateCount: z.number().int().nonnegative(),
+	missingCounterpartyCount: z.number().int().nonnegative(),
+	missingDedupeCount: z.number().int().nonnegative(),
+	invalidBookCount: z.number().int().nonnegative(),
+	mixedMissingBusinessUsePercentCount: z.number().int().nonnegative(),
+	badDirectionCount: z.number().int().nonnegative(),
+});
+
+export const financeLedgerExportRowSchema = z.object({
+	ledgerEntry: z.record(z.string(), z.unknown()),
+	source: z
+		.object({
+			ledgerEntrySource: z.record(z.string(), z.unknown()).nullable(),
+			importRun: z.record(z.string(), z.unknown()).nullable(),
+			importDocument: z.record(z.string(), z.unknown()).nullable(),
+		})
+		.nullable(),
+	eligibility: z.object({
+		exportable: z.boolean(),
+		reasons: z.array(z.string().min(1)),
+		beancountDate: z.string().min(1).max(10).nullable(),
+		beancountDateSource: z
+			.enum(["occurred_at", "posted_at", "cleared_at"])
+			.nullable(),
+		dateRecovery: z.record(z.string(), z.unknown()).nullable(),
+		confidenceUsed: z.number().min(0).max(1).nullable(),
+		threshold: z.number().min(0).max(1),
+	}),
+	export: z.object({
+		status: z.enum(["exported", "unresolved"]),
+		generatedFile: z.string().min(1).nullable(),
+		beancountLink: z.string().min(1).max(240).nullable(),
+	}),
+	documents: z.object({
+		emitted: z.array(z.string().min(1)),
+		missing: z.array(z.string().min(1)),
+	}),
+});
+
+export const financeLedgerExportInternalValidationSchema = z.object({
+	status: z.enum(["passed", "failed"]),
+	checks: z.array(
+		z.object({
+			name: z.string().min(1),
+			status: z.enum(["passed", "failed"]),
+			detail: z.string().min(1),
+		}),
+	),
+	summary: z.object({
+		total: z.number().int().nonnegative(),
+		passed: z.number().int().nonnegative(),
+		failed: z.number().int().nonnegative(),
+	}),
+});
+
+export const financeLedgerExportDocumentsMetaSchema = z.object({
+	pathMode: z.literal("import_run_source_file"),
+	copied: z.array(
+		z.object({
+			relativePath: z.string().min(1),
+			importRunId: z.string().min(1),
+			importDocumentId: z.string().min(1).nullable(),
+			sourceDocumentRef: z.string().min(1).nullable(),
+			sourcePath: z.string().min(1),
+		}),
+	),
+	missing: z.array(
+		z.object({
+			importRunId: z.string().min(1),
+			importDocumentId: z.string().min(1).nullable(),
+			sourceDocumentRef: z.string().min(1).nullable(),
+			sourcePath: z.string().min(1),
+			reason: z.string().min(1),
+		}),
+	),
+});
+
+export const financeLedgerExportV2Schema = z.object({
+	schemaVersion: z.literal("finance-ledger-export.v2"),
+	orgId: z.string().min(1),
+	exportRunId: z.string().min(1),
+	generatedAt: z.string().min(1),
+	strict: z.boolean(),
+	year: z.number().int().min(1900).max(2500).nullable(),
+	years: z.array(z.number().int().min(1900).max(2500)),
+	files: z.object({
+		main: z.string().min(1),
+		accounts: z.string().min(1),
+		generated: z.array(z.string().min(1)),
+		raw: z.string().min(1),
+		unresolved: z.string().min(1),
+		documents: z.array(z.string().min(1)),
+	}),
+	readiness: financeLedgerExportReadinessSchema,
+	items: z.array(financeLedgerExportItemSchema),
+	rows: z.array(financeLedgerExportRowSchema),
+	documentsMeta: financeLedgerExportDocumentsMetaSchema.optional(),
+	validation: z.object({
+		internal: financeLedgerExportInternalValidationSchema.optional(),
+		beanCheck: z.enum(["passed", "failed", "skipped"]),
+		beanCheckOutput: z.string().nullable(),
+		favaSmoke: z.enum(["manual", "skipped"]),
+	}),
+});
+export type FinanceLedgerExportV2 = z.infer<typeof financeLedgerExportV2Schema>;
+
+export const financeLedgerExportSchema = z.union([
+	financeLedgerExportV1Schema,
+	financeLedgerExportV2Schema,
+]);
+export type FinanceLedgerExport = z.infer<typeof financeLedgerExportSchema>;
 
 export const financeDataInputSchema = z.object({
 	year: z.number().int().min(1900).max(2500).optional(),
 	accountId: z.string().min(1).optional(),
 	institutionId: z.string().min(1).optional(),
 	ownerIdentityId: z.string().min(1).optional(),
-	sourceKind: z.enum(["email", "pdf", "statement", "csv", "ofx"]).optional(),
+	drilldown: z.string().min(1).max(500).optional(),
+	sourceKind: z
+		.preprocess(
+			(value) =>
+				value === undefined
+					? undefined
+					: normalizeFinanceFilterSourceKind(value),
+			financeFilterSourceKindSchema.optional(),
+		)
+		.optional(),
 });
 export type FinanceDataInput = z.infer<typeof financeDataInputSchema>;
 
@@ -1382,7 +1561,7 @@ export const classifyReviewBacklogInputSchema = z.object({
 
 export const resolveReviewInputSchema = z.object({
 	reviewId: z.string().min(1),
-	action: z.enum(["accept", "override"]),
+	action: z.enum(["accept", "override", "defer"]),
 	override: messageLabelSchema.optional(),
 	note: z.string().max(1000).optional(),
 });

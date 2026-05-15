@@ -249,3 +249,10 @@ learn from the audited outcome.
 - human moderation tooling
 - sender/domain-specific allowlists for NSFW
 - replacing `message-label.v3` with secondary classifier output
+
+## Root Review Decisions
+
+Root review cards support accept, override, and defer decisions. Accept and
+override resolve the review and return the review node plus stats and actions
+targets. Defer keeps the review open and stores an optional resolution note.
+Manual override JSON remains validated server-side before it is written.

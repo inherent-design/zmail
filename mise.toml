@@ -12,9 +12,9 @@ pnpm raw:dev
 '''
 
 [tasks.preview]
-description = "Start the preview server with repo-managed secrets loaded through mise"
+description = "Start the SvelteKit build + Hono API preview server with repo-managed secrets loaded through mise"
 env = { _.file = ["secrets.enc.yaml", ".env"] }
-run = "pnpm raw:preview"
+run = "pnpm build && pnpm raw:preview"
 
 [tasks."db:migrate"]
 description = "Run database migrations with repo-managed secrets loaded through mise"
@@ -81,6 +81,11 @@ description = "Export current finance ledger to Beancount"
 env = { _.file = ["secrets.enc.yaml", ".env"] }
 run = "pnpm finance:export -- \"$@\""
 
+[tasks."finance:repair-ledger-dates"]
+description = "Repair ledger rows whose partial dates block Beancount export"
+env = { _.file = ["secrets.enc.yaml", ".env"] }
+run = "pnpm finance:repair-ledger-dates -- \"$@\""
+
 [tasks."finance:fava"]
 description = "Open a generated finance export package in Fava"
 env = { _.file = ["secrets.enc.yaml", ".env"] }
@@ -107,10 +112,10 @@ description = "Run HTTP benchmarks with repo-managed secrets loaded through mise
 env = { _.file = ["secrets.enc.yaml", ".env"] }
 run = "pnpm raw:bench:http"
 
-[tasks."bench:sse"]
-description = "Run SSE benchmarks with repo-managed secrets loaded through mise"
+[tasks."bench:ws"]
+description = "Run WebSocket benchmarks with repo-managed secrets loaded through mise"
 env = { _.file = ["secrets.enc.yaml", ".env"] }
-run = "pnpm raw:bench:sse"
+run = "pnpm raw:bench:ws"
 
 [tasks."obs:up"]
 description = "Start the local Grafana, Loki, Prometheus, and Alloy stack"

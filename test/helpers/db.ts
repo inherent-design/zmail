@@ -160,6 +160,7 @@ export async function seedStaleCanonicalMigrationHistory(input?: {
 	withSampleData?: boolean;
 	missingOwnerPrincipalEmail?: boolean;
 	missingConnectionState?: boolean;
+	missingFinanceLedgerDatePrecision?: boolean;
 	missingJobLaneColumns?: boolean;
 	migrationNames?: string[];
 }) {
@@ -178,6 +179,12 @@ export async function seedStaleCanonicalMigrationHistory(input?: {
 			/ {2}updated_at TEXT NOT NULL,\n {2}connection_state TEXT NOT NULL DEFAULT 'connected'\n {2}CHECK \(connection_state IN \('connected', 'config_error', 'paused', 'needs_reconnect', 'disconnected'\)\)\);/,
 			"  updated_at TEXT NOT NULL\n);",
 		);
+	}
+	if (input?.missingFinanceLedgerDatePrecision) {
+		staleSql = staleSql
+			.replace("  occurred_at_precision TEXT NOT NULL DEFAULT 'unknown',\n", "")
+			.replace("  posted_at_precision TEXT NOT NULL DEFAULT 'unknown',\n", "")
+			.replace("  cleared_at_precision TEXT NOT NULL DEFAULT 'unknown',\n", "");
 	}
 	if (input?.missingJobLaneColumns) {
 		const before = staleSql;

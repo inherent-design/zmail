@@ -333,6 +333,8 @@ CREATE TABLE IF NOT EXISTS review_classification_heads (
   confidence REAL NOT NULL DEFAULT 0,
   reason TEXT NOT NULL,
   evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+  resolution_note TEXT,
+  decided_at TEXT,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (target_kind, target_id)
 );
@@ -669,8 +671,11 @@ CREATE TABLE IF NOT EXISTS finance_ledger_entries (
   status TEXT NOT NULL DEFAULT 'review',
   source_authority TEXT NOT NULL,
   occurred_at TEXT,
+  occurred_at_precision TEXT NOT NULL DEFAULT 'unknown',
   posted_at TEXT,
+  posted_at_precision TEXT NOT NULL DEFAULT 'unknown',
   cleared_at TEXT,
+  cleared_at_precision TEXT NOT NULL DEFAULT 'unknown',
   description TEXT,
   counterparty TEXT,
   direction TEXT NOT NULL,
@@ -699,6 +704,18 @@ CREATE TABLE IF NOT EXISTS finance_ledger_entry_sources (
   import_document_id TEXT REFERENCES finance_import_documents(id) ON DELETE CASCADE,
   evidence_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS finance_ledger_entry_overrides (
+  id TEXT PRIMARY KEY,
+  canonical_key TEXT NOT NULL,
+  patch_json TEXT NOT NULL,
+  relationship_patch_json TEXT NOT NULL DEFAULT '{}',
+  note TEXT,
+  actor_ref TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  superseded_at TEXT
 );
 CREATE TABLE IF NOT EXISTS finance_patterns (
   id TEXT PRIMARY KEY,
@@ -775,6 +792,11 @@ CREATE INDEX IF NOT EXISTS finance_ledger_entry_sources_entry_idx
   ON finance_ledger_entry_sources (ledger_entry_id);
 CREATE INDEX IF NOT EXISTS finance_ledger_entry_sources_message_idx
   ON finance_ledger_entry_sources (message_id);
+CREATE INDEX IF NOT EXISTS finance_ledger_entry_overrides_active_idx
+  ON finance_ledger_entry_overrides (canonical_key, status, updated_at);
+CREATE INDEX IF NOT EXISTS finance_ledger_entry_overrides_status_updated_idx
+  ON finance_ledger_entry_overrides (status, updated_at)
+  WHERE status = 'active';
 CREATE INDEX IF NOT EXISTS finance_patterns_kind_seen_idx
   ON finance_patterns (pattern_kind, last_seen_at);
 CREATE INDEX IF NOT EXISTS finance_export_runs_created_idx

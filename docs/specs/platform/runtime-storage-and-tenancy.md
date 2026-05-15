@@ -141,3 +141,10 @@ scaffolding, never as real org data.
 - shared-database row-level tenancy
 - storing WorkOS user/session state in org runtime roots
 - syncing org-local runtime state to remote cloud storage
+
+## Org-Local Output Directories
+
+Finance uploads write under the org operator import root. Finance export
+packages write under the org operator export root. Tax and business reports
+write under the org operator reports root. These paths are scoped by active org
+id and are never served as static public assets.

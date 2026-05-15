@@ -1045,7 +1045,7 @@ describe("server auth bootstrap", () => {
 	it("serves unauthenticated health endpoints", async () => {
 		process.env.ZMAIL_TEST_AUTH_BYPASS = "true";
 
-		const { app } = await import("#/server/index");
+		const { app } = await import("#/server/app");
 
 		const healthResponse = await app.request("/healthz");
 		expect(healthResponse.status).toBe(200);

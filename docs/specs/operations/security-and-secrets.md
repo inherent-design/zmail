@@ -25,6 +25,9 @@ No operator API is implicitly trusted because it is “running on localhost”.
 - every protected page requires a valid session
 - every org-scoped request requires `org_id`
 - permission checks happen before storage access
+- `/ws` accepts browser session auth only and rejects bearer tokens
+- browser CSP `connect-src` must allow same-origin HTTP plus same-origin
+  `ws:`/`wss:` WebSocket connections
 
 ### Automation
 
@@ -250,3 +253,11 @@ injection, never through copied build-context files.
 - custom auth beyond WorkOS
 - storing secrets in operator YAML
 - open local-only import APIs
+
+## Workflow Redaction
+
+`DataInspector`, mutation errors, refresh logs, import details, export
+manifests, and report manifests must not render raw RFC822 bodies, cookies,
+OAuth payloads, bearer tokens, account secrets, or full account numbers. Server
+errors return concise operator-safe messages. Browser copy controls only copy
+the redacted JSON that is already visible in the inspector.

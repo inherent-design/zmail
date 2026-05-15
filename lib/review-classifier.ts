@@ -368,6 +368,8 @@ async function persistReviewClassifierResult(input: {
 					confidence: finding.confidence,
 					reason: finding.reason,
 					evidence_refs_json: jsonText(finding.evidenceRefs),
+					resolution_note: null,
+					decided_at: null,
 					updated_at: createdAt,
 				})
 				.onConflict((oc) =>
@@ -379,6 +381,8 @@ async function persistReviewClassifierResult(input: {
 						confidence: finding.confidence,
 						reason: finding.reason,
 						evidence_refs_json: jsonText(finding.evidenceRefs),
+						resolution_note: null,
+						decided_at: null,
 						updated_at: createdAt,
 					}),
 				)
@@ -400,7 +404,7 @@ function groupMessageIdsByAccount(
 	return groups;
 }
 
-async function dispatchReviewClassifierActions(input: {
+export async function dispatchReviewClassifierActions(input: {
 	resultId: string;
 	result: ReviewClassifierV1;
 	inputPackage: ReviewClassifierInputPackage;
@@ -553,9 +557,7 @@ async function dispatchReviewClassifierActions(input: {
 			findings: input.result.findings.length,
 			targetedRootMessages: rootMessageIds.size,
 			targetedFinanceMessages: financeMessageIds.size,
-			changeHints: {
-				islands: ["review.findings", "finance.review", "finance.lanes"],
-			},
+			invalidate: ["zmail:review", "zmail:finance", "zmail:runs"],
 		},
 	});
 	await publishActionEvent({
@@ -566,9 +568,7 @@ async function dispatchReviewClassifierActions(input: {
 		payload: {
 			resultId: input.resultId,
 			findings: input.result.findings.length,
-			changeHints: {
-				islands: ["finance.review", "finance.lanes"],
-			},
+			invalidate: ["zmail:finance", "zmail:runs"],
 		},
 	});
 }
@@ -617,10 +617,28 @@ ${JSON.stringify(reviewClassifierJsonSchema, null, 2)}`,
 		rawResponse,
 		usage: result.usage,
 	});
-	await dispatchReviewClassifierActions({
-		resultId,
-		result: parsed,
-		inputPackage,
+	const { publishActionEvent } = await import("#/lib/runtime-events");
+	await publishActionEvent({
+		topic: "reviews",
+		eventType: "review_classifier.completed",
+		entityKind: "review_classification_result",
+		entityId: resultId,
+		payload: {
+			resultId,
+			findings: parsed.findings.length,
+			invalidate: ["zmail:review", "zmail:runs"],
+		},
+	});
+	await publishActionEvent({
+		topic: "finance",
+		eventType: "review_classifier.completed",
+		entityKind: "review_classification_result",
+		entityId: resultId,
+		payload: {
+			resultId,
+			findings: parsed.findings.length,
+			invalidate: ["zmail:finance", "zmail:runs"],
+		},
 	});
 	return {
 		resultId,

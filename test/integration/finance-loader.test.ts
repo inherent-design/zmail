@@ -482,6 +482,68 @@ describe("loadFinanceData filter contract", () => {
 				lastAmountMinor: 4200,
 			}),
 		]);
+		expect(unfiltered.exportHealth).toMatchObject({
+			readyCount: 3,
+			duplicateCount: 1,
+			auditOnly: false,
+		});
+		expect(unfiltered.readiness.missing).toMatchObject({
+			amount: 0,
+			currency: 0,
+			date: 0,
+			counterparty: 0,
+			dedupe: 0,
+			book: 0,
+			mixedBusinessUsePercent: 0,
+			badDirection: 0,
+		});
+
+		const monthIncomeDrilldown = await actions.loadFinanceData({
+			year: 2026,
+			drilldown: "month:2026-03:income",
+		});
+		expect(monthIncomeDrilldown.drilldown).toMatchObject({
+			kind: "month",
+			rowCount: 1,
+			overflowCount: 0,
+		});
+		expect(monthIncomeDrilldown.drilldown?.rows).toEqual([
+			expect.objectContaining({
+				canonicalKey: "email:payroll:100.00:2026-03-10",
+				direction: "income",
+			}),
+		]);
+
+		const monthExpenseDrilldown = await actions.loadFinanceData({
+			year: 2026,
+			drilldown: "month:2026-03:expense",
+		});
+		expect(monthExpenseDrilldown.drilldown?.rows).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ canonicalKey: "import:artifact-sha:0" }),
+				expect.objectContaining({
+					canonicalKey: "email:msg-finance-email:42.00:2026-03-15",
+				}),
+			]),
+		);
+		expect(monthExpenseDrilldown.drilldown?.rowCount).toBe(2);
+
+		const categoryDrilldown = await actions.loadFinanceData({
+			year: 2026,
+			drilldown: "category:software_services:*:all",
+		});
+		expect(categoryDrilldown.drilldown?.rowCount).toBe(2);
+
+		const rollupDrilldown = await actions.loadFinanceData({
+			year: 2026,
+			drilldown: "rollup:pdf:software_services",
+		});
+		expect(rollupDrilldown.drilldown?.rows).toEqual([
+			expect.objectContaining({
+				canonicalKey: "import:artifact-sha:0",
+				sourceKind: "pdf",
+			}),
+		]);
 
 		const pdfFiltered = await actions.loadFinanceData({
 			year: 2026,
@@ -512,6 +574,14 @@ describe("loadFinanceData filter contract", () => {
 				ownerIdentityId: "owner:pdf",
 			}),
 		]);
+		expect(pdfFiltered.exportHealth).toMatchObject({
+			readyCount: 1,
+			reviewCount: 0,
+			blockedCount: 0,
+			duplicateCount: 0,
+			auditOnly: false,
+		});
+		expect(pdfFiltered.readiness.statusCounts.ready).toBe(1);
 		expect(pdfFiltered.importedDocuments).toEqual([
 			expect.objectContaining({
 				institutionHint: "inst:pdf-bank",
@@ -544,5 +614,19 @@ describe("loadFinanceData filter contract", () => {
 				}),
 			]),
 		);
+		expect(accountFiltered.exportHealth).toMatchObject({
+			readyCount: 2,
+			duplicateCount: 0,
+			auditOnly: false,
+		});
+
+		const emptyFiltered = await actions.loadFinanceData({
+			year: 2026,
+			sourceKind: "ofx",
+		});
+		expect(emptyFiltered.exportHealth).toMatchObject({
+			readyCount: 0,
+			auditOnly: true,
+		});
 	});
 });

@@ -8,7 +8,7 @@ const ALLOWED_CONSOLE_FILES = new Set([
 	"scripts/pi-connect-subscription.ts",
 	"scripts/audit-corpus.ts",
 	"scripts/bench-http.ts",
-	"scripts/bench-sse.ts",
+	"scripts/bench-ws.ts",
 	"scripts/db-reset.ts",
 	"scripts/import-finance-artifact.ts",
 	"scripts/reextract-bad-bodies.ts",
@@ -18,7 +18,9 @@ const ALLOWED_CONSOLE_FILES = new Set([
 ]);
 const LOGGER_BOUNDARY_FILES = [
 	"server/actions.ts",
-	"server/index.tsx",
+	"server/app.ts",
+	"server/dev.ts",
+	"server/http.ts",
 	"server/auth.ts",
 	"server/machine-auth.ts",
 	"lib/jobs.ts",
@@ -66,7 +68,6 @@ describe("logging regression guardrails", () => {
 			...listSourceFiles("server"),
 			...listSourceFiles("lib"),
 			...listSourceFiles("scripts"),
-			...listSourceFiles("public/client"),
 		];
 
 		const unexpectedConsoleUsage: string[] = [];

@@ -61,6 +61,18 @@ describe("finance upload", () => {
 		).toBe("voyage_gate");
 	});
 
+	it("preserves explicit artifact source kind hints", async () => {
+		const { financeUploadArtifactSourceKind } = await import(
+			"#/lib/finance-upload"
+		);
+
+		expect(financeUploadArtifactSourceKind(null)).toBe("pdf");
+		expect(financeUploadArtifactSourceKind("statement")).toBe("text");
+		expect(financeUploadArtifactSourceKind("text")).toBe("text");
+		expect(financeUploadArtifactSourceKind("csv")).toBe("csv");
+		expect(financeUploadArtifactSourceKind("ofx")).toBe("ofx");
+	});
+
 	it("rejects unsafe ZIP entry paths", async () => {
 		const { sanitizeFinanceUploadLogicalPath } = await import(
 			"#/lib/finance-upload"
@@ -150,7 +162,7 @@ describe("finance upload", () => {
 			id: first.uploadId,
 			status: "queued",
 			mode: "auto",
-			source_kind_hint: "statement",
+			source_kind_hint: "text",
 			original_filename: "statement.pdf",
 		});
 		expect(jobs).toContainEqual({

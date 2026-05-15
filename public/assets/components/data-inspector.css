@@ -1,0 +1,51 @@
+.data-inspector {
+	border: 1px solid rgba(24, 35, 29, 0.14);
+	border-radius: 8px;
+	padding: 0.65rem;
+	background: #fffdf8;
+}
+
+.data-inspector summary {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+	align-items: center;
+	cursor: pointer;
+}
+
+.data-inspector-actions {
+	display: flex;
+	gap: 0.5rem;
+	align-items: center;
+	margin-block: 0.65rem;
+}
+
+.data-inspector-tree {
+	display: grid;
+	gap: 0.35rem;
+	margin-block: 0.65rem;
+}
+
+.data-inspector-node,
+.data-inspector-leaf,
+.data-inspector-raw {
+	border-block-start: 1px solid rgba(24, 35, 29, 0.1);
+	padding-block: 0.35rem;
+}
+
+.data-inspector-children {
+	display: grid;
+	gap: 0.25rem;
+	margin-inline-start: 1rem;
+}
+
+.data-inspector-leaf {
+	display: grid;
+	grid-template-columns: minmax(8rem, 0.45fr) minmax(10rem, 1fr) auto;
+	gap: 0.5rem;
+	align-items: start;
+}
+
+.data-inspector button {
+	min-height: 2rem;
+}

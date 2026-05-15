@@ -1,3 +1,12 @@
+@import url("./components/buttons.css");
+@import url("./components/forms.css");
+@import url("./components/status.css");
+@import url("./components/decision-deck.css");
+@import url("./components/data-inspector.css");
+@import url("./components/transaction-editor.css");
+@import url("./components/toasts.css");
+@import url("./components/tables.css");
+
 :root {
 	color-scheme: light;
 	font-family: "Iosevka Aile", "IBM Plex Sans", system-ui, sans-serif;
@@ -292,6 +301,58 @@ textarea {
 	width: 100%;
 	min-height: 320px;
 	aspect-ratio: 16 / 7;
+}
+
+[data-finance-drilldown] {
+	cursor: pointer;
+}
+
+[data-finance-drilldown]:focus {
+	outline: 2px solid #2563eb;
+	outline-offset: -2px;
+}
+
+.finance-drilldown-island {
+	display: contents;
+}
+
+.modal-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 50;
+	display: grid;
+	place-items: center;
+	padding: 1rem;
+	background: rgba(18, 24, 32, 0.58);
+}
+
+.modal-panel {
+	width: min(1040px, 100%);
+	max-height: min(760px, calc(100vh - 2rem));
+	overflow: auto;
+	background: #fffdf8;
+	border: 1px solid rgba(36, 71, 53, 0.22);
+	border-radius: 0.5rem;
+	box-shadow: 0 24px 80px rgba(18, 24, 32, 0.28);
+	padding: 1rem;
+}
+
+.modal-header {
+	display: flex;
+	gap: 0.75rem;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: 0.75rem;
+}
+
+.modal-header h2 {
+	margin: 0;
+	font-size: 1.2rem;
+}
+
+.modal-body {
+	display: grid;
+	gap: 0.75rem;
 }
 
 .stats.compact {

@@ -225,3 +225,11 @@ account when remote sync remains enabled.
 - non-Gmail providers
 - sending or mutating Gmail state
 - multi-provider canonical deduplication
+
+## Account Workflow Targets
+
+Connect and reconnect RPCs return redirect targets for Google OAuth. Sync,
+classify, pause, resume, and disconnect RPCs return mutation envelopes with
+account header, action, mailbox sync, lane, and recent-job targets as
+appropriate. Account rows use keyed `account.list.item` nodes, and recent jobs
+use `account.detail.job` nodes.

@@ -69,6 +69,17 @@ V2 document rows add:
 - `rawPayload`
 - `evidenceText`
 
+Date rules:
+
+- imported transaction date fields may retain source fidelity, including partial
+  month or year strings
+- import ingestion must not substitute source-file import time as
+  `occurredAt`, `postedAt`, or `clearedAt`
+- exact exportability is decided later from exact `occurredAt`, exact
+  `postedAt`, or exact `clearedAt`
+- partial-only imported dates remain `review` in staged ledger rows until exact
+  evidence exists
+
 ### `transactions[]`
 
 V2 transaction rows add:
@@ -111,7 +122,7 @@ Request:
 - fields:
   - `file`: required PDF or ZIP
   - `mode`: optional, `auto | direct_llm | voyage_gate`, default `auto`
-  - `sourceKindHint`: optional, `pdf | statement`
+  - `sourceKindHint`: optional, `pdf | text | statement`
 
 Response:
 
@@ -374,7 +385,7 @@ These rows are attached to one canonical import run.
 
 Supported flow:
 
-1. external tool extracts a PDF/statement into `finance-source-import.v2`
+1. external tool extracts a PDF or text statement into `finance-source-import.v2`
 2. tool computes `artifactSha256`
 3. tool either:
    - submits through the app-relative `POST /api/finance/imports` endpoint with
@@ -413,6 +424,17 @@ Required for full Beancount/Fava export workflows:
 Missing Poppler binaries fail upload extraction. Missing `bean-check` skips
 Beancount validation during export; install Beancount for full validation.
 
+## Beancount Document Provenance
+
+Beancount/Fava export document provenance stays at import-run source-file
+level. The canonical source path for copied export documents is
+`finance_import_runs.source_file_path`; individual import document rows may add
+`sourceDocumentRef`, but they do not own stored filesystem paths.
+
+Export copies available source files into `documents/` and records copied or
+missing files in the `finance-ledger-export.v2` manifest `documentsMeta`
+section. Missing source files do not block export.
+
 ## Failure Modes
 
 - malformed JSON: `400`
@@ -428,3 +450,17 @@ Beancount validation during export; install Beancount for full validation.
 - dedup by `sourceFile.sha256`
 - direct Plaid ingestion
 - persistent vector search for uploads
+
+## Source Kind Canonicalization
+
+Finance import input boundaries accept `pdf`, `text`, `csv`, `ofx`, and legacy
+`statement`. Parsed artifacts, stored source-kind columns, rendered filters,
+chips, and new sidecars use canonical `text`. Semantic statement fields remain
+unchanged, including `documentType = "statement"`, statement periods, statement
+row ids, imported statement counts, finance gate `signal = "statement"`, and
+root secondary bucket `statement`.
+
+`artifactSha256` may be missing or empty at input. Import code computes a
+deterministic hash from normalized artifact JSON with `artifactSha256` set to an
+empty string. A non-empty submitted hash remains the deduplication key for
+compatibility. Upload hints accept `pdf`, `text`, legacy `statement`, or empty.

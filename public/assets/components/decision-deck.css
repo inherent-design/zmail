@@ -1,0 +1,11 @@
+.decision-deck {
+	display: grid;
+	gap: 0.75rem;
+}
+
+.decision-card {
+	border: 1px solid rgba(24, 35, 29, 0.14);
+	border-radius: 8px;
+	padding: 1rem;
+	background: #fffdf8;
+}

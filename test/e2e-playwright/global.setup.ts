@@ -485,6 +485,110 @@ async function seedRuntime(dataDir: string) {
 			},
 		])
 		.execute();
+	const exportManifest = {
+		schemaVersion: "finance-ledger-export.v2",
+		orgId: "playwright",
+		exportRunId: "pw-finance-export-run",
+		generatedAt: now,
+		strict: true,
+		year: 2026,
+		years: [2026],
+		files: {
+			main: "main.beancount",
+			accounts: "accounts.beancount",
+			generated: ["generated/2026.beancount"],
+			raw: "raw/zmail-finance-export.json",
+			unresolved: "review/unresolved.csv",
+			documents: [],
+		},
+		readiness: {
+			readyCount: 2,
+			reviewCount: 0,
+			blockedCount: 0,
+			duplicateCount: 0,
+			mappingCoverage: {
+				mappedRows: 2,
+				totalRows: 2,
+				ratio: 1,
+			},
+			missingAmountCount: 0,
+			missingCurrencyCount: 0,
+			missingDateCount: 0,
+			missingCounterpartyCount: 0,
+			missingDedupeCount: 0,
+			invalidBookCount: 0,
+			mixedMissingBusinessUsePercentCount: 0,
+			badDirectionCount: 0,
+		},
+		items: [],
+		rows: [],
+		documentsMeta: {
+			pathMode: "import_run_source_file",
+			copied: [],
+			missing: [],
+		},
+		validation: {
+			internal: {
+				status: "passed",
+				checks: [
+					{
+						name: "generated-files-sorted",
+						status: "passed",
+						detail: "Generated files are sorted by year ascending.",
+					},
+				],
+				summary: {
+					total: 1,
+					passed: 1,
+					failed: 0,
+				},
+			},
+			beanCheck: "passed",
+			beanCheckOutput: null,
+			favaSmoke: "manual",
+		},
+	};
+	await db
+		.insertInto("finance_export_runs")
+		.values({
+			id: "pw-finance-export-run",
+			status: "complete",
+			strict: 1,
+			year: 2026,
+			out_dir: "/tmp/zmail-playwright-finance-export",
+			package_json: JSON.stringify(exportManifest),
+			validation_json: JSON.stringify(exportManifest.validation),
+			created_at: now,
+			completed_at: now,
+		})
+		.execute();
+	await db
+		.insertInto("finance_export_items")
+		.values([
+			{
+				id: "pw-finance-export-item-email",
+				export_run_id: "pw-finance-export-run",
+				ledger_entry_id: "pw-ledger-email",
+				canonical_key: "email:pw-message-finance-email:42.00:2026-03-15",
+				status: "exported",
+				beancount_link: "zmail-pw-email",
+				sidecar_reason: null,
+				payload_json: "{}",
+				created_at: now,
+			},
+			{
+				id: "pw-finance-export-item-pdf",
+				export_run_id: "pw-finance-export-run",
+				ledger_entry_id: "pw-ledger-pdf",
+				canonical_key: "import:pw-finance-artifact-sha:0",
+				status: "exported",
+				beancount_link: "zmail-pw-pdf",
+				sidecar_reason: null,
+				payload_json: "{}",
+				created_at: now,
+			},
+		])
+		.execute();
 }
 
 export async function seedRuntimeForPlaywrightAt(input?: {

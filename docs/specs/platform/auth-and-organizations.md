@@ -211,3 +211,10 @@ boundary.
 - custom username/password auth
 - unauthenticated local-only operator APIs
 - cross-org shared sessions without explicit organization selection
+
+## Mutation Behavior
+
+Login, callback, and organization selection remain server-form first. Browser
+RPC mutation envelopes apply after an active organization context exists.
+Account connect and reconnect may return redirect targets to Google OAuth, but
+the role and owner checks remain server-side.

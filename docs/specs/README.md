@@ -4,11 +4,11 @@
 
 This spec set describes the target runtime:
 
-- `Hono` as the sole HTTP server and route owner
-- `Hono JSX` as the sole HTML rendering layer
+- `Hono` as the API, auth, health, metrics, and WebSocket route owner
+- `SvelteKit` as the browser page route and SSR owner
 - `WorkOS` as the auth and organization plane
 - per-org runtime roots under `data/orgs/<orgId>/...`
-- authenticated SSE plus enhanced MPA navigation for live browser UX
+- authenticated WebSocket runtime-event invalidation for live browser UX
 
 ## Current Runtime Snapshot
 
@@ -17,13 +17,14 @@ close work keeps source, specs, and live operator state aligned.
 
 Runtime shape:
 
-- one Hono server process owns HTTP, RPC, SSR, and authenticated SSE
+- one Node process dispatches Hono API/auth/WebSocket routes and SvelteKit SSR
 - in-process worker supervision starts one org-local worker loop per discovered
   org runtime
 - each org stores jobs, messages, operator config, raw mail, derived finance
   state, and runtime events in its own SQLite/runtime root
 - HTTP and RPC actions enqueue jobs; workers claim org-local lane-compatible
-  jobs and publish runtime events that the browser receives over SSE
+  jobs and publish durable runtime events that the browser receives over
+  WebSocket
 
 Pipeline shape:
 
@@ -36,6 +37,8 @@ Pipeline shape:
 - materialization/export/report jobs consume current heads and rebuild snapshots
 - Beancount/Fava export and tax/business packages read staged ledger rows and
   count only strict-ready rows in accepted totals
+- staged ledger rows need an exact `YYYY-MM-DD` Beancount date source before
+  they can leave sidecars and enter exported ledger files
 
 Count-only observation for live org `org_01KPADQ5W2MM1C5XNEAW6DFKJD` on
 2026-04-20:
@@ -105,10 +108,10 @@ zmail does not keep stale active architecture notes in place.
 
 | Subsystem | Owning Spec | Expected Source Families |
 | --- | --- | --- |
-| System topology | [system-overview.md](./system-overview.md) | `server/**`, `public/client/**`, `lib/**`, `scripts/**` |
-| Hono server/runtime | [platform/hono-application.md](./platform/hono-application.md) | `server/index.tsx`, `server/actions.ts`, `server/auth.ts`, `server/machine-auth.ts` |
+| System topology | [system-overview.md](./system-overview.md) | `server/**`, `src/**`, `lib/**`, `scripts/**` |
+| Hono server/runtime | [platform/hono-application.md](./platform/hono-application.md) | `server/app.ts`, `server/http.ts`, `server/realtime-ws.ts`, `server/actions.ts`, `server/auth.ts`, `server/machine-auth.ts` |
 | Internal application taxonomy | [platform/internal-application-taxonomy.md](./platform/internal-application-taxonomy.md) | `server/actions.ts`, `server/auth.ts`, `lib/**`, transport/domain boundaries |
-| Hono JSX UI | [platform/hono-jsx-ui.md](./platform/hono-jsx-ui.md) | `server/ui.tsx`, `public/client/**`, `public/assets/**` |
+| SvelteKit UI | [platform/sveltekit-ui.md](./platform/sveltekit-ui.md) | `src/**`, `public/assets/**`, `lib/client-contract.ts` |
 | Auth and organizations | [platform/auth-and-organizations.md](./platform/auth-and-organizations.md) | `server/auth.ts`, `server/machine-auth.ts`, `lib/runtime.ts` |
 | Runtime storage and org tenancy | [platform/runtime-storage-and-tenancy.md](./platform/runtime-storage-and-tenancy.md) | `lib/runtime.ts`, `lib/db.ts`, `scripts/db-*` |
 | Jobs, workers, observability | [platform/jobs-workers-and-observability.md](./platform/jobs-workers-and-observability.md) | `lib/jobs.ts`, `lib/worker.ts`, `lib/log.ts` |
@@ -124,7 +127,7 @@ zmail does not keep stale active architecture notes in place.
 | Migrations and scripts | [operations/migrations-cleanups-and-one-off-scripts.md](./operations/migrations-cleanups-and-one-off-scripts.md) | `db/migrations/**`, `scripts/**` |
 | Testing and proof | [operations/testing-and-proof.md](./operations/testing-and-proof.md) | `test/**`, CI commands, manual smoke docs |
 | Security and secrets | [operations/security-and-secrets.md](./operations/security-and-secrets.md) | `lib/log.ts`, auth config, secret loading, `.gitignore` |
-| Architecture decisions | [platform/adr-001-hono-jsx-over-ripple.md](./platform/adr-001-hono-jsx-over-ripple.md) | platform-level decision records |
+| Architecture decisions | [platform/adr-002-sveltekit-ui-and-hono-websocket.md](./platform/adr-002-sveltekit-ui-and-hono-websocket.md) | platform-level decision records |
 
 ## How Implementation Should Track Spec Drift
 
@@ -145,3 +148,13 @@ Use this rule set:
 - preserving a transitional `app/**` runtime layer after the purge
 - preserving single-tenant runtime assumptions as forward contracts
 - leaving finance import safety, org tenancy, or auth boundaries implicit
+
+## Unified Workflow Refresh
+
+Browser workflows use a shared mutation envelope for JSON RPC and multipart
+forms. Route handlers may return `toast`, `redirectTo`, `invalidate`, job hints,
+and event hints while preserving the existing `{ ok: true, status }` shape.
+
+SvelteKit loads declare `depends(...)` invalidation keys. The browser receives
+durable runtime events over `/ws` and maps topics to invalidation keys instead
+of requesting main, island, or node fragments.

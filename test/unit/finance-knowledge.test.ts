@@ -4,6 +4,7 @@ import {
 	bootDb,
 	insertMessageLabelRow,
 	insertMessageRow,
+	insertMessageSourceRow,
 	insertSecondaryResultRow,
 } from "#/test/helpers/db";
 import {
@@ -138,6 +139,96 @@ describe("finance knowledge", () => {
 		});
 	});
 
+	it("recovers exact posted_at from message timestamps for partial email dates", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		await seedMapping(db);
+		const messageId = await seedFinanceMessage(db, {
+			messageId: "message-finance-partial-date",
+			receivedAt: "2026-02-01T06:45:35.000Z",
+			result: buildFinanceIntelV3({
+				transactionCandidates: [
+					{
+						merchantOrCounterparty: "DigitalOcean",
+						amount: "42.00",
+						occurredAt: "2026-01",
+						postedAt: null,
+						clearedAt: null,
+						dedupe: {
+							normalizedComposite: null,
+							emailEvidenceKey: "email:message-finance-partial-date",
+						},
+					},
+				],
+			}),
+		});
+		await insertMessageSourceRow(db, {
+			messageId,
+			accountId: "acct-1",
+			remoteMessageId: "remote-partial-date",
+			remoteThreadId: "thread-partial-date",
+			rawRfc822Path: null,
+		});
+
+		const financeKnowledge = await runtime.importFresh<
+			typeof import("#/lib/finance-knowledge")
+		>("#/lib/finance-knowledge");
+		const first = await financeKnowledge.rebuildFinanceKnowledge();
+		const firstEntry = await db
+			.selectFrom("finance_ledger_entries")
+			.select([
+				"status",
+				"canonical_key",
+				"occurred_at",
+				"occurred_at_precision",
+				"posted_at",
+				"posted_at_precision",
+				"ledger_metadata_json",
+			])
+			.executeTakeFirstOrThrow();
+		const firstMetadata = JSON.parse(firstEntry.ledger_metadata_json) as Record<
+			string,
+			unknown
+		>;
+
+		expect(first).toMatchObject({ ready: 1, review: 0 });
+		expect(firstEntry).toMatchObject({
+			status: "ready",
+			canonical_key:
+				"composite:business|acct:checking|2026-02-01|42-00|USD|digitalocean",
+			occurred_at: "2026-01",
+			occurred_at_precision: "month",
+			posted_at: "2026-02-01T06:45:35.000Z",
+			posted_at_precision: "datetime",
+		});
+		expect(firstMetadata.dateRecovery).toMatchObject({
+			recoveredField: "posted_at",
+			recoveredFrom: "message_received_at",
+			recoveredValue: "2026-02-01T06:45:35.000Z",
+			originalPeriod: "2026-01",
+		});
+
+		const second = await financeKnowledge.rebuildFinanceKnowledge();
+		const secondEntry = await db
+			.selectFrom("finance_ledger_entries")
+			.select(["canonical_key", "posted_at", "ledger_metadata_json"])
+			.executeTakeFirstOrThrow();
+
+		expect(second).toMatchObject({ ready: 1, review: 0 });
+		expect(secondEntry).toMatchObject({
+			canonical_key:
+				"composite:business|acct:checking|2026-02-01|42-00|USD|digitalocean",
+			posted_at: "2026-02-01T06:45:35.000Z",
+		});
+		expect(JSON.parse(secondEntry.ledger_metadata_json)).toMatchObject({
+			dateRecovery: {
+				recoveredField: "posted_at",
+				recoveredFrom: "message_received_at",
+				originalPeriod: "2026-01",
+			},
+		});
+	});
+
 	it("lets imported rows outrank duplicate email evidence", async () => {
 		const runtime = await createTestRuntime();
 		const { db } = await bootDb({ seedDefaultAccount: true });
@@ -233,6 +324,138 @@ describe("finance knowledge", () => {
 		]);
 	});
 
+	it("keeps OFX and PDF at equal merge priority", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		await seedMapping(db);
+		await db
+			.insertInto("finance_import_runs")
+			.values([
+				{
+					id: "import-run-pdf",
+					source_kind: "pdf",
+					source_file_path: "/tmp/statement.pdf",
+					source_file_sha256: "statement-pdf-sha",
+					filename: "statement.pdf",
+					artifact_sha256: "artifact-pdf-sha",
+					extractor_runner: "test",
+					extractor_model: "fixture",
+					extractor_prompt_version: "finance-source-import.v2",
+					extracted_text_hash: null,
+					status: "imported",
+					raw_artifact_json: "{}",
+					imported_at: "2026-01-03T00:00:00.000Z",
+				},
+				{
+					id: "import-run-ofx",
+					source_kind: "ofx",
+					source_file_path: "/tmp/statement.ofx",
+					source_file_sha256: "statement-ofx-sha",
+					filename: "statement.ofx",
+					artifact_sha256: "artifact-ofx-sha",
+					extractor_runner: "test",
+					extractor_model: "fixture",
+					extractor_prompt_version: "finance-source-import.v2",
+					extracted_text_hash: null,
+					status: "imported",
+					raw_artifact_json: "{}",
+					imported_at: "2026-01-04T00:00:00.000Z",
+				},
+			])
+			.execute();
+		await db
+			.insertInto("finance_import_transactions")
+			.values([
+				{
+					id: "import-tx-pdf",
+					import_run_id: "import-run-pdf",
+					source_document_ref: "pdf-doc",
+					occurred_at: "2026-01-02",
+					posted_at: "2026-01-03",
+					amount_value: "42.00",
+					amount_minor: 4200,
+					currency: "USD",
+					direction: "expense",
+					description: "PDF import",
+					merchant_or_counterparty: "Example SaaS",
+					balance_value: null,
+					owner_identity_hint: "owner:business",
+					financial_account_hint: "acct:checking",
+					institution_hint: "inst:bank",
+					category_primary: "software_services",
+					category_secondary: "saas",
+					evidence_text: "PDF row.",
+					payload_json: "{}",
+					external_transaction_id: "ext-shared",
+					cleared_at: null,
+					statement_row_id: "pdf-row",
+					row_index: 0,
+					account_mapping_key: "bank:checking",
+					book_hint: "business",
+					business_use_percent: null,
+					extraction_confidence: 0.99,
+					raw_row_payload_json: "{}",
+					row_provenance_json: "{}",
+					raw_payload_json: "{}",
+					created_at: "2026-01-03T00:00:00.000Z",
+				},
+				{
+					id: "import-tx-ofx",
+					import_run_id: "import-run-ofx",
+					source_document_ref: "ofx-doc",
+					occurred_at: "2026-01-02",
+					posted_at: "2026-01-03",
+					amount_value: "42.00",
+					amount_minor: 4200,
+					currency: "USD",
+					direction: "expense",
+					description: "OFX import",
+					merchant_or_counterparty: "Example SaaS",
+					balance_value: null,
+					owner_identity_hint: "owner:business",
+					financial_account_hint: "acct:checking",
+					institution_hint: "inst:bank",
+					category_primary: "software_services",
+					category_secondary: "saas",
+					evidence_text: "OFX row.",
+					payload_json: "{}",
+					external_transaction_id: "ext-shared",
+					cleared_at: null,
+					statement_row_id: "ofx-row",
+					row_index: 0,
+					account_mapping_key: "bank:checking",
+					book_hint: "business",
+					business_use_percent: null,
+					extraction_confidence: 0.99,
+					raw_row_payload_json: "{}",
+					row_provenance_json: "{}",
+					raw_payload_json: "{}",
+					created_at: "2026-01-04T00:00:00.000Z",
+				},
+			])
+			.execute();
+
+		const financeKnowledge = await runtime.importFresh<
+			typeof import("#/lib/finance-knowledge")
+		>("#/lib/finance-knowledge");
+		await financeKnowledge.rebuildFinanceKnowledge();
+		const entry = await db
+			.selectFrom("finance_ledger_entries")
+			.select(["source_authority", "description"])
+			.executeTakeFirstOrThrow();
+		const sources = await db
+			.selectFrom("finance_ledger_entry_sources")
+			.select(["source_kind"])
+			.orderBy("source_kind", "asc")
+			.execute();
+
+		expect(entry).toMatchObject({
+			source_authority: "pdf",
+			description: "PDF import",
+		});
+		expect(sources.map((source) => source.source_kind)).toEqual(["ofx", "pdf"]);
+	});
+
 	it("links imported statement rows to matching email evidence without external ids", async () => {
 		const runtime = await createTestRuntime();
 		const { db } = await bootDb({ seedDefaultAccount: true });
@@ -311,13 +534,13 @@ describe("finance knowledge", () => {
 			.execute();
 
 		expect(result.entries).toBe(1);
-		expect(entry.source_authority).toBe("statement");
+		expect(entry.source_authority).toBe("text");
 		expect(entry.canonical_key).toBe(
 			"composite:business|acct:checking|2026-01-01|42-00|USD|billing-example-com",
 		);
 		expect(sources.map((source) => source.source_kind)).toEqual([
 			"email",
-			"statement",
+			"text",
 		]);
 	});
 

@@ -22,7 +22,7 @@ the refactor. The goal is to move source toward the vNext spec set.
 
 - platform:
   - Hono
-  - Hono JSX + enhanced MPA + SSE
+  - SvelteKit UI + WebSocket realtime
   - WorkOS auth and organizations
   - runtime storage and tenancy
   - jobs/workers/observability
@@ -49,9 +49,9 @@ db/                  SQL migrations
 docs/specs/          canonical vNext specs
 lib/                 domain logic and runtime services
 prompts/             moderation and classification prompts
-public/client/       browser shell, navigation, and page modules
+src/                 SvelteKit browser routes, components, and client stores
 scripts/             operator, admin, and test harness tooling
-server/              Hono entrypoint, auth, actions, and SSR UI
+server/              Hono API/auth/WebSocket routes and production dispatcher
 test/                unit, integration, and Playwright harness
 ```
 

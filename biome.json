@@ -9,12 +9,14 @@
 		"ignoreUnknown": false,
 		"includes": [
 			"server/**/*",
-			"public/client/**/*",
+			"src/**/*",
 			"lib/**/*",
 			"config/**/*",
 			"scripts/**/*",
 			"test/**/*",
 			"!test/.runtime/**/*",
+			"svelte.config.js",
+			"vite.config.ts",
 			"vitest.config.ts",
 			"playwright.live.config.ts",
 			"README.md",
@@ -32,6 +34,19 @@
 			"recommended": true
 		}
 	},
+	"overrides": [
+		{
+			"includes": ["src/**/*.svelte"],
+			"linter": {
+				"rules": {
+					"correctness": {
+						"noUnusedImports": "off",
+						"noUnusedVariables": "off"
+					}
+				}
+			}
+		}
+	],
 	"javascript": {
 		"formatter": {
 			"quoteStyle": "double"

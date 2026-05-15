@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { loadClassificationConfig } from "#/lib/category-rules";
 import { APP_CONFIG, FINANCE_INTEL_PROMPT_VERSION } from "#/lib/config";
+import { resolveLedgerDateForComposite } from "#/lib/finance-ledger-dates";
 import { piJson } from "#/lib/pi";
 import { readPromptIdentity } from "#/lib/prompt-identity";
 import {
@@ -345,6 +346,8 @@ function normalizeTransactionCandidate(
 		stringValue(record.occurredAt, 64) ??
 		stringValue(record.transactionDate, 64) ??
 		stringValue(record.date, 64);
+	const postedAt = stringValue(record.postedAt, 64);
+	const clearedAt = stringValue(record.clearedAt, 64);
 	const merchantOrCounterparty =
 		stringValue(record.merchantOrCounterparty, 240) ??
 		stringValue(record.counterparty, 240) ??
@@ -356,7 +359,11 @@ function normalizeTransactionCandidate(
 		book = "unknown";
 		normalizedCritical = true;
 	}
-	if (!amount || !occurredAt || !merchantOrCounterparty) {
+	if (
+		!amount ||
+		!merchantOrCounterparty ||
+		!resolveLedgerDateForComposite({ occurredAt, postedAt, clearedAt })
+	) {
 		normalizedCritical = true;
 	}
 	const beancount = normalizeBeancount(record.beancount);
@@ -393,8 +400,8 @@ function normalizeTransactionCandidate(
 				stringValue(record.evidence, 500) ??
 				"Model did not provide field-level evidence.",
 			externalTransactionId: stringValue(record.externalTransactionId, 240),
-			postedAt: stringValue(record.postedAt, 64),
-			clearedAt: stringValue(record.clearedAt, 64),
+			postedAt,
+			clearedAt,
 			book,
 			businessUsePercent,
 			fieldConfidence: normalizeFieldConfidence(record.fieldConfidence),

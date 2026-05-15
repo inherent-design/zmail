@@ -39,11 +39,11 @@ Finance analytics uses existing materializations:
 Finance analytics may read review, mapping, job, and report state, but it must
 derive chart math from ledger, rollup, pattern, and export tables.
 
-## Page Islands
+## Page Sections
 
-The finance page owns these islands:
+The finance page owns these SvelteKit-rendered sections:
 
-| Island | Purpose |
+| Section | Purpose |
 | ------ | ------- |
 | `finance.command-bar` | Actions, rebuild controls, and pipeline warnings. |
 | `finance.filters` | Committed URL filters for year, account, institution, owner identity, and source kind. |
@@ -157,20 +157,25 @@ Ephemeral keys:
 
 ## Realtime Refresh
 
-Finance SSE events should refresh affected finance islands first. A ledger
-rebuild refreshes analytics islands such as summary, cashflow, categories,
-the active tab island, and lane status. Pattern rebuilds refresh subscription,
-summary, and lane islands. Review classifier completion refreshes finance lane
-status and the active review or readiness tab when visible. Job events refresh
-command and lane islands when they are finance, registry, review, export, or tax
-related.
-
-SSE-triggered island refreshes do not fall back to a full main refresh. Explicit
-user actions may request a same-page main fallback when the action cannot be
-represented as island-only state.
+Finance runtime events invalidate `zmail:finance` over WebSocket. Ledger
+rebuilds refresh analytics sections such as summary, cashflow, categories, the
+active tab, and lane status. Pattern rebuilds refresh subscription, summary,
+and lane sections. Review classifier completion refreshes finance lane status
+and the active review or readiness tab when visible.
 
 ## Deferred Work
 
 Message analytics is deferred. Future specs may add timeline or
-sender-recipient lenses, but this document only reserves the island and event
+sender-recipient lenses, but this document only reserves the section and event
 patterns needed to add them later.
+
+## Workflow Targets
+
+Finance analytics pages expose stable roles and `data-testid` hooks for ledger
+rows, review ledger rows, mapping candidates, review findings, upload runs,
+import runs, export runs, and tax report runs. Mutation envelopes invalidate
+the relevant SvelteKit data keys.
+
+Ledger override editors submit strict patch fields and relationship fields.
+Successful changes invalidate affected finance data, readiness, summary, lanes,
+and analytics sections.

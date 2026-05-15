@@ -221,7 +221,7 @@ export function buildFinanceRollupView(input: {
 		if (!year) {
 			continue;
 		}
-		const sourceKind = row.sourceKind || "statement";
+		const sourceKind = row.sourceKind || "text";
 		const key = `${year}:${sourceKind}:uncategorized`;
 		const current = yearly.get(key) ?? {
 			year,

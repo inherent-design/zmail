@@ -23,7 +23,9 @@ import {
 	type FinanceImportSourceKind,
 	type FinanceSourceImportV2,
 	financeImportDocumentV2Schema,
+	financeImportSourceKindSchema,
 	financeImportTransactionV2Schema,
+	normalizeFinanceImportSourceKind,
 	registryFinancialAccountSuggestionSchema,
 	registryIdentitySuggestionSchema,
 	registryInstitutionSuggestionSchema,
@@ -71,7 +73,13 @@ const financeUploadRetentionSchema = z
 	.default("org_file_ref");
 
 const financeUploadSourceKindHintSchema = z
-	.enum(["pdf", "statement"])
+	.preprocess(
+		(value) =>
+			value === null || value === undefined || value === ""
+				? null
+				: normalizeFinanceImportSourceKind(value),
+		financeImportSourceKindSchema.nullable(),
+	)
 	.nullable()
 	.default(null);
 
@@ -212,6 +220,12 @@ function parseMode(value?: string | null) {
 
 function parseSourceKindHint(value?: string | null) {
 	return financeUploadSourceKindHintSchema.parse(value || null);
+}
+
+export function financeUploadArtifactSourceKind(
+	value?: string | null,
+): FinanceImportSourceKind {
+	return value ? normalizeFinanceImportSourceKind(value) : "pdf";
 }
 
 function parseRetention(value?: string | null) {
@@ -1256,8 +1270,9 @@ function buildArtifact(input: {
 				reasons: page.candidateReasons,
 			})),
 	);
-	const sourceKind: FinanceImportSourceKind =
-		input.upload.source_kind_hint === "statement" ? "statement" : "pdf";
+	const sourceKind = financeUploadArtifactSourceKind(
+		input.upload.source_kind_hint,
+	);
 	const baseArtifact: FinanceSourceImportV2 = {
 		schemaVersion: "finance-source-import.v2",
 		sourceKind,
@@ -1297,10 +1312,7 @@ function buildArtifact(input: {
 	};
 	return {
 		...baseArtifact,
-		artifactSha256: computeArtifactSha256({
-			...baseArtifact,
-			artifactSha256: sha256Text(JSON.stringify(baseArtifact)),
-		}),
+		artifactSha256: computeArtifactSha256(baseArtifact),
 	};
 }
 

@@ -950,9 +950,7 @@ export async function generateFinanceMappingCandidates(
 			suggestions: rowsToInsert.length,
 			skippedLowConfidence,
 			skippedDuplicates,
-			changeHints: {
-				islands: ["finance.mappings", "finance.readiness", "finance.lanes"],
-			},
+			invalidate: ["zmail:finance", "zmail:runs"],
 		},
 	});
 

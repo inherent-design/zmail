@@ -204,3 +204,10 @@ Rules:
 
 - direct PDF extractor writes into canonical registry tables
 - storage of financial secrets or credentials in operator files
+
+## Mapping Suggestion Decisions
+
+Mapping suggestions support accept and dismiss. Accept applies the suggestion
+through the registry service. Dismiss marks the suggestion `rejected`. Both
+actions return finance invalidation hints so the browser can refresh the
+affected SvelteKit data.

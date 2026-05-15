@@ -22,6 +22,7 @@ describe("finance-intel", () => {
 		expect(prompt).toContain("Use `[]`, not omission");
 		expect(prompt).toContain("occurredAt");
 		expect(prompt).toContain("merchantOrCounterparty");
+		expect(prompt).toContain("Never emit `YYYY-MM` or `YYYY`");
 		expect(prompt).toContain("`tax` -> `tax_document`");
 	});
 
@@ -118,6 +119,43 @@ describe("finance-intel", () => {
 			),
 		);
 		expect(other.messageKind).toBe("other_finance");
+	});
+
+	it("downgrades partial-date exportable candidates to review", async () => {
+		const runtime = await createTestRuntime();
+		const financeIntel = await runtime.importFresh<
+			typeof import("#/lib/finance-intel")
+		>("#/lib/finance-intel");
+
+		const parsed = financeIntelV3Schema.parse(
+			financeIntel.normalizeFinanceIntelV3ModelOutput(
+				{
+					actionability: "create_transaction_candidate",
+					ledgerReadiness: {
+						status: "exportable",
+						requiredFixes: [],
+					},
+					transactionCandidates: [
+						{
+							kind: "card_charge",
+							direction: "expense",
+							amount: "42.00",
+							occurredAt: "2026-01",
+							merchantOrCounterparty: "DigitalOcean",
+						},
+					],
+				},
+				{
+					messageId: "message-partial-date",
+					rootSignal: "receipt",
+					rootBookHint: "business",
+					rootEvidence: "Root finance evidence.",
+				},
+			),
+		);
+
+		expect(parsed.ledgerReadiness.status).toBe("review");
+		expect(parsed.ledgerReadiness.requiredFixes).toContain("manualReview");
 	});
 
 	it("builds a finance-intel prompt with root label and registry context", async () => {

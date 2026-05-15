@@ -17,6 +17,8 @@ Rules:
 - Keep explanations short and factual.
 - `categoryPrimary` must come from provided finance taxonomy when present, otherwise use `uncategorized`.
 - Use `categorySecondary` only when a supported subtype is evident.
+- `occurredAt`, `postedAt`, and `clearedAt` must be exact `YYYY-MM-DD` values or exact ISO timestamps when known.
+- Never emit `YYYY-MM` or `YYYY` in `occurredAt`, `postedAt`, or `clearedAt`; use `null` instead when only a month or year is known.
 - Set field confidence independently for amount, date, counterparty, account mapping, book, category, and dedupe evidence.
 - Set top-level `book.scope` as personal, business, mixed, or unknown. For mixed transaction candidates, provide `businessUsePercent`; otherwise the row is not exportable.
 - Set `ledgerReadiness.status = "exportable"` only when amount, date, counterparty, account/book mapping, dedupe inputs, and high field confidence are present.

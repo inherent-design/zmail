@@ -3,6 +3,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { nowIso } from "#/lib/config";
 import { getDb, jsonText } from "#/lib/db";
 import {
+	precisionForLedgerDate,
+	resolveLedgerDateForComposite,
+} from "#/lib/finance-ledger-dates";
+import {
 	type FinanceSourceImport,
 	financeSourceImportSchema,
 } from "#/lib/schemas";
@@ -12,7 +16,20 @@ function sha256(value: string) {
 }
 
 export function computeArtifactSha256(artifact: FinanceSourceImport) {
-	return artifact.artifactSha256 || sha256(JSON.stringify(artifact));
+	if (artifact.artifactSha256.trim()) {
+		return artifact.artifactSha256;
+	}
+	return sha256(JSON.stringify({ ...artifact, artifactSha256: "" }));
+}
+
+export function withFinalArtifactSha256<T extends FinanceSourceImport>(
+	artifact: T,
+) {
+	const artifactSha256 = computeArtifactSha256(artifact);
+	return {
+		...artifact,
+		artifactSha256,
+	};
 }
 
 export async function findFinanceImportRunByArtifact(artifactSha256: string) {
@@ -58,6 +75,24 @@ function v2Number(value: object, key: string) {
 function v2Record(value: object, key: string) {
 	const raw = v2RawValue(value, key);
 	return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+}
+
+export function classifyImportTransactionDates(transaction: object) {
+	const occurredAt = v2String(transaction, "occurredAt");
+	const postedAt = v2String(transaction, "postedAt");
+	const clearedAt = v2String(transaction, "clearedAt");
+	return {
+		occurredAtPrecision: precisionForLedgerDate(occurredAt),
+		postedAtPrecision: precisionForLedgerDate(postedAt),
+		clearedAtPrecision: precisionForLedgerDate(clearedAt),
+		hasExactBeancountDate: Boolean(
+			resolveLedgerDateForComposite({
+				occurredAt,
+				postedAt,
+				clearedAt,
+			}),
+		),
+	};
 }
 
 function buildSuggestionRows(input: {
@@ -152,6 +187,7 @@ export async function importFinanceArtifact(input: unknown) {
 	const importRunId = randomUUID();
 	const importedAt = nowIso();
 	const artifactSha256 = computeArtifactSha256(artifact);
+	const storedArtifact = withFinalArtifactSha256(artifact);
 	let result:
 		| {
 				status: "imported" | "already_imported";
@@ -179,7 +215,7 @@ export async function importFinanceArtifact(input: unknown) {
 				extractor_prompt_version: artifact.extractor.promptVersion,
 				extracted_text_hash: artifact.extractor.extractedTextHash,
 				status: "imported",
-				raw_artifact_json: jsonText(artifact),
+				raw_artifact_json: jsonText(storedArtifact),
 				imported_at: importedAt,
 			})
 			.onConflict((oc) => oc.column("artifact_sha256").doNothing())
@@ -291,9 +327,10 @@ export async function importFinanceArtifact(input: unknown) {
 						extraction_confidence:
 							v2Number(transaction, "extractionConfidence") ?? 0,
 						raw_row_payload_json: jsonText(v2Record(transaction, "rawPayload")),
-						row_provenance_json: jsonText(
-							v2Record(transaction, "rowProvenance"),
-						),
+						row_provenance_json: jsonText({
+							...v2Record(transaction, "rowProvenance"),
+							dateClassification: classifyImportTransactionDates(transaction),
+						}),
 						raw_payload_json: jsonText(v2Record(transaction, "rawPayload")),
 						created_at: importedAt,
 					})),

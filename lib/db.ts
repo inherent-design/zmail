@@ -366,6 +366,8 @@ interface ReviewClassificationHeadsTable {
 	confidence: number;
 	reason: string;
 	evidence_refs_json: string;
+	resolution_note: string | null;
+	decided_at: string | null;
 	updated_at: string;
 }
 
@@ -612,8 +614,11 @@ interface FinanceLedgerEntriesTable {
 	status: string;
 	source_authority: string;
 	occurred_at: string | null;
+	occurred_at_precision: Generated<string>;
 	posted_at: string | null;
+	posted_at_precision: Generated<string>;
 	cleared_at: string | null;
+	cleared_at_precision: Generated<string>;
 	description: string | null;
 	counterparty: string | null;
 	direction: string;
@@ -643,6 +648,19 @@ interface FinanceLedgerEntrySourcesTable {
 	import_document_id: string | null;
 	evidence_json: string;
 	created_at: string;
+}
+
+interface FinanceLedgerEntryOverridesTable {
+	id: string;
+	canonical_key: string;
+	patch_json: string;
+	relationship_patch_json: Generated<string>;
+	note: string | null;
+	actor_ref: string | null;
+	status: Generated<string>;
+	created_at: string;
+	updated_at: string;
+	superseded_at: string | null;
 }
 
 interface FinancePatternsTable {
@@ -792,6 +810,7 @@ export interface DB {
 	finance_yearly_subcategory_rollups: FinanceYearlySubcategoryRollupsTable;
 	finance_ledger_entries: FinanceLedgerEntriesTable;
 	finance_ledger_entry_sources: FinanceLedgerEntrySourcesTable;
+	finance_ledger_entry_overrides: FinanceLedgerEntryOverridesTable;
 	finance_patterns: FinancePatternsTable;
 	finance_export_runs: FinanceExportRunsTable;
 	finance_export_items: FinanceExportItemsTable;
@@ -843,6 +862,7 @@ const REQUIRED_BASELINE_TABLES = [
 	"finance_yearly_subcategory_rollups",
 	"finance_ledger_entries",
 	"finance_ledger_entry_sources",
+	"finance_ledger_entry_overrides",
 	"finance_patterns",
 	"finance_export_runs",
 	"finance_export_items",
@@ -882,6 +902,7 @@ const REQUIRED_CANONICAL_COLUMNS = {
 	classification_results: ["schema_version", "prompt_sha256"],
 	message_labels: ["schema_version"],
 	message_secondary_results: ["prompt_sha256"],
+	review_classification_heads: ["resolution_note", "decided_at"],
 	registry_identities: ["source_kind"],
 	registry_institutions: ["source_kind"],
 	registry_financial_accounts: ["source_kind"],
@@ -916,6 +937,11 @@ const REQUIRED_CANONICAL_COLUMNS = {
 		"notes",
 		"source_path",
 	],
+	finance_ledger_entries: [
+		"occurred_at_precision",
+		"posted_at_precision",
+		"cleared_at_precision",
+	],
 } as const;
 
 const ADOPTABLE_CANONICAL_COLUMNS = {
@@ -937,6 +963,10 @@ const ADOPTABLE_CANONICAL_COLUMNS = {
 		"ALTER TABLE message_labels ADD COLUMN schema_version TEXT NOT NULL DEFAULT 'message-label.v1';",
 	"message_secondary_results.prompt_sha256":
 		"ALTER TABLE message_secondary_results ADD COLUMN prompt_sha256 TEXT;",
+	"review_classification_heads.resolution_note":
+		"ALTER TABLE review_classification_heads ADD COLUMN resolution_note TEXT;",
+	"review_classification_heads.decided_at":
+		"ALTER TABLE review_classification_heads ADD COLUMN decided_at TEXT;",
 	"registry_identities.source_kind":
 		"ALTER TABLE registry_identities ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'operator';",
 	"registry_institutions.source_kind":
@@ -993,6 +1023,12 @@ const ADOPTABLE_CANONICAL_COLUMNS = {
 		"ALTER TABLE finance_account_mappings ADD COLUMN notes TEXT;",
 	"finance_account_mappings.source_path":
 		"ALTER TABLE finance_account_mappings ADD COLUMN source_path TEXT;",
+	"finance_ledger_entries.occurred_at_precision":
+		"ALTER TABLE finance_ledger_entries ADD COLUMN occurred_at_precision TEXT NOT NULL DEFAULT 'unknown';",
+	"finance_ledger_entries.posted_at_precision":
+		"ALTER TABLE finance_ledger_entries ADD COLUMN posted_at_precision TEXT NOT NULL DEFAULT 'unknown';",
+	"finance_ledger_entries.cleared_at_precision":
+		"ALTER TABLE finance_ledger_entries ADD COLUMN cleared_at_precision TEXT NOT NULL DEFAULT 'unknown';",
 } as const;
 
 type CanonicalColumnRef = keyof typeof ADOPTABLE_CANONICAL_COLUMNS;
@@ -1361,6 +1397,12 @@ export function runMigrations(orgId = currentOrgId()) {
 		if (applied.has(file)) {
 			continue;
 		}
+		if (file === "009_unified_workflows_text_source_overrides.sql") {
+			prepareUnifiedWorkflowMigration(sqlite);
+		}
+		if (file === "011_finance_ledger_date_precision.sql") {
+			prepareFinanceLedgerDatePrecisionMigration(sqlite);
+		}
 		const sql = readFileSync(resolve(MIGRATIONS_DIR, file), "utf8");
 		sqlite.exec(sql);
 		insertMigration.run(file, nowIso());
@@ -1474,6 +1516,48 @@ function addMissingAdoptableCanonicalColumns(
 			backfillConnectionState(sqlite);
 		}
 	}
+}
+
+function prepareUnifiedWorkflowMigration(sqlite: Database.Database) {
+	if (tableNames(sqlite).has("review_classification_heads")) {
+		addColumnIfMissing(
+			sqlite,
+			"review_classification_heads",
+			"resolution_note",
+			"ALTER TABLE review_classification_heads ADD COLUMN resolution_note TEXT;",
+		);
+		addColumnIfMissing(
+			sqlite,
+			"review_classification_heads",
+			"decided_at",
+			"ALTER TABLE review_classification_heads ADD COLUMN decided_at TEXT;",
+		);
+	}
+}
+
+function prepareFinanceLedgerDatePrecisionMigration(sqlite: Database.Database) {
+	if (!tableNames(sqlite).has("finance_ledger_entries")) {
+		return;
+	}
+
+	addColumnIfMissing(
+		sqlite,
+		"finance_ledger_entries",
+		"occurred_at_precision",
+		"ALTER TABLE finance_ledger_entries ADD COLUMN occurred_at_precision TEXT NOT NULL DEFAULT 'unknown';",
+	);
+	addColumnIfMissing(
+		sqlite,
+		"finance_ledger_entries",
+		"posted_at_precision",
+		"ALTER TABLE finance_ledger_entries ADD COLUMN posted_at_precision TEXT NOT NULL DEFAULT 'unknown';",
+	);
+	addColumnIfMissing(
+		sqlite,
+		"finance_ledger_entries",
+		"cleared_at_precision",
+		"ALTER TABLE finance_ledger_entries ADD COLUMN cleared_at_precision TEXT NOT NULL DEFAULT 'unknown';",
+	);
 }
 
 export async function ensureAccountOwnershipBackfill(orgId = currentOrgId()) {
