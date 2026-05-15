@@ -4,6 +4,7 @@ import {
 	bootDb,
 	insertMessageLabelRow,
 	insertMessageRow,
+	insertMessageSourceRow,
 	insertSecondaryResultRow,
 } from "#/test/helpers/db";
 import {
@@ -135,6 +136,96 @@ describe("finance knowledge", () => {
 		expect(sources[0]).toMatchObject({
 			source_kind: "email",
 			message_id: "message-finance-ready",
+		});
+	});
+
+	it("recovers exact posted_at from message timestamps for partial email dates", async () => {
+		const runtime = await createTestRuntime();
+		const { db } = await bootDb({ seedDefaultAccount: true });
+		await seedMapping(db);
+		const messageId = await seedFinanceMessage(db, {
+			messageId: "message-finance-partial-date",
+			receivedAt: "2026-02-01T06:45:35.000Z",
+			result: buildFinanceIntelV3({
+				transactionCandidates: [
+					{
+						merchantOrCounterparty: "DigitalOcean",
+						amount: "42.00",
+						occurredAt: "2026-01",
+						postedAt: null,
+						clearedAt: null,
+						dedupe: {
+							normalizedComposite: null,
+							emailEvidenceKey: "email:message-finance-partial-date",
+						},
+					},
+				],
+			}),
+		});
+		await insertMessageSourceRow(db, {
+			messageId,
+			accountId: "acct-1",
+			remoteMessageId: "remote-partial-date",
+			remoteThreadId: "thread-partial-date",
+			rawRfc822Path: null,
+		});
+
+		const financeKnowledge = await runtime.importFresh<
+			typeof import("#/lib/finance-knowledge")
+		>("#/lib/finance-knowledge");
+		const first = await financeKnowledge.rebuildFinanceKnowledge();
+		const firstEntry = await db
+			.selectFrom("finance_ledger_entries")
+			.select([
+				"status",
+				"canonical_key",
+				"occurred_at",
+				"occurred_at_precision",
+				"posted_at",
+				"posted_at_precision",
+				"ledger_metadata_json",
+			])
+			.executeTakeFirstOrThrow();
+		const firstMetadata = JSON.parse(firstEntry.ledger_metadata_json) as Record<
+			string,
+			unknown
+		>;
+
+		expect(first).toMatchObject({ ready: 1, review: 0 });
+		expect(firstEntry).toMatchObject({
+			status: "ready",
+			canonical_key:
+				"composite:business|acct:checking|2026-02-01|42-00|USD|digitalocean",
+			occurred_at: "2026-01",
+			occurred_at_precision: "month",
+			posted_at: "2026-02-01T06:45:35.000Z",
+			posted_at_precision: "datetime",
+		});
+		expect(firstMetadata.dateRecovery).toMatchObject({
+			recoveredField: "posted_at",
+			recoveredFrom: "message_received_at",
+			recoveredValue: "2026-02-01T06:45:35.000Z",
+			originalPeriod: "2026-01",
+		});
+
+		const second = await financeKnowledge.rebuildFinanceKnowledge();
+		const secondEntry = await db
+			.selectFrom("finance_ledger_entries")
+			.select(["canonical_key", "posted_at", "ledger_metadata_json"])
+			.executeTakeFirstOrThrow();
+
+		expect(second).toMatchObject({ ready: 1, review: 0 });
+		expect(secondEntry).toMatchObject({
+			canonical_key:
+				"composite:business|acct:checking|2026-02-01|42-00|USD|digitalocean",
+			posted_at: "2026-02-01T06:45:35.000Z",
+		});
+		expect(JSON.parse(secondEntry.ledger_metadata_json)).toMatchObject({
+			dateRecovery: {
+				recoveredField: "posted_at",
+				recoveredFrom: "message_received_at",
+				originalPeriod: "2026-01",
+			},
 		});
 	});
 

@@ -118,7 +118,7 @@ function requireEnv(
 	return value;
 }
 
-function testAuthBypassEnabled() {
+export function testAuthBypassEnabled() {
 	return (
 		process.env.NODE_ENV === "test" &&
 		process.env.ZMAIL_TEST_AUTH_BYPASS === "true"
@@ -228,7 +228,7 @@ function wantsStructuredAuthFailure(c: Context) {
 	return (
 		pathname.startsWith("/rpc/") ||
 		pathname.startsWith("/api/") ||
-		pathname === "/events" ||
+		pathname === "/ws" ||
 		c.req.header("x-requested-with") === "zmail-client" ||
 		c.req.header("x-requested-with") === "zmail-nav" ||
 		c.req.header("x-requested-with") === "zmail-prefetch" ||
@@ -384,13 +384,22 @@ async function browserPrincipalFromCookie(c: Context) {
 	if (!sessionData) {
 		return null;
 	}
+	return browserPrincipalFromSessionData(sessionData, () => {
+		deleteCookie(c, SESSION_COOKIE, { path: "/" });
+	});
+}
+
+async function browserPrincipalFromSessionData(
+	sessionData: string,
+	onInvalid?: () => void,
+) {
 	const workos = getWorkOS();
 	const result = await workos.userManagement.authenticateWithSessionCookie({
 		sessionData,
 		cookiePassword: requireEnv("WORKOS_COOKIE_PASSWORD"),
 	});
 	if (!result.authenticated) {
-		deleteCookie(c, SESSION_COOKIE, { path: "/" });
+		onInvalid?.();
 		return null;
 	}
 	const principal: BrowserPrincipal = {
@@ -405,6 +414,54 @@ async function browserPrincipalFromCookie(c: Context) {
 		authMode: "workos",
 	};
 	return principal;
+}
+
+function cookieValue(cookieHeader: string | null | undefined, name: string) {
+	for (const part of (cookieHeader ?? "").split(";")) {
+		const separator = part.indexOf("=");
+		if (separator < 0) {
+			continue;
+		}
+		const key = part.slice(0, separator).trim();
+		if (key !== name) {
+			continue;
+		}
+		return decodeURIComponent(part.slice(separator + 1).trim());
+	}
+	return null;
+}
+
+export async function resolveBrowserPrincipalFromRequest(request: Request) {
+	if (request.headers.get("authorization")?.startsWith("Bearer ")) {
+		return {
+			ok: false as const,
+			status: 401 as const,
+			error: "machine_tokens_not_allowed",
+		};
+	}
+	if (testAuthBypassEnabled()) {
+		return { ok: true as const, principal: testBrowserPrincipal() };
+	}
+	const sessionData = cookieValue(
+		request.headers.get("cookie"),
+		SESSION_COOKIE,
+	);
+	if (!sessionData) {
+		return {
+			ok: false as const,
+			status: 401 as const,
+			error: "unauthenticated",
+		};
+	}
+	const principal = await browserPrincipalFromSessionData(sessionData);
+	if (!principal) {
+		return {
+			ok: false as const,
+			status: 401 as const,
+			error: "unauthenticated",
+		};
+	}
+	return { ok: true as const, principal };
 }
 
 async function listActiveMemberships(

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { z } from "zod";
-
+import { summarizeExportReadiness } from "#/lib/beancount-export";
 import {
 	APP_CONFIG,
 	CLASSIFY_PROMPT_VERSION,
@@ -103,6 +103,199 @@ function uniqueStrings(values: Array<string | null | undefined>) {
 				.filter((value) => value.length > 0),
 		),
 	);
+}
+
+type FinanceDrilldownDirection = "all" | "income" | "expense";
+
+type FinanceDrilldownRequest =
+	| {
+			kind: "month";
+			token: string;
+			month: string;
+			direction: FinanceDrilldownDirection;
+	  }
+	| {
+			kind: "category";
+			token: string;
+			primaryCategory: string;
+			secondaryCategory: string | null;
+			direction: FinanceDrilldownDirection;
+	  }
+	| {
+			kind: "rollup";
+			token: string;
+			sourceKind: string;
+			primaryCategory: string;
+	  };
+
+type FinanceDrilldownLedgerRow = {
+	sourceKind: string;
+	year: number;
+	accountId: string | null;
+	primaryCategory: string;
+	secondaryCategory: string | null;
+	direction: string;
+	amountMinor: number | null;
+	occurredAt: string | null;
+	ownerIdentityId: string | null;
+	institutionId: string | null;
+	financialAccountId: string | null;
+	description: string | null;
+	counterparty: string | null;
+	status: string;
+	canonicalKey: string;
+	book: string;
+	accountMappingKey: string | null;
+};
+
+function parseFinanceDrilldownDirection(value: string | undefined) {
+	return value === "all" || value === "income" || value === "expense"
+		? value
+		: null;
+}
+
+export function parseFinanceDrilldownToken(
+	value: string | null | undefined,
+): FinanceDrilldownRequest | null {
+	const token = value?.trim();
+	if (!token) {
+		return null;
+	}
+	const parts = token.split(":");
+	if (parts[0] === "month" && parts.length === 3) {
+		const direction = parseFinanceDrilldownDirection(parts[2]);
+		if (!direction || !/^\d{4}-\d{2}$/.test(parts[1] ?? "")) {
+			return null;
+		}
+		return { kind: "month", token, month: parts[1] ?? "", direction };
+	}
+	if (parts[0] === "category" && parts.length === 4) {
+		const direction = parseFinanceDrilldownDirection(parts[3]);
+		const primaryCategory = parts[1]?.trim() ?? "";
+		const secondaryCategory = parts[2]?.trim() ?? "";
+		if (!direction || !primaryCategory || !secondaryCategory) {
+			return null;
+		}
+		return {
+			kind: "category",
+			token,
+			primaryCategory,
+			secondaryCategory: secondaryCategory === "*" ? null : secondaryCategory,
+			direction,
+		};
+	}
+	if (parts[0] === "rollup" && parts.length === 3) {
+		const sourceKind = parts[1]?.trim() ?? "";
+		const primaryCategory = parts[2]?.trim() ?? "";
+		if (!sourceKind || !primaryCategory) {
+			return null;
+		}
+		return { kind: "rollup", token, sourceKind, primaryCategory };
+	}
+	return null;
+}
+
+function matchesFinanceDrilldownDirection(
+	entry: FinanceDrilldownLedgerRow,
+	direction: FinanceDrilldownDirection,
+) {
+	return direction === "all" || entry.direction === direction;
+}
+
+function financeDrilldownTitle(request: FinanceDrilldownRequest) {
+	if (request.kind === "month") {
+		return `${request.month} cashflow`;
+	}
+	if (request.kind === "category") {
+		return request.secondaryCategory
+			? `${request.primaryCategory} / ${request.secondaryCategory}`
+			: request.primaryCategory;
+	}
+	return `${request.sourceKind} / ${request.primaryCategory}`;
+}
+
+function financeDrilldownSubtitle(request: FinanceDrilldownRequest) {
+	if (request.kind === "rollup") {
+		return "Rollup source and primary category within current filters.";
+	}
+	return `${request.direction} rows within current filters.`;
+}
+
+function sortFinanceDrilldownRows(
+	left: FinanceDrilldownLedgerRow,
+	right: FinanceDrilldownLedgerRow,
+) {
+	return (
+		(right.occurredAt ?? "").localeCompare(left.occurredAt ?? "") ||
+		left.canonicalKey.localeCompare(right.canonicalKey)
+	);
+}
+
+function buildFinanceDrilldown(input: {
+	request: FinanceDrilldownRequest | null;
+	ledger: FinanceDrilldownLedgerRow[];
+	appliedFilters: Record<string, unknown>;
+}) {
+	const request = input.request;
+	if (!request) {
+		return null;
+	}
+	const matches = input.ledger
+		.filter((entry) => entry.status !== "duplicate")
+		.filter((entry) => {
+			if (request.kind === "month") {
+				return (
+					(entry.occurredAt ?? "").startsWith(request.month) &&
+					matchesFinanceDrilldownDirection(entry, request.direction)
+				);
+			}
+			if (request.kind === "category") {
+				return (
+					entry.primaryCategory === request.primaryCategory &&
+					(request.secondaryCategory === null ||
+						entry.secondaryCategory === request.secondaryCategory) &&
+					matchesFinanceDrilldownDirection(entry, request.direction)
+				);
+			}
+			if (request.kind === "rollup") {
+				return (
+					(entry.status === "ready" || entry.status === "review") &&
+					entry.sourceKind === request.sourceKind &&
+					entry.primaryCategory === request.primaryCategory
+				);
+			}
+			return false;
+		})
+		.sort(sortFinanceDrilldownRows);
+	const totals = matches.reduce(
+		(acc, entry) => {
+			const amount = Math.abs(entry.amountMinor ?? 0);
+			if (entry.direction === "income") {
+				acc.inflowMinor += amount;
+				acc.netMinor += amount;
+			} else if (entry.direction === "expense") {
+				acc.outflowMinor += amount;
+				acc.netMinor -= amount;
+			}
+			return acc;
+		},
+		{ inflowMinor: 0, outflowMinor: 0, netMinor: 0 },
+	);
+	return {
+		token: request.token,
+		kind: request.kind,
+		title: financeDrilldownTitle(request),
+		subtitle: financeDrilldownSubtitle(request),
+		totals,
+		rowCount: matches.length,
+		overflowCount: Math.max(0, matches.length - 100),
+		rows: matches.slice(0, 100),
+		emptyReason:
+			matches.length === 0
+				? "No ledger rows match this drilldown under current filters."
+				: null,
+		appliedFilters: input.appliedFilters,
+	};
 }
 
 function normalizeMessagesInput(input: MessagesDataInput = {}) {
@@ -1198,6 +1391,7 @@ export async function loadFinanceData(
 		institutionId?: string;
 		ownerIdentityId?: string;
 		sourceKind?: import("#/lib/schemas").FinanceFilterSourceKind;
+		drilldown?: string | null;
 	} = {},
 ) {
 	return runLoggedAction({
@@ -1222,6 +1416,7 @@ export async function loadFinanceData(
 				accountRows,
 				exportRuns,
 				exportItems,
+				rawLedgerRows,
 				patternRows,
 				mappingRows,
 				reviewFindingRows,
@@ -1337,6 +1532,7 @@ export async function loadFinanceData(
 					.orderBy("created_at", "desc")
 					.limit(500)
 					.execute(),
+				db.selectFrom("finance_ledger_entries").selectAll().execute(),
 				db
 					.selectFrom("finance_patterns")
 					.selectAll()
@@ -1545,6 +1741,12 @@ export async function loadFinanceData(
 					? canonicalFinanceSourceKind(row.source_kind) === input.sourceKind
 					: true,
 			);
+			const filteredCanonicalKeys = new Set(
+				filteredLedger.map((entry) => entry.canonicalKey),
+			);
+			const filteredRawLedgerRows = rawLedgerRows.filter((row) =>
+				filteredCanonicalKeys.has(row.canonical_key),
+			);
 			const hasGranularFilters = Boolean(
 				input.accountId ||
 					input.institutionId ||
@@ -1560,18 +1762,29 @@ export async function loadFinanceData(
 			});
 			const summary = derivedRollups.summary;
 			const yearLedger = ledger.filter((entry) => entry.year === selectedYear);
-			const readinessRows = yearLedger.filter(
-				(entry) => entry.status !== "duplicate",
+			const readinessSummary = summarizeExportReadiness(
+				filteredRawLedgerRows.map((row) => ({ row })),
 			);
+			const appliedFinanceFilters = {
+				year: selectedYear,
+				accountId: input.accountId ?? null,
+				institutionId: input.institutionId ?? null,
+				ownerIdentityId: input.ownerIdentityId ?? null,
+				sourceKind: input.sourceKind ?? null,
+			};
+			const drilldown = buildFinanceDrilldown({
+				request: parseFinanceDrilldownToken(input.drilldown),
+				ledger: filteredLedger,
+				appliedFilters: appliedFinanceFilters,
+			});
 			const readiness = {
 				year: selectedYear,
+				scope: appliedFinanceFilters,
 				statusCounts: {
-					ready: readinessRows.filter((row) => row.status === "ready").length,
-					review: readinessRows.filter((row) => row.status === "review").length,
-					blocked: readinessRows.filter((row) => row.status === "blocked")
-						.length,
-					duplicate: yearLedger.filter((row) => row.status === "duplicate")
-						.length,
+					ready: readinessSummary.readyCount,
+					review: readinessSummary.reviewCount,
+					blocked: readinessSummary.blockedCount,
+					duplicate: readinessSummary.duplicateCount,
 				},
 				openJobsThatMayChangeTotals: Object.entries(jobCounts).flatMap(
 					([kind, counts]) =>
@@ -1581,20 +1794,23 @@ export async function loadFinanceData(
 				),
 				mappingCoverage: {
 					mappingCount: mappingRows.length,
-					mappedRows: readinessRows.filter((row) => row.accountMappingKey)
-						.length,
-					totalRows: readinessRows.length,
+					mappedRows: readinessSummary.mappingCoverage.mappedRows,
+					totalRows: readinessSummary.mappingCoverage.totalRows,
+					ratio: readinessSummary.mappingCoverage.ratio,
 				},
 				missing: {
-					amount: readinessRows.filter((row) => row.amountMinor === null)
-						.length,
-					date: readinessRows.filter((row) => !row.occurredAt).length,
-					counterparty: readinessRows.filter((row) => !row.counterparty).length,
-					mapping: readinessRows.filter((row) => !row.accountMappingKey).length,
-					book: readinessRows.filter(
-						(row) => row.book === "unknown" || !row.book,
-					).length,
-					dedupe: readinessRows.filter((row) => !row.canonicalKey).length,
+					amount: readinessSummary.missingAmountCount,
+					currency: readinessSummary.missingCurrencyCount,
+					date: readinessSummary.missingDateCount,
+					counterparty: readinessSummary.missingCounterpartyCount,
+					mapping:
+						readinessSummary.mappingCoverage.totalRows -
+						readinessSummary.mappingCoverage.mappedRows,
+					book: readinessSummary.invalidBookCount,
+					dedupe: readinessSummary.missingDedupeCount,
+					mixedBusinessUsePercent:
+						readinessSummary.mixedMissingBusinessUsePercentCount,
+					badDirection: readinessSummary.badDirectionCount,
 				},
 				freshness: {
 					registryImportedAt: registry.importedAt,
@@ -1774,6 +1990,7 @@ export async function loadFinanceData(
 				registry,
 				coverage,
 				readiness,
+				drilldown,
 				pipelineStatus: {
 					rootFinanceRelevantCount: coverage.rootFinanceRelevantCount,
 					financeHeadCount: coverage.totalHeads,
@@ -1795,10 +2012,13 @@ export async function loadFinanceData(
 				categoryBreakdown,
 				subscriptionPatterns,
 				exportHealth: {
-					readyCount: coverage.ledgerReadyCount,
-					reviewCount: coverage.ledgerReviewCount,
-					blockedCount: coverage.ledgerBlockedCount,
-					duplicateCount: coverage.ledgerDuplicateCount,
+					readyCount: readiness.statusCounts.ready,
+					reviewCount: readiness.statusCounts.review,
+					blockedCount: readiness.statusCounts.blocked,
+					duplicateCount: readiness.statusCounts.duplicate,
+					mappingCoverage: readiness.mappingCoverage,
+					missing: readiness.missing,
+					auditOnly: readiness.statusCounts.ready === 0,
 					latestExport: latestExport
 						? {
 								id: latestExport.id,
@@ -3124,7 +3344,7 @@ export async function resolveReviewClassifierFindingCommand(input: unknown) {
 					targetKind: parsed.targetKind,
 					targetId: parsed.targetId,
 					status: nextStatus,
-					changeHints: { islands: ["review.stats", "review.queue"] },
+					invalidate: ["zmail:review", "zmail:finance"],
 				},
 			});
 			return { status: nextStatus, jobs };

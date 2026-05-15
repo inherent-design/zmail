@@ -61,15 +61,16 @@ export const UNIT_BUCKETS: UnitBucket[] = [
 			"test/unit/db.test.ts",
 			"test/unit/new-schemas.test.ts",
 			"test/unit/schemas.test.ts",
-			"test/unit/ui-targets.test.ts",
+			"test/unit/client-contract.test.ts",
+			"test/unit/sveltekit-invalidation.test.ts",
 		],
 		coverageInclude: [
+			"lib/client-contract.ts",
 			"lib/app-config.ts",
 			"lib/config.ts",
 			"lib/db.ts",
 			"lib/runtime.ts",
 			"lib/schemas.ts",
-			"lib/ui-targets.ts",
 		],
 	},
 	{
@@ -79,11 +80,13 @@ export const UNIT_BUCKETS: UnitBucket[] = [
 			"test/unit/google-oauth.test.ts",
 			"test/unit/machine-auth.test.ts",
 			"test/unit/server-auth.test.ts",
+			"test/unit/sveltekit-auth-locals.test.ts",
 		],
 		coverageInclude: [
 			"lib/google-oauth.ts",
 			"server/auth.ts",
 			"server/machine-auth.ts",
+			"src/hooks.server.ts",
 		],
 	},
 	{
@@ -93,13 +96,21 @@ export const UNIT_BUCKETS: UnitBucket[] = [
 			"test/unit/log.test.ts",
 			"test/unit/logging-regression.test.ts",
 			"test/unit/observability.test.ts",
+			"test/unit/realtime-ws-protocol.test.ts",
 			"test/unit/runtime-events.test.ts",
 		],
 		coverageInclude: [
 			"lib/log.ts",
 			"lib/observability.ts",
 			"lib/runtime-events.ts",
+			"server/realtime-ws.ts",
 		],
+	},
+	{
+		domain: "platform",
+		name: "platform-ui",
+		tests: ["test/unit/data-inspector-svelte.test.ts"],
+		coverageInclude: ["src/**/*.svelte", "src/**/*.ts"],
 	},
 	{
 		domain: "domain",
@@ -167,7 +178,6 @@ export const UNIT_BUCKETS: UnitBucket[] = [
 		tests: [
 			"test/unit/imap.test.ts",
 			"test/unit/sync-progress.test.ts",
-			"test/unit/sync-provider.test.ts",
 			"test/unit/sync.test.ts",
 			"test/unit/watchers.test.ts",
 		],
@@ -200,17 +210,12 @@ export const UNIT_BUCKETS: UnitBucket[] = [
 		domain: "runtime",
 		name: "runtime-scripts",
 		tests: [
-			"test/unit/data-inspector.test.ts",
 			"test/unit/scripts.test.ts",
-			"test/unit/island-registry.test.ts",
-			"test/unit/shell-nav.test.ts",
 			"test/unit/test-helpers-e2e-scenarios.test.ts",
 			"test/unit/test-helpers-labels.test.ts",
 			"test/unit/test-runner.test.ts",
 		],
 		coverageInclude: [
-			"public/client/core/island-registry.js",
-			"public/client/core/shell-nav.ts",
 			"scripts/**/*.ts",
 			"test/helpers/**/*.ts",
 			"test/e2e-playwright/scenarios.ts",
@@ -509,7 +514,6 @@ function vitestArgs(input: {
 		"run",
 		"--reporter=default",
 		"--maxWorkers=1",
-		"--minWorkers=1",
 		"--no-file-parallelism",
 		...input.tests,
 	];

@@ -212,6 +212,14 @@ Top-level fields:
 - `externalTransactionId`
 - `evidence`
 
+Date contract:
+
+- `occurredAt`, `postedAt`, and `clearedAt` may be `null`
+- when present, they must be exact `YYYY-MM-DD` values or exact ISO timestamps
+- `YYYY-MM` and `YYYY` are not valid classifier outputs for transaction date
+  fields
+- candidates with only partial dates must stay `review`, not `exportable`
+
 ### `documentCandidates[]`
 
 - `documentType`

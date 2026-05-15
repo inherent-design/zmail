@@ -111,7 +111,8 @@ Own:
 | Area | Minimum proof |
 | --- | --- |
 | Hono route/auth boundary | integration |
-| Hono JSX page and enhanced MPA contract | browser e2e |
+| SvelteKit route/component contract | unit + browser e2e |
+| Hono WebSocket runtime-event replay | unit + integration + browser e2e |
 | WorkOS org/role enforcement | integration + manual smoke |
 | Gmail sync lifecycle | unit + integration + manual smoke |
 | Moderation/root freshness | unit + integration |
@@ -208,10 +209,11 @@ Spec/source drift checks must be part of review:
 
 ## Unified Workflow Proof
 
-Unit tests cover source-kind normalization, artifact hash fallback, UI target
-normalization, node token handling, mutation parsing, multipart submission, and
-DataInspector state. Integration tests cover compatible envelopes for touched
-RPC routes, finance import legacy `statement` input, node partial headers, and
-ledger override persistence. Browser tests cover account actions, message
-classification, review decisions, finance upload source filters, node refresh,
-and DataInspector state preservation.
+Unit tests cover source-kind normalization, artifact hash fallback, client
+mutation envelope validation, WebSocket protocol parsing, SvelteKit auth locals,
+invalidation mapping, multipart submission, and DataInspector state.
+Integration tests cover compatible envelopes for touched RPC routes, finance
+import inputs, WebSocket auth rejection, WebSocket replay, and ledger override
+persistence. Browser tests cover account actions, message classification,
+review decisions, finance upload source filters, route state preservation,
+runtime-event invalidation, and DataInspector state preservation.

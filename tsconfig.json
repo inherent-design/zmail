@@ -1,18 +1,18 @@
 {
+  "extends": "./.svelte-kit/tsconfig.json",
   "include": [
+    ".svelte-kit/ambient.d.ts",
+    ".svelte-kit/non-ambient.d.ts",
+    ".svelte-kit/types/**/*.d.ts",
     "**/*.ts",
     "**/*.tsx",
+    "**/*.svelte",
     "**/*.d.ts"
   ],
   "compilerOptions": {
     "target": "ES2022",
     "jsx": "react-jsx",
     "module": "ESNext",
-    "baseUrl": ".",
-    "paths": {
-      "#/*": ["./*"],
-      "@/*": ["./*"]
-    },
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,

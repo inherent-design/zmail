@@ -557,9 +557,7 @@ export async function dispatchReviewClassifierActions(input: {
 			findings: input.result.findings.length,
 			targetedRootMessages: rootMessageIds.size,
 			targetedFinanceMessages: financeMessageIds.size,
-			changeHints: {
-				islands: ["review.findings", "finance.review", "finance.lanes"],
-			},
+			invalidate: ["zmail:review", "zmail:finance", "zmail:runs"],
 		},
 	});
 	await publishActionEvent({
@@ -570,9 +568,7 @@ export async function dispatchReviewClassifierActions(input: {
 		payload: {
 			resultId: input.resultId,
 			findings: input.result.findings.length,
-			changeHints: {
-				islands: ["finance.review", "finance.lanes"],
-			},
+			invalidate: ["zmail:finance", "zmail:runs"],
 		},
 	});
 }
@@ -630,15 +626,7 @@ ${JSON.stringify(reviewClassifierJsonSchema, null, 2)}`,
 		payload: {
 			resultId,
 			findings: parsed.findings.length,
-			changeHints: {
-				islands: ["review.stats", "review.queue", "review.actions"],
-				nodes: parsed.findings.map((finding) => ({
-					type: "node",
-					islandId: "review.queue",
-					nodeId: "review.finding.item",
-					key: `${finding.targetKind}:${finding.targetId}`,
-				})),
-			},
+			invalidate: ["zmail:review", "zmail:runs"],
 		},
 	});
 	await publishActionEvent({
@@ -649,15 +637,7 @@ ${JSON.stringify(reviewClassifierJsonSchema, null, 2)}`,
 		payload: {
 			resultId,
 			findings: parsed.findings.length,
-			changeHints: {
-				islands: ["finance.review", "finance.lanes"],
-				nodes: parsed.findings.map((finding) => ({
-					type: "node",
-					islandId: "finance.review",
-					nodeId: "finance.review.finding",
-					key: `${finding.targetKind}:${finding.targetId}`,
-				})),
-			},
+			invalidate: ["zmail:finance", "zmail:runs"],
 		},
 	});
 	return {

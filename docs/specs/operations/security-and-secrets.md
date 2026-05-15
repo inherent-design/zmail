@@ -25,6 +25,9 @@ No operator API is implicitly trusted because it is “running on localhost”.
 - every protected page requires a valid session
 - every org-scoped request requires `org_id`
 - permission checks happen before storage access
+- `/ws` accepts browser session auth only and rejects bearer tokens
+- browser CSP `connect-src` must allow same-origin HTTP plus same-origin
+  `ws:`/`wss:` WebSocket connections
 
 ### Automation
 

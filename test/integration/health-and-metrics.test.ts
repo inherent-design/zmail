@@ -25,9 +25,7 @@ async function loadServerApp(input?: {
 	}
 	vi.resetModules();
 	const { app } =
-		await runtime.importFresh<typeof import("#/server/index")>(
-			"#/server/index",
-		);
+		await runtime.importFresh<typeof import("#/server/app")>("#/server/app");
 	return { app, runtime };
 }
 

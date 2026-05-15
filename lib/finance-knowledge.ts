@@ -4,6 +4,11 @@ import { nowIso } from "#/lib/config";
 import { getDb, jsonText, safeJsonParse } from "#/lib/db";
 import { parseAmountMinor } from "#/lib/finance-imports";
 import {
+	dateRecoveryMetadata,
+	precisionForLedgerDate,
+	resolveLedgerDateForComposite,
+} from "#/lib/finance-ledger-dates";
+import {
 	type FinanceIntelV3,
 	normalizeFinanceImportSourceKind,
 	parseCurrentFinanceIntel,
@@ -28,8 +33,11 @@ interface LedgerEntryDraft {
 	status: LedgerStatus;
 	source_authority: string;
 	occurred_at: string | null;
+	occurred_at_precision: string;
 	posted_at: string | null;
+	posted_at_precision: string;
 	cleared_at: string | null;
+	cleared_at_precision: string;
 	description: string | null;
 	counterparty: string | null;
 	direction: string;
@@ -121,6 +129,13 @@ function compositeCanonicalKey(composite: string) {
 	return `composite:${composite}`;
 }
 
+function metadataWithDateRecovery(
+	metadata: Record<string, unknown>,
+	dateRecovery: Record<string, unknown> | null,
+) {
+	return dateRecovery ? { ...metadata, dateRecovery } : metadata;
+}
+
 function accountFromMapping(
 	mappings: Map<string, AccountMapping>,
 	mappingKey: string | null,
@@ -142,7 +157,7 @@ function statusForDraft(input: {
 	book: string;
 	businessUsePercent: number | null;
 	amountMinor: number | null;
-	date: string | null;
+	beancountDate: string | null;
 	counterparty: string | null;
 	debitAccount: string | null;
 	creditAccount: string | null;
@@ -156,7 +171,7 @@ function statusForDraft(input: {
 	}
 	if (
 		input.amountMinor === null ||
-		!input.date ||
+		!input.beancountDate ||
 		!input.counterparty ||
 		!isMapped(input)
 	) {
@@ -312,17 +327,45 @@ export async function rebuildFinanceKnowledge() {
 				mapping?.currency ??
 				null;
 			const amountMinor = parseAmountMinor(transaction.amount);
-			const date =
-				transaction.occurredAt ??
-				transaction.postedAt ??
-				transaction.clearedAt ??
-				row.received_at;
+			const originalOccurredAt = transaction.occurredAt;
+			let postedAt = transaction.postedAt;
+			const clearedAt = transaction.clearedAt;
+			const existingExactDate = resolveLedgerDateForComposite({
+				occurredAt: originalOccurredAt,
+				postedAt,
+				clearedAt,
+			});
+			const shouldRecoverPostedAt =
+				!existingExactDate &&
+				["month", "year"].includes(
+					precisionForLedgerDate(originalOccurredAt),
+				) &&
+				Boolean(resolveLedgerDateForComposite({ postedAt: row.received_at }));
+			const dateRecovery = shouldRecoverPostedAt
+				? dateRecoveryMetadata({
+						originalOccurredAt,
+						originalPostedAt: postedAt,
+						originalClearedAt: clearedAt,
+						recoveredField: "posted_at",
+						recoveredFrom: "message_received_at",
+						recoveredValue: row.received_at ?? null,
+						sourceMessageReceivedAt: row.received_at ?? null,
+					})
+				: null;
+			if (shouldRecoverPostedAt) {
+				postedAt = row.received_at;
+			}
+			const compositeDate = resolveLedgerDateForComposite({
+				occurredAt: originalOccurredAt,
+				postedAt,
+				clearedAt,
+			});
 			const composite =
 				transaction.dedupe.normalizedComposite ??
 				normalizedComposite({
 					book: transaction.book,
 					account: transaction.financialAccountRef,
-					date,
+					date: compositeDate,
 					amount: transaction.amount,
 					currency,
 					counterparty: transaction.merchantOrCounterparty,
@@ -344,7 +387,7 @@ export async function rebuildFinanceKnowledge() {
 				book: transaction.book,
 				businessUsePercent: transaction.businessUsePercent,
 				amountMinor,
-				date,
+				beancountDate: compositeDate?.slice(0, 10) ?? null,
 				counterparty: transaction.merchantOrCounterparty,
 				debitAccount,
 				creditAccount,
@@ -355,9 +398,12 @@ export async function rebuildFinanceKnowledge() {
 				canonical_key: key,
 				status,
 				source_authority: "email",
-				occurred_at: transaction.occurredAt,
-				posted_at: transaction.postedAt,
-				cleared_at: transaction.clearedAt,
+				occurred_at: originalOccurredAt,
+				occurred_at_precision: precisionForLedgerDate(originalOccurredAt),
+				posted_at: postedAt,
+				posted_at_precision: precisionForLedgerDate(postedAt),
+				cleared_at: clearedAt,
+				cleared_at_precision: precisionForLedgerDate(clearedAt),
 				description: transaction.evidence,
 				counterparty: transaction.merchantOrCounterparty,
 				direction: transaction.direction,
@@ -370,15 +416,20 @@ export async function rebuildFinanceKnowledge() {
 				credit_account: creditAccount,
 				account_mapping_key: transaction.beancount.mappingKey,
 				field_confidence_json: jsonText(transaction.fieldConfidence),
-				ledger_metadata_json: jsonText({
-					categoryPrimary: transaction.categoryPrimary ?? "uncategorized",
-					categorySecondary: transaction.categorySecondary,
-					ownerIdentityId: transaction.ownerIdentityRef,
-					financialAccountId: transaction.financialAccountRef,
-					institutionId: transaction.institutionRef,
-					rootFinanceSignal: rootLabel.finance.signal,
-					subject: row.subject,
-				}),
+				ledger_metadata_json: jsonText(
+					metadataWithDateRecovery(
+						{
+							categoryPrimary: transaction.categoryPrimary ?? "uncategorized",
+							categorySecondary: transaction.categorySecondary,
+							ownerIdentityId: transaction.ownerIdentityRef,
+							financialAccountId: transaction.financialAccountRef,
+							institutionId: transaction.institutionRef,
+							rootFinanceSignal: rootLabel.finance.signal,
+							subject: row.subject,
+						},
+						dateRecovery,
+					),
+				),
 				raw_payload_json: jsonText(transaction),
 				created_at: now,
 				updated_at: now,
@@ -422,12 +473,16 @@ export async function rebuildFinanceKnowledge() {
 			row.import_source_kind,
 		);
 		const mapping = accountFromMapping(mappings, row.account_mapping_key);
-		const date = row.occurred_at ?? row.posted_at ?? row.cleared_at;
+		const compositeDate = resolveLedgerDateForComposite({
+			occurredAt: row.occurred_at,
+			postedAt: row.posted_at,
+			clearedAt: row.cleared_at,
+		});
 		const currency = row.currency ?? mapping?.currency ?? null;
 		const composite = normalizedComposite({
 			book: row.book_hint,
 			account: row.financial_account_hint,
-			date,
+			date: compositeDate,
 			amount: row.amount_value,
 			currency,
 			counterparty: row.merchant_or_counterparty ?? row.description,
@@ -453,7 +508,7 @@ export async function rebuildFinanceKnowledge() {
 			book: row.book_hint,
 			businessUsePercent: row.business_use_percent,
 			amountMinor: row.amount_minor,
-			date,
+			beancountDate: compositeDate?.slice(0, 10) ?? null,
 			counterparty: row.merchant_or_counterparty ?? row.description,
 			debitAccount: mapping?.debitAccount ?? null,
 			creditAccount: mapping?.creditAccount ?? null,
@@ -465,8 +520,11 @@ export async function rebuildFinanceKnowledge() {
 			status,
 			source_authority: importSourceKind,
 			occurred_at: row.occurred_at,
+			occurred_at_precision: precisionForLedgerDate(row.occurred_at),
 			posted_at: row.posted_at,
+			posted_at_precision: precisionForLedgerDate(row.posted_at),
 			cleared_at: row.cleared_at,
+			cleared_at_precision: precisionForLedgerDate(row.cleared_at),
 			description: row.description,
 			counterparty: row.merchant_or_counterparty ?? row.description,
 			direction: row.direction,
@@ -480,7 +538,7 @@ export async function rebuildFinanceKnowledge() {
 			account_mapping_key: row.account_mapping_key,
 			field_confidence_json: jsonText({
 				amount: row.amount_minor === null ? 0 : row.extraction_confidence,
-				date: date ? row.extraction_confidence : 0,
+				date: compositeDate ? row.extraction_confidence : 0,
 				counterparty:
 					row.merchant_or_counterparty || row.description
 						? row.extraction_confidence
@@ -595,12 +653,30 @@ function buildFinancePatterns(entries: LedgerEntryDraft[], now: string) {
 			}),
 			first_seen_at:
 				rows
-					.map((row) => row.occurred_at ?? row.posted_at)
+					.map(
+						(row) =>
+							resolveLedgerDateForComposite({
+								occurredAt: row.occurred_at,
+								postedAt: row.posted_at,
+								clearedAt: row.cleared_at,
+							}) ??
+							row.occurred_at ??
+							row.posted_at,
+					)
 					.filter((value): value is string => Boolean(value))
 					.sort()[0] ?? null,
 			last_seen_at:
 				rows
-					.map((row) => row.occurred_at ?? row.posted_at)
+					.map(
+						(row) =>
+							resolveLedgerDateForComposite({
+								occurredAt: row.occurred_at,
+								postedAt: row.posted_at,
+								clearedAt: row.cleared_at,
+							}) ??
+							row.occurred_at ??
+							row.posted_at,
+					)
 					.filter((value): value is string => Boolean(value))
 					.sort()
 					.at(-1) ?? null,

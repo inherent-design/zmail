@@ -3,6 +3,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { nowIso } from "#/lib/config";
 import { getDb, jsonText } from "#/lib/db";
 import {
+	precisionForLedgerDate,
+	resolveLedgerDateForComposite,
+} from "#/lib/finance-ledger-dates";
+import {
 	type FinanceSourceImport,
 	financeSourceImportSchema,
 } from "#/lib/schemas";
@@ -71,6 +75,24 @@ function v2Number(value: object, key: string) {
 function v2Record(value: object, key: string) {
 	const raw = v2RawValue(value, key);
 	return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+}
+
+export function classifyImportTransactionDates(transaction: object) {
+	const occurredAt = v2String(transaction, "occurredAt");
+	const postedAt = v2String(transaction, "postedAt");
+	const clearedAt = v2String(transaction, "clearedAt");
+	return {
+		occurredAtPrecision: precisionForLedgerDate(occurredAt),
+		postedAtPrecision: precisionForLedgerDate(postedAt),
+		clearedAtPrecision: precisionForLedgerDate(clearedAt),
+		hasExactBeancountDate: Boolean(
+			resolveLedgerDateForComposite({
+				occurredAt,
+				postedAt,
+				clearedAt,
+			}),
+		),
+	};
 }
 
 function buildSuggestionRows(input: {
@@ -305,9 +327,10 @@ export async function importFinanceArtifact(input: unknown) {
 						extraction_confidence:
 							v2Number(transaction, "extractionConfidence") ?? 0,
 						raw_row_payload_json: jsonText(v2Record(transaction, "rawPayload")),
-						row_provenance_json: jsonText(
-							v2Record(transaction, "rowProvenance"),
-						),
+						row_provenance_json: jsonText({
+							...v2Record(transaction, "rowProvenance"),
+							dateClassification: classifyImportTransactionDates(transaction),
+						}),
 						raw_payload_json: jsonText(v2Record(transaction, "rawPayload")),
 						created_at: importedAt,
 					})),

@@ -12,8 +12,8 @@ Read these first:
 - [Spec index](./docs/specs/README.md)
 - [System overview](./docs/specs/system-overview.md)
 - [Hono application](./docs/specs/platform/hono-application.md)
-- [Hono JSX UI](./docs/specs/platform/hono-jsx-ui.md)
-- [ADR 001: Hono JSX over Ripple](./docs/specs/platform/adr-001-hono-jsx-over-ripple.md)
+- [SvelteKit UI](./docs/specs/platform/sveltekit-ui.md)
+- [ADR 002: SvelteKit UI and Hono WebSocket](./docs/specs/platform/adr-002-sveltekit-ui-and-hono-websocket.md)
 - [Auth and organizations](./docs/specs/platform/auth-and-organizations.md)
 - [Runtime storage and tenancy](./docs/specs/platform/runtime-storage-and-tenancy.md)
 - [Gmail sync and ingestion](./docs/specs/domain/gmail-sync-and-ingestion.md)
@@ -60,18 +60,18 @@ Optional local observability:
 
 The target runtime is:
 
-- `Hono` as the only HTTP server and route owner
-- `Hono JSX` as the only HTML rendering layer
+- one Node process with Hono dispatching API/auth/WebSocket routes first
+- `SvelteKit` as the browser page renderer and SSR owner
 - `WorkOS` as the auth and organization plane
 - per-org runtime roots under `data/orgs/<orgId>/...`
-- authenticated SSE plus enhanced MPA navigation
+- authenticated WebSocket runtime event delivery
 - authenticated, artifact-idempotent finance imports
 
-The legacy TanStack route/component tree has been purged. Live runtime
-ownership now sits under:
+The legacy TanStack route/component tree and Hono JSX browser UI have been
+purged. Live runtime ownership now sits under:
 
 - `server/**`
-- `public/client/**`
+- `src/**`
 - `lib/**`
 - `scripts/**`
 
@@ -116,7 +116,8 @@ The repo now includes a Node 24 container build in [`Dockerfile`](./Dockerfile)
 and keeps the runtime entrypoint equivalent to:
 
 ```bash
-tsx server/index.tsx
+pnpm build
+pnpm raw:preview
 ```
 
 ## Runtime Config
@@ -230,7 +231,7 @@ mise run obs:down
 mise run worker:drain
 pnpm pi:connect
 mise run bench:http
-mise run bench:sse
+mise run bench:ws
 ```
 
 Use `mise run dev` when you expect repo-managed WorkOS or Google bootstrap

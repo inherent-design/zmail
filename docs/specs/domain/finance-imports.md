@@ -69,6 +69,17 @@ V2 document rows add:
 - `rawPayload`
 - `evidenceText`
 
+Date rules:
+
+- imported transaction date fields may retain source fidelity, including partial
+  month or year strings
+- import ingestion must not substitute source-file import time as
+  `occurredAt`, `postedAt`, or `clearedAt`
+- exact exportability is decided later from exact `occurredAt`, exact
+  `postedAt`, or exact `clearedAt`
+- partial-only imported dates remain `review` in staged ledger rows until exact
+  evidence exists
+
 ### `transactions[]`
 
 V2 transaction rows add:
@@ -412,6 +423,17 @@ Required for full Beancount/Fava export workflows:
 
 Missing Poppler binaries fail upload extraction. Missing `bean-check` skips
 Beancount validation during export; install Beancount for full validation.
+
+## Beancount Document Provenance
+
+Beancount/Fava export document provenance stays at import-run source-file
+level. The canonical source path for copied export documents is
+`finance_import_runs.source_file_path`; individual import document rows may add
+`sourceDocumentRef`, but they do not own stored filesystem paths.
+
+Export copies available source files into `documents/` and records copied or
+missing files in the `finance-ledger-export.v2` manifest `documentsMeta`
+section. Missing source files do not block export.
 
 ## Failure Modes
 

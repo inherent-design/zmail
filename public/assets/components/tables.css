@@ -2,7 +2,3 @@
 .table-wrap {
 	overflow-x: auto;
 }
-
-[data-zmail-node] {
-	scroll-margin-block: 5rem;
-}

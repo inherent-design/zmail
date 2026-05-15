@@ -60,7 +60,7 @@ These terms are preferred over generic infrastructure-first labels such as:
 
 Current transport ownership stays unchanged:
 
-- `server/index.tsx`
+- `server/app.ts`
   - Hono route registration
   - middleware composition
   - transport-level validation and response shaping
@@ -171,7 +171,7 @@ Later refactors should move incrementally toward:
 - `server/queries/*`
 - `server/commands/*`
 - `lib/domain/*` or equivalent minimal domain-service grouping
-- thin transport adapters in `server/index.tsx`
+- thin transport adapters in `server/app.ts`
 
 That direction is intentional, but this document does not require the split in
 the same change that introduces the contract.
@@ -179,6 +179,6 @@ the same change that introduces the contract.
 ## Command Return Metadata
 
 Application commands may return neutral change hints such as job ids, entity ids,
-or canonical keys. Hono route handlers convert those hints into UI mutation
-targets. Domain services do not import browser contracts or shape DOM-specific
-target arrays.
+canonical keys, or invalidation keys. Hono route handlers convert those hints
+into the client mutation envelope. Domain services do not import browser
+components or shape DOM-specific target arrays.

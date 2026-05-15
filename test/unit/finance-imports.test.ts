@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { computeArtifactSha256 } from "#/lib/finance-imports";
+import {
+	classifyImportTransactionDates,
+	computeArtifactSha256,
+} from "#/lib/finance-imports";
 import { financeSourceImportV2Schema } from "#/lib/schemas";
 
 function artifact(artifactSha256 = "") {
@@ -42,5 +45,20 @@ describe("finance imports", () => {
 			computeArtifactSha256(artifact()),
 		);
 		expect(computeArtifactSha256(artifact())).toMatch(/^[a-f0-9]{64}$/);
+	});
+
+	it("classifies imported transaction date precision without substituting import time", () => {
+		expect(
+			classifyImportTransactionDates({
+				occurredAt: "2026-01",
+				postedAt: null,
+				clearedAt: null,
+			}),
+		).toEqual({
+			occurredAtPrecision: "month",
+			postedAtPrecision: "unknown",
+			clearedAtPrecision: "unknown",
+			hasExactBeancountDate: false,
+		});
 	});
 });

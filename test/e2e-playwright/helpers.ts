@@ -1,11 +1,7 @@
 import { expect, type Page } from "@playwright/test";
 
 export async function waitForHydration(page: Page) {
-	await page.waitForFunction(
-		() =>
-			typeof (window as typeof window & { Zmail?: { refresh?: unknown } }).Zmail
-				?.refresh === "function",
-	);
+	await expect(page.getByTestId("sveltekit-shell")).toBeVisible();
 }
 
 export async function gotoAndHydrate(page: Page, path: string) {

@@ -14,6 +14,8 @@ describe("finance ledger overrides", () => {
 				canonical_key: "entry-1",
 				patch_json: JSON.stringify({
 					status: "ready",
+					occurredAt: "2026-02",
+					postedAt: "2026-02-03T00:00:00.000Z",
 					categoryPrimary: "travel",
 					categorySecondary: "airfare",
 				}),
@@ -34,6 +36,10 @@ describe("finance ledger overrides", () => {
 				"entry-1",
 				{
 					status: "review",
+					occurred_at: "2026-01-01",
+					occurred_at_precision: "day",
+					posted_at: null,
+					posted_at_precision: "unknown",
 					ledger_metadata_json: JSON.stringify({
 						categoryPrimary: "uncategorized",
 					}),
@@ -49,6 +55,10 @@ describe("finance ledger overrides", () => {
 		const entry = entries.get("entry-1");
 		const metadata = JSON.parse(String(entry?.ledger_metadata_json));
 		expect(entry?.status).toBe("ready");
+		expect(entry?.occurred_at).toBe("2026-02");
+		expect(entry?.occurred_at_precision).toBe("month");
+		expect(entry?.posted_at).toBe("2026-02-03T00:00:00.000Z");
+		expect(entry?.posted_at_precision).toBe("datetime");
 		expect(metadata).toMatchObject({
 			categoryPrimary: "travel",
 			categorySecondary: "airfare",

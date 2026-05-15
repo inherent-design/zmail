@@ -240,7 +240,7 @@ Do not log:
 
 ## Job Event Target Hints
 
-Job events may include redacted change hints for islands and keyed nodes. Hints
-carry topic, event type, entity id, and safe target metadata only. Workers do not
-read DOM contracts; event producers attach neutral entity ids and route handlers
-or page modules translate those ids when needed.
+Job events may include redacted change hints for SvelteKit invalidation. Hints
+carry topic, event type, and entity id only. Workers do not read DOM contracts;
+event producers attach neutral entity ids and page modules translate those ids
+to invalidation keys when needed.

@@ -2,8 +2,9 @@
 
 This smoke plan targets the vNext runtime defined in `docs/specs/`.
 
-Use it once the Hono + Hono JSX + WorkOS rewrite slice is available. It is not
-a claim that the current source tree already implements every step below.
+Use it once the Hono + SvelteKit + WebSocket + WorkOS rewrite slice is
+available. It is not a claim that the current source tree already implements
+every step below.
 
 ## Canonical References
 

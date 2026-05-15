@@ -370,15 +370,7 @@ async function rebuildFinanceKnowledgeJob(job: JobRecord, trace: LogTrace) {
 		entityId: job.id,
 		payload: {
 			...result,
-			changeHints: {
-				islands: [
-					"finance.summary",
-					"finance.cashflow",
-					"finance.categories",
-					"finance.overview.rollups",
-					"finance.lanes",
-				],
-			},
+			invalidate: ["zmail:finance", "zmail:runs"],
 		},
 	});
 	await queueFinanceRollupsRebuild();
@@ -435,9 +427,7 @@ async function rebuildFinanceRollupsJob(job: JobRecord, trace: LogTrace) {
 		entityId: job.id,
 		payload: {
 			...result,
-			changeHints: {
-				islands: ["finance.subscriptions", "finance.summary", "finance.lanes"],
-			},
+			invalidate: ["zmail:finance", "zmail:runs"],
 		},
 	});
 }
@@ -467,9 +457,7 @@ async function exportFinanceBeancountJob(job: JobRecord, trace: LogTrace) {
 		entityId: job.id,
 		payload: {
 			...meta,
-			changeHints: {
-				islands: ["finance.export-health", "finance.lanes"],
-			},
+			invalidate: ["zmail:finance", "zmail:runs"],
 		},
 	});
 	try {
@@ -503,9 +491,7 @@ async function exportFinanceBeancountJob(job: JobRecord, trace: LogTrace) {
 			entityId: result.exportRunId,
 			payload: {
 				...result,
-				changeHints: {
-					islands: ["finance.export-health", "finance.lanes"],
-				},
+				invalidate: ["zmail:finance", "zmail:runs"],
 			},
 		});
 		jobTrace.complete("worker.export_finance_beancount.complete", {
@@ -523,9 +509,7 @@ async function exportFinanceBeancountJob(job: JobRecord, trace: LogTrace) {
 			payload: {
 				...meta,
 				error: error instanceof Error ? error.message : String(error),
-				changeHints: {
-					islands: ["finance.export-health", "finance.lanes"],
-				},
+				invalidate: ["zmail:finance", "zmail:runs"],
 			},
 		});
 		throw error;
@@ -593,9 +577,7 @@ async function generateTaxReportJob(job: JobRecord, trace: LogTrace) {
 		entityId: result.reportRunId,
 		payload: {
 			...result,
-			changeHints: {
-				islands: ["finance.tax", "finance.export-health", "finance.lanes"],
-			},
+			invalidate: ["zmail:finance", "zmail:runs"],
 		},
 	});
 }

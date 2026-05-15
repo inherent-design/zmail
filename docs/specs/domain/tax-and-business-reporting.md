@@ -287,7 +287,7 @@ same job kinds or call the same package generator used by worker jobs.
 
 ## Browser Workflow
 
-Tax and business report queue actions return mutation envelopes targeting report
-run state, tax, and lane islands. Report manifests and validation JSON render
-through `DataInspector`. Export and report output directories are org-local and
-never public static paths.
+Tax and business report queue actions return mutation envelopes that invalidate
+finance and runs data. Report manifests and validation JSON render through
+`DataInspector`. Export and report output directories are org-local and never
+public static paths.

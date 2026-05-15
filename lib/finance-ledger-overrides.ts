@@ -8,6 +8,7 @@ import {
 } from "#/lib/config";
 import { getDb, jsonText, safeJsonParse } from "#/lib/db";
 import { parseAmountMinor } from "#/lib/finance-imports";
+import { precisionForLedgerDate } from "#/lib/finance-ledger-dates";
 import { queueJobIdempotent } from "#/lib/jobs";
 
 const financeLedgerOverridePatchSchema = z
@@ -101,9 +102,18 @@ function mergeMetadata(
 function dbPatch(patch: OverridePatch, currentMetadataJson: string) {
 	const set: Record<string, unknown> = {};
 	if (patch.status !== undefined) set.status = patch.status;
-	if (patch.occurredAt !== undefined) set.occurred_at = patch.occurredAt;
-	if (patch.postedAt !== undefined) set.posted_at = patch.postedAt;
-	if (patch.clearedAt !== undefined) set.cleared_at = patch.clearedAt;
+	if (patch.occurredAt !== undefined) {
+		set.occurred_at = patch.occurredAt;
+		set.occurred_at_precision = precisionForLedgerDate(patch.occurredAt);
+	}
+	if (patch.postedAt !== undefined) {
+		set.posted_at = patch.postedAt;
+		set.posted_at_precision = precisionForLedgerDate(patch.postedAt);
+	}
+	if (patch.clearedAt !== undefined) {
+		set.cleared_at = patch.clearedAt;
+		set.cleared_at_precision = precisionForLedgerDate(patch.clearedAt);
+	}
 	if (patch.description !== undefined) set.description = patch.description;
 	if (patch.counterparty !== undefined) set.counterparty = patch.counterparty;
 	if (patch.amountValue !== undefined) {

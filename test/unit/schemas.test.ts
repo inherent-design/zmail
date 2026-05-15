@@ -697,6 +697,12 @@ describe("schemas", () => {
 						canonicalKey: "txn_123",
 						status: "exported",
 						sourceKind: "ledger_entry",
+						beancountDate: "2026-01-05",
+						beancountDateSource: "posted_at",
+						dateRecovery: {
+							recoveredField: "posted_at",
+							recoveredFrom: "message_received_at",
+						},
 						beancountLink: "zmail-txn-123",
 						messageId: "msg-1",
 						sourceImportId: null,
@@ -711,5 +717,217 @@ describe("schemas", () => {
 				},
 			}),
 		).toMatchObject({ schemaVersion: "finance-ledger-export.v1" });
+	});
+
+	it("accepts finance-ledger-export.v2 manifests", () => {
+		expect(
+			financeLedgerExportSchema.parse({
+				schemaVersion: "finance-ledger-export.v2",
+				orgId: "org_1",
+				exportRunId: "run_2",
+				generatedAt: "2026-01-05T00:00:00.000Z",
+				strict: true,
+				year: null,
+				years: [2025, 2026],
+				files: {
+					main: "main.beancount",
+					accounts: "accounts.beancount",
+					generated: ["generated/2025.beancount", "generated/2026.beancount"],
+					raw: "raw/zmail-finance-export.json",
+					unresolved: "review/unresolved.csv",
+					documents: ["documents/import-doc-1-statement.pdf"],
+				},
+				readiness: {
+					readyCount: 1,
+					reviewCount: 1,
+					blockedCount: 0,
+					duplicateCount: 0,
+					mappingCoverage: {
+						mappedRows: 1,
+						totalRows: 2,
+						ratio: 0.5,
+					},
+					missingAmountCount: 0,
+					missingCurrencyCount: 0,
+					missingDateCount: 1,
+					missingCounterpartyCount: 0,
+					missingDedupeCount: 0,
+					invalidBookCount: 0,
+					mixedMissingBusinessUsePercentCount: 0,
+					badDirectionCount: 0,
+				},
+				items: [
+					{
+						canonicalKey: "txn_123",
+						status: "exported",
+						sourceKind: "ledger_entry",
+						beancountDate: "2026-01-05",
+						beancountDateSource: "posted_at",
+						dateRecovery: null,
+						beancountLink: "zmail-txn-123",
+						messageId: "msg-1",
+						sourceImportId: null,
+						reason: null,
+					},
+				],
+				rows: [
+					{
+						ledgerEntry: { id: "ledger-1" },
+						source: {
+							ledgerEntrySource: { id: "source-1" },
+							importRun: { id: "import-run-1" },
+							importDocument: { id: "import-doc-1" },
+						},
+						eligibility: {
+							exportable: true,
+							reasons: [],
+							beancountDate: "2026-01-05",
+							beancountDateSource: "posted_at",
+							dateRecovery: null,
+							confidenceUsed: 0.95,
+							threshold: 0.8,
+						},
+						export: {
+							status: "exported",
+							generatedFile: "generated/2026.beancount",
+							beancountLink: "zmail-txn-123",
+						},
+						documents: {
+							emitted: ["documents/import-doc-1-statement.pdf"],
+							missing: [],
+						},
+					},
+				],
+				validation: {
+					beanCheck: "passed",
+					beanCheckOutput: null,
+					favaSmoke: "manual",
+				},
+			}),
+		).toMatchObject({ schemaVersion: "finance-ledger-export.v2" });
+	});
+
+	it("accepts extended finance-ledger-export.v2 manifests", () => {
+		expect(
+			financeLedgerExportSchema.parse({
+				schemaVersion: "finance-ledger-export.v2",
+				orgId: "org_1",
+				exportRunId: "run_3",
+				generatedAt: "2026-01-05T00:00:00.000Z",
+				strict: true,
+				year: 2026,
+				years: [2026],
+				files: {
+					main: "main.beancount",
+					accounts: "accounts.beancount",
+					generated: ["generated/2026.beancount"],
+					raw: "raw/zmail-finance-export.json",
+					unresolved: "review/unresolved.csv",
+					documents: ["documents/import-doc-1-statement.pdf"],
+				},
+				readiness: {
+					readyCount: 1,
+					reviewCount: 0,
+					blockedCount: 0,
+					duplicateCount: 0,
+					mappingCoverage: {
+						mappedRows: 1,
+						totalRows: 1,
+						ratio: 1,
+					},
+					missingAmountCount: 0,
+					missingCurrencyCount: 0,
+					missingDateCount: 0,
+					missingCounterpartyCount: 0,
+					missingDedupeCount: 0,
+					invalidBookCount: 0,
+					mixedMissingBusinessUsePercentCount: 0,
+					badDirectionCount: 0,
+				},
+				items: [
+					{
+						canonicalKey: "txn_123",
+						status: "exported",
+						sourceKind: "ledger_entry",
+						beancountDate: "2026-01-05",
+						beancountDateSource: "posted_at",
+						dateRecovery: null,
+						beancountLink: "zmail-txn-123",
+						messageId: null,
+						sourceImportId: "import-run-1",
+						reason: null,
+					},
+				],
+				rows: [
+					{
+						ledgerEntry: { id: "ledger-1", canonical_key: "txn_123" },
+						source: null,
+						eligibility: {
+							exportable: true,
+							reasons: [],
+							beancountDate: "2026-01-05",
+							beancountDateSource: "posted_at",
+							dateRecovery: null,
+							confidenceUsed: 0.95,
+							threshold: 0.8,
+						},
+						export: {
+							status: "exported",
+							generatedFile: "generated/2026.beancount",
+							beancountLink: "zmail-txn-123",
+						},
+						documents: {
+							emitted: ["documents/import-doc-1-statement.pdf"],
+							missing: [],
+						},
+					},
+				],
+				documentsMeta: {
+					pathMode: "import_run_source_file",
+					copied: [
+						{
+							relativePath: "documents/import-doc-1-statement.pdf",
+							importRunId: "import-run-1",
+							importDocumentId: "import-doc-1",
+							sourceDocumentRef: "statement.pdf",
+							sourcePath: "/tmp/statement.pdf",
+						},
+					],
+					missing: [
+						{
+							importRunId: "import-run-2",
+							importDocumentId: "import-doc-2",
+							sourceDocumentRef: "missing.pdf",
+							sourcePath: "/tmp/missing.pdf",
+							reason: "source_file_missing",
+						},
+					],
+				},
+				validation: {
+					internal: {
+						status: "passed",
+						checks: [
+							{
+								name: "generated-files-sorted",
+								status: "passed",
+								detail: "Generated files are sorted by year ascending.",
+							},
+						],
+						summary: {
+							total: 1,
+							passed: 1,
+							failed: 0,
+						},
+					},
+					beanCheck: "passed",
+					beanCheckOutput: null,
+					favaSmoke: "manual",
+				},
+			}),
+		).toMatchObject({
+			schemaVersion: "finance-ledger-export.v2",
+			documentsMeta: { pathMode: "import_run_source_file" },
+			validation: { internal: { status: "passed" } },
+		});
 	});
 });

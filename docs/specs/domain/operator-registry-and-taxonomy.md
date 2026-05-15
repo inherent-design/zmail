@@ -209,5 +209,5 @@ Rules:
 
 Mapping suggestions support accept and dismiss. Accept applies the suggestion
 through the registry service. Dismiss marks the suggestion `rejected`. Both
-actions return mapping candidate, readiness, mappings, and lane targets so the
-browser can refresh one candidate or fall back to the parent island.
+actions return finance invalidation hints so the browser can refresh the
+affected SvelteKit data.

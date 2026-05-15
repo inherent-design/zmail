@@ -614,8 +614,11 @@ interface FinanceLedgerEntriesTable {
 	status: string;
 	source_authority: string;
 	occurred_at: string | null;
+	occurred_at_precision: Generated<string>;
 	posted_at: string | null;
+	posted_at_precision: Generated<string>;
 	cleared_at: string | null;
+	cleared_at_precision: Generated<string>;
 	description: string | null;
 	counterparty: string | null;
 	direction: string;
@@ -934,6 +937,11 @@ const REQUIRED_CANONICAL_COLUMNS = {
 		"notes",
 		"source_path",
 	],
+	finance_ledger_entries: [
+		"occurred_at_precision",
+		"posted_at_precision",
+		"cleared_at_precision",
+	],
 } as const;
 
 const ADOPTABLE_CANONICAL_COLUMNS = {
@@ -1015,6 +1023,12 @@ const ADOPTABLE_CANONICAL_COLUMNS = {
 		"ALTER TABLE finance_account_mappings ADD COLUMN notes TEXT;",
 	"finance_account_mappings.source_path":
 		"ALTER TABLE finance_account_mappings ADD COLUMN source_path TEXT;",
+	"finance_ledger_entries.occurred_at_precision":
+		"ALTER TABLE finance_ledger_entries ADD COLUMN occurred_at_precision TEXT NOT NULL DEFAULT 'unknown';",
+	"finance_ledger_entries.posted_at_precision":
+		"ALTER TABLE finance_ledger_entries ADD COLUMN posted_at_precision TEXT NOT NULL DEFAULT 'unknown';",
+	"finance_ledger_entries.cleared_at_precision":
+		"ALTER TABLE finance_ledger_entries ADD COLUMN cleared_at_precision TEXT NOT NULL DEFAULT 'unknown';",
 } as const;
 
 type CanonicalColumnRef = keyof typeof ADOPTABLE_CANONICAL_COLUMNS;
@@ -1386,6 +1400,9 @@ export function runMigrations(orgId = currentOrgId()) {
 		if (file === "009_unified_workflows_text_source_overrides.sql") {
 			prepareUnifiedWorkflowMigration(sqlite);
 		}
+		if (file === "011_finance_ledger_date_precision.sql") {
+			prepareFinanceLedgerDatePrecisionMigration(sqlite);
+		}
 		const sql = readFileSync(resolve(MIGRATIONS_DIR, file), "utf8");
 		sqlite.exec(sql);
 		insertMigration.run(file, nowIso());
@@ -1516,6 +1533,31 @@ function prepareUnifiedWorkflowMigration(sqlite: Database.Database) {
 			"ALTER TABLE review_classification_heads ADD COLUMN decided_at TEXT;",
 		);
 	}
+}
+
+function prepareFinanceLedgerDatePrecisionMigration(sqlite: Database.Database) {
+	if (!tableNames(sqlite).has("finance_ledger_entries")) {
+		return;
+	}
+
+	addColumnIfMissing(
+		sqlite,
+		"finance_ledger_entries",
+		"occurred_at_precision",
+		"ALTER TABLE finance_ledger_entries ADD COLUMN occurred_at_precision TEXT NOT NULL DEFAULT 'unknown';",
+	);
+	addColumnIfMissing(
+		sqlite,
+		"finance_ledger_entries",
+		"posted_at_precision",
+		"ALTER TABLE finance_ledger_entries ADD COLUMN posted_at_precision TEXT NOT NULL DEFAULT 'unknown';",
+	);
+	addColumnIfMissing(
+		sqlite,
+		"finance_ledger_entries",
+		"cleared_at_precision",
+		"ALTER TABLE finance_ledger_entries ADD COLUMN cleared_at_precision TEXT NOT NULL DEFAULT 'unknown';",
+	);
 }
 
 export async function ensureAccountOwnershipBackfill(orgId = currentOrgId()) {

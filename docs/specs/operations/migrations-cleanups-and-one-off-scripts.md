@@ -49,7 +49,8 @@ The rewrite may add migrations for:
 
 - org-aware finance import dedup constraints
 - metadata needed for WorkOS-backed org runtime adoption
-- any schema changes required by the Hono + Hono JSX + per-org runtime model
+- any schema changes required by the Hono API + SvelteKit UI + per-org runtime
+  model
 
 The rewrite must not hide behavioral cleanup inside schema history when the work
 is actually data repair.
@@ -170,6 +171,7 @@ Definition:
 Examples:
 
 - import dedup cleanup
+- finance ledger date repair
 - bad-body re-extraction
 - parse-error re-extraction
 - targeted resets
@@ -191,6 +193,7 @@ Definition:
 | `scripts/db-reset.ts` | admin/repair | in current single-org development it may default to the configured default org; service-readiness requires explicit org selection for `all`, `messages`, and `jobs` reset modes |
 | `scripts/reextract-bad-bodies.ts` | admin/repair | current single-org repair tool; service-readiness requires `--org <orgId>` |
 | `scripts/reextract-parse-errors.ts` | admin/repair | current single-org repair tool; service-readiness requires `--org <orgId>` |
+| `scripts/repair-finance-ledger-dates.ts` | admin/repair | explicit one-time repair for partial ledger dates; requires `--dry-run` or `--confirm`, runs migrations first, makes a SQLite backup on confirm, writes a manifest under `data/tmp/migrations/`, and does not rebuild the whole ledger |
 | `scripts/worker-drain.ts` | admin/repair | current drain/debug helper; service-readiness requires explicit org or all-org mode |
 | `scripts/audit-corpus.ts` | operator-safe | keep, but require explicit org context and include dedup/auth/runtime diagnostics |
 | `scripts/migrate.ts` | operator-safe | migrate all discovered org DBs by default; support `--org <orgId>` and one-time `--adopt-history` for stale migration history |
@@ -211,6 +214,10 @@ The currently public/implemented command surface is:
 - `pnpm reextract:bad-bodies`
 - `pnpm reextract:parse-errors`
 - `pnpm finance:import --org <orgId> <artifact.json>`
+- `pnpm finance:repair-ledger-dates -- --org <orgId> --dry-run`
+- `pnpm finance:repair-ledger-dates -- --org <orgId> --confirm`
+- `pnpm finance:repair-ledger-dates -- --all-orgs --dry-run`
+- `pnpm finance:repair-ledger-dates -- --all-orgs --confirm`
 
 ## Candidate CLI Surface
 

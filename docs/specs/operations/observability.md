@@ -114,7 +114,8 @@ first segment with `/*`.
 ## Progress and ETA
 
 Worker sync jobs write live progress into `jobs.meta_json`. `/runs`, account
-detail pages, metrics, and SSE updates consume that shared progress shape.
+detail pages, metrics, and WebSocket runtime-event updates consume that shared
+progress shape.
 
 Backfill ETA is approximate because Gmail UID spans can be sparse. The ETA
 model uses `account_sync_state.backfill_snapshot_uid`,
@@ -130,10 +131,10 @@ model names, normalized route labels, and sanitized error types are allowed.
 OTLP traces are configured but disabled by default. The first local
 observability contract uses Prometheus scraping and Loki log tailing.
 
-## Refresh Debug Logs
+## Realtime Debug Logs
 
-Browser refresh debug logs may include target type, island id, node id, source,
-and route mismatch reason. Logs must not include raw mutation payloads, OAuth
-tokens, email bodies, snippets, raw artifacts, account numbers, or full manifest
-content. Event target hints are redacted to topic, event type, entity id, and
-safe target ids.
+Browser realtime debug logs may include WebSocket connection state, topic,
+event type, cursor, invalidation key, and route mismatch reason. Logs must not
+include raw mutation payloads, OAuth tokens, email bodies, snippets, raw
+artifacts, account numbers, or full manifest content. Runtime event hints are
+redacted to topic, event type, and entity id.

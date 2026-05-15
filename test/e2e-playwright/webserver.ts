@@ -1,9 +1,8 @@
 import { resolve } from "node:path";
 
-import { serve } from "@hono/node-server";
 import { APP_CONFIG } from "#/lib/config";
 import { runMigrations } from "#/lib/db";
-import { app } from "#/server/index";
+import { createProductionServer } from "#/server/http";
 import seedRuntimeForPlaywright, {
 	seedRuntimeForPlaywrightAt,
 } from "./global.setup";
@@ -22,11 +21,10 @@ async function main() {
 		await seedRuntimeForPlaywright();
 	}
 	runMigrations();
-	serve({
-		fetch: app.fetch,
-		port,
+	const server = await createProductionServer();
+	server.listen(port, "127.0.0.1", () => {
+		console.log(`playwright zmail listening on http://127.0.0.1:${port}`);
 	});
-	console.log(`playwright zmail listening on http://127.0.0.1:${port}`);
 	if (APP_CONFIG.runWorker) {
 		const { ensureWorkerStarted } = await import("#/lib/worker");
 		ensureWorkerStarted();

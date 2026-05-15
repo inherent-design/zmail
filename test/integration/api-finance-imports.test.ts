@@ -89,7 +89,7 @@ describe("POST /api/finance/imports", () => {
 				buildActionsServerMock(queueImportFinanceArtifactCommand),
 			);
 
-			const { app } = await import("#/server/index");
+			const { app } = await import("#/server/app");
 			const artifactSha256 = `artifact-sha-${role}`;
 			const response = await app.fetch(
 				new Request("http://localhost/api/finance/imports", {
@@ -107,6 +107,7 @@ describe("POST /api/finance/imports", () => {
 				status: "queued",
 				jobId: `job-import-${role}`,
 				artifactSha256,
+				invalidate: ["zmail:finance", "zmail:runs"],
 			});
 			expect(queueImportFinanceArtifactCommand).toHaveBeenCalledWith({
 				artifact: expect.objectContaining({
@@ -125,7 +126,7 @@ describe("POST /api/finance/imports", () => {
 			buildActionsServerMock(queueImportFinanceArtifactCommand),
 		);
 
-		const { app } = await import("#/server/index");
+		const { app } = await import("#/server/app");
 		const response = await app.fetch(
 			new Request("http://localhost/api/finance/imports", {
 				method: "POST",
@@ -150,7 +151,7 @@ describe("POST /api/finance/imports", () => {
 			buildActionsServerMock(queueImportFinanceArtifactCommand),
 		);
 
-		const { app } = await import("#/server/index");
+		const { app } = await import("#/server/app");
 		const response = await app.fetch(
 			new Request("http://localhost/api/finance/imports", {
 				method: "POST",
@@ -178,7 +179,7 @@ describe("POST /api/finance/imports", () => {
 		const dbModule = await import("#/lib/db");
 		const runMigrations = vi.spyOn(dbModule, "runMigrations");
 
-		const { app } = await import("#/server/index");
+		const { app } = await import("#/server/app");
 		const importResponse = await app.fetch(
 			new Request("http://localhost/api/finance/imports", {
 				method: "POST",
@@ -219,7 +220,7 @@ describe("POST /api/finance/imports", () => {
 			})),
 		}));
 
-		const { app } = await import("#/server/index");
+		const { app } = await import("#/server/app");
 		const response = await app.fetch(
 			new Request("http://localhost/api/finance/imports", {
 				method: "POST",
@@ -237,6 +238,7 @@ describe("POST /api/finance/imports", () => {
 			status: "queued",
 			jobId: "job-import-m2m",
 			artifactSha256: "artifact-sha-machine",
+			invalidate: ["zmail:finance", "zmail:runs"],
 		});
 	});
 
@@ -247,7 +249,7 @@ describe("POST /api/finance/imports", () => {
 			buildActionsServerMock(queueImportFinanceArtifactCommand),
 		);
 
-		const { app } = await import("#/server/index");
+		const { app } = await import("#/server/app");
 		const response = await app.fetch(
 			new Request("http://localhost/rpc/finance/registry/import", {
 				method: "POST",
@@ -268,7 +270,7 @@ describe("POST /api/finance/imports", () => {
 		vi.doUnmock("#/server/actions");
 		vi.doUnmock("#/server/machine-auth");
 		process.env.ZMAIL_TEST_AUTH_ROLE = "org_operator";
-		const { app } = await import("#/server/index");
+		const { app } = await import("#/server/app");
 		const form = new FormData();
 		form.set(
 			"file",
@@ -290,9 +292,7 @@ describe("POST /api/finance/imports", () => {
 			status: string;
 			uploadId: string;
 			jobId: string;
-			ui?: {
-				targets?: Array<Record<string, string>>;
-			};
+			invalidate?: string[];
 		};
 
 		expect(response.status).toBe(202);
@@ -301,17 +301,8 @@ describe("POST /api/finance/imports", () => {
 			status: "queued",
 			uploadId: expect.stringMatching(/^finup_/),
 			jobId: expect.any(String),
+			invalidate: ["zmail:finance", "zmail:runs"],
 		});
-		expect(payload.ui?.targets).toEqual([
-			{
-				type: "node",
-				islandId: "finance.imports",
-				nodeId: "finance.upload.run",
-				key: payload.uploadId,
-			},
-			{ type: "island", id: "finance.lanes" },
-			{ type: "island", id: "finance.command-bar" },
-		]);
 
 		const { getDb } = await import("#/lib/db");
 		const db = getDb("org-test");
@@ -342,7 +333,7 @@ describe("POST /api/finance/imports", () => {
 	it("rejects oversized finance uploads before multipart parsing", async () => {
 		vi.doUnmock("#/server/actions");
 		vi.doUnmock("#/server/machine-auth");
-		const { app } = await import("#/server/index");
+		const { app } = await import("#/server/app");
 
 		const response = await app.fetch(
 			new Request("http://localhost/api/finance/uploads", {
@@ -371,7 +362,7 @@ describe("POST /api/finance/imports", () => {
 			buildActionsServerMock(queueImportFinanceArtifactCommand),
 		);
 
-		const { app } = await import("#/server/index");
+		const { app } = await import("#/server/app");
 		const response = await app.fetch(
 			new Request("http://localhost/zmail/api/finance/imports", {
 				method: "POST",
@@ -388,6 +379,7 @@ describe("POST /api/finance/imports", () => {
 			status: "queued",
 			jobId: "job-import-2",
 			artifactSha256: "artifact-sha-zmail",
+			invalidate: ["zmail:finance", "zmail:runs"],
 		});
 	});
 });
